@@ -1,0 +1,57 @@
+{
+  "name": "@llmgates_api/pi-llmgates-provider",
+  "version": "0.1.1",
+  "description": "Pi provider extension for LLMGates (TokenX gateway): dynamic models from /v1/models and /login setup",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "llmgates",
+    "tokenx",
+    "tps"
+  ],
+  "license": "MIT",
+  "author": "llmgates_api",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ax128/pi-llmgates.git"
+  },
+  "homepage": "https://github.com/ax128/pi-llmgates#readme",
+  "bugs": {
+    "url": "https://github.com/ax128/pi-llmgates/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run test"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts",
+      "./extensions/balance.ts",
+      "./extensions/tps.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": ">=0.80.9 <0.82.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.80.9",
+    "@earendil-works/pi-coding-agent": "0.80.9",
+    "@types/node": "^22.15.21",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ]
+}
