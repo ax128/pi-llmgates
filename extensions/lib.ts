@@ -1,32 +1,27 @@
 /**
- * LLMGates gateway helpers: config I/O and HTTP clients.
- * Pure mapping lives in catalog.ts (no heavy pi imports — keeps unit tests fast).
+ * Config I/O helpers and compatibility re-exports.
+ * Connection ownership lives in connection.ts; network in http.ts.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import type { Api, Credential, Model } from "@earendil-works/pi-ai";
-import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import {
-	CreditsHttpError,
-	DEFAULT_BASE_URL,
-	DEFAULT_FETCH_TIMEOUT_MS,
-	DEFAULT_PROVIDER_ID,
-	DEFAULT_PROVIDER_NAME,
-	type CreditsSnapshot,
-	decodeRefreshMeta,
-	type GatewayModel,
-	fetchWithTimeout,
-	firstNonEmpty,
-	ModelsHttpError,
-	normalizeGatewayBaseUrl,
-	parseGatewayModelsPayload,
-	type PiProviderModel,
-	resolveCreditsUrl,
-	resolveEndpoints,
-	toPiModel,
-	USER_AGENT,
-} from "./catalog.js";
+	chmodSync,
+	closeSync,
+	constants,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import {
+	CONFIG_FILE_NAME,
+	loadValidatedConfigFile,
+	type LLMGatesConfigFile,
+} from "./connection.js";
 
 export {
 	CLIENT_VERSION,
@@ -55,6 +50,8 @@ export {
 	isUnauthorizedCreditsError,
 	isUnauthorizedHttpError,
 	isUnauthorizedModelsError,
+	parseCreditsPayload,
+	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
 	resolveCreditsUrl,
 	resolveInferenceEndpoint,
@@ -71,320 +68,162 @@ export type {
 	PiApiType,
 	PiProviderModel,
 	ThinkingLevelMap,
+	CreditsSnapshot,
 } from "./catalog.js";
 
-export const CONFIG_FILE_NAME = "llmgates.json";
-export const AUTH_FILE_NAME = "auth.json";
-export const MODELS_STORE_FILE_NAME = "models-store.json";
+export {
+	AUTH_FILE_NAME,
+	BUILTIN_PROVIDER_IDS,
+	CONFIG_FILE_NAME,
+	assertUrlTransportAllowed,
+	connectionFromAmbientEnv,
+	connectionFromConfigFile,
+	connectionFromOAuthCredential,
+	decodeOAuthRefreshMeta,
+	detectLegacyApiKeyCredential,
+	encodeOAuthRefreshMeta,
+	isLoopbackHostname,
+	normalizeAndValidateBaseUrl,
+	resolveCanonicalConnection,
+	resolveProviderIdentity,
+} from "./connection.js";
 
-export interface PersistedModelsStoreEntry {
-	models: Model<Api>[];
-	checkedAt: number;
-}
+export type {
+	CanonicalConnection,
+	ConnectionSource,
+	ProviderIdentity,
+	UrlValidationResult,
+} from "./connection.js";
 
-/** Keep login credentials effectively permanent; reconfigure via /login. */
+export {
+	BALANCE_REQUEST_TIMEOUT_MS,
+	HttpStatusError,
+	MAX_RESPONSE_BYTES,
+	MODELS_REQUEST_TIMEOUT_MS,
+	RequestTimeoutError,
+	ResponseLimitError,
+	isUnauthorizedStatus,
+	requestLimitedJson,
+} from "./http.js";
+
 export const CREDENTIAL_TTL_MS = 100 * 365 * 24 * 60 * 60 * 1000;
 
-export interface LoadMappedModelsOptions {
-	timeoutMs?: number;
-	signal?: AbortSignal;
-}
-
-let inflightCatalog: { key: string; promise: Promise<Awaited<ReturnType<typeof loadMappedModels>>> } | null = null;
-
-export function resolveApiKeyFromCredential(credential: Credential | undefined): string | undefined {
-	if (!credential) {
-		return undefined;
-	}
-	if (credential.type === "oauth" && typeof credential.access === "string" && credential.access.trim()) {
-		return credential.access.trim();
-	}
-	if (credential.type === "api_key" && typeof credential.key === "string" && credential.key.trim()) {
-		return credential.key.trim();
-	}
-	return undefined;
-}
-
-export interface LLMGatesConfigFile {
-	baseUrl?: string;
-	apiKey?: string;
-	providerId?: string;
-	providerName?: string;
-}
-
-export interface ResolvedIdentity {
-	providerId: string;
-	providerName: string;
-}
-
-export interface ResolvedConnection {
-	baseUrlInput: string;
-	apiKey: string;
-	inferenceBaseUrl: string;
-	modelsUrl: string;
-}
+export type { LLMGatesConfigFile };
 
 const CONFIG_FILE_MODE = 0o600;
 
 export function loadConfigFile(agentDir: string): LLMGatesConfigFile {
-	const configPath = join(agentDir, CONFIG_FILE_NAME);
-	try {
-		const raw = readFileSync(configPath, "utf8");
-		const parsed: unknown = JSON.parse(raw);
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			throw new Error(`${CONFIG_FILE_NAME} must contain a JSON object`);
-		}
-		return parsed as LLMGatesConfigFile;
-	} catch (error) {
-		const err = error as NodeJS.ErrnoException;
-		if (err.code !== "ENOENT") {
-			throw error;
-		}
-		return {};
-	}
+	return loadValidatedConfigFile(agentDir);
 }
 
-export function saveConfigFile(agentDir: string, config: LLMGatesConfigFile, options?: { omitApiKey?: boolean }): void {
+export function saveConfigFilePreservingSecrets(
+	agentDir: string,
+	patch: { baseUrl?: string; providerId?: string; providerName?: string },
+): void {
 	const configPath = join(agentDir, CONFIG_FILE_NAME);
 	mkdirSync(dirname(configPath), { recursive: true });
 
-	const existing = loadConfigFile(agentDir);
-	const next: LLMGatesConfigFile = {
-		...existing,
-		...config,
-	};
-
-	if (options?.omitApiKey) {
-		delete next.apiKey;
-	}
-
-	writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`, { mode: CONFIG_FILE_MODE });
-}
-
-export function readModelsStoreEntry(agentDir: string, providerId: string): PersistedModelsStoreEntry | null {
-	const storePath = join(agentDir, MODELS_STORE_FILE_NAME);
+	let existing: LLMGatesConfigFile = {};
 	try {
-		const raw = readFileSync(storePath, "utf8");
-		const parsed: unknown = JSON.parse(raw);
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			return null;
-		}
-		const entry = (parsed as Record<string, PersistedModelsStoreEntry>)[providerId];
-		if (!entry || !Array.isArray(entry.models)) {
-			return null;
-		}
-		return entry;
-	} catch (error) {
-		const err = error as NodeJS.ErrnoException;
-		if (err.code === "ENOENT") {
-			return null;
-		}
-		throw error;
-	}
-}
-
-export function writeModelsStoreEntry(
-	agentDir: string,
-	providerId: string,
-	entry: PersistedModelsStoreEntry,
-): void {
-	const storePath = join(agentDir, MODELS_STORE_FILE_NAME);
-	mkdirSync(dirname(storePath), { recursive: true });
-
-	let current: Record<string, PersistedModelsStoreEntry> = {};
-	try {
-		const raw = readFileSync(storePath, "utf8");
-		const parsed: unknown = JSON.parse(raw);
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			current = parsed as Record<string, PersistedModelsStoreEntry>;
-		}
+		existing = loadValidatedConfigFile(agentDir);
 	} catch (error) {
 		const err = error as NodeJS.ErrnoException;
 		if (err.code !== "ENOENT") {
+			// If file exists but is invalid, fail closed rather than overwrite.
 			throw error;
 		}
 	}
 
-	current[providerId] = entry;
-	writeFileSync(storePath, `${JSON.stringify(current, null, 2)}\n`, { mode: CONFIG_FILE_MODE });
-}
-
-export function loadAuthConnection(agentDir: string, providerId: string): { baseUrl?: string; apiKey?: string } | null {
-	const entry = readStoredCredential(providerId, join(agentDir, AUTH_FILE_NAME));
-	if (entry?.type === "oauth" && typeof entry.access === "string" && entry.access.trim()) {
-		const meta = decodeRefreshMeta(typeof entry.refresh === "string" ? entry.refresh : undefined);
-		return {
-			apiKey: entry.access.trim(),
-			baseUrl: meta?.baseUrl,
-		};
-	}
-
-	if (entry?.type === "api_key" && typeof entry.key === "string" && entry.key.trim()) {
-		return { apiKey: entry.key.trim() };
-	}
-	return null;
-}
-
-export function resolveIdentity(agentDir: string): ResolvedIdentity {
-	let file: LLMGatesConfigFile = {};
-	try {
-		file = loadConfigFile(agentDir);
-	} catch {
-		file = {};
-	}
-
-	return {
-		providerId: firstNonEmpty(process.env.LLMGATES_PROVIDER_ID, file.providerId, DEFAULT_PROVIDER_ID)!,
-		providerName: firstNonEmpty(process.env.LLMGATES_PROVIDER_NAME, file.providerName, DEFAULT_PROVIDER_NAME)!,
+	const next: LLMGatesConfigFile = {
+		...existing,
 	};
-}
 
-export function resolveConnection(agentDir: string, providerId: string): ResolvedConnection | null {
-	let file: LLMGatesConfigFile = {};
-	try {
-		file = loadConfigFile(agentDir);
-	} catch {
-		file = {};
+	if (patch.baseUrl !== undefined) {
+		next.baseUrl = patch.baseUrl;
+	}
+	if (patch.providerId !== undefined) {
+		next.providerId = patch.providerId;
+	}
+	if (patch.providerName !== undefined) {
+		next.providerName = patch.providerName;
 	}
 
-	let auth: { baseUrl?: string; apiKey?: string } | null = null;
-	try {
-		auth = loadAuthConnection(agentDir, providerId);
-	} catch {
-		auth = null;
+	// Never accept apiKey from patch. Preserve existing ambient file key only.
+	if (typeof existing.apiKey === "string" && existing.apiKey.length > 0) {
+		next.apiKey = existing.apiKey;
+	} else {
+		delete next.apiKey;
 	}
 
-	const baseUrlInput = normalizeGatewayBaseUrl(
-		firstNonEmpty(process.env.LLMGATES_BASE_URL, file.baseUrl, auth?.baseUrl, DEFAULT_BASE_URL),
-	)!;
-	const apiKey = firstNonEmpty(process.env.LLMGATES_API_KEY, file.apiKey, auth?.apiKey);
-	if (!apiKey) {
-		return null;
-	}
-
-	const endpoints = resolveEndpoints(baseUrlInput);
-	return {
-		baseUrlInput,
-		apiKey,
-		inferenceBaseUrl: endpoints.inferenceBaseUrl,
-		modelsUrl: endpoints.modelsUrl,
-	};
-}
-
-export async function fetchGatewayModels(
-	modelsUrl: string,
-	apiKey: string,
-	options?: LoadMappedModelsOptions,
-): Promise<GatewayModel[]> {
-	const response = await fetchWithTimeout(
-		modelsUrl,
-		{
-			headers: {
-				Authorization: `Bearer ${apiKey}`,
-				Accept: "application/json",
-				"User-Agent": USER_AGENT,
-			},
-			signal: options?.signal,
-		},
-		options?.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
+	const payload = `${JSON.stringify(next, null, 2)}\n`;
+	const tempPath = join(
+		dirname(configPath),
+		`.${CONFIG_FILE_NAME}.${process.pid}.${Date.now()}.tmp`,
 	);
 
-	if (!response.ok) {
-		const body = await response.text().catch(() => "");
-		throw new ModelsHttpError(response.status, response.statusText, body);
-	}
-
-	let payload: unknown;
+	let fd: number | undefined;
 	try {
-		payload = await response.json();
-	} catch {
-		return [];
-	}
+		fd = openSync(tempPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, CONFIG_FILE_MODE);
+		writeSync(fd, payload);
+		fsyncSync(fd);
+		closeSync(fd);
+		fd = undefined;
+		renameSync(tempPath, configPath);
+		chmodSync(configPath, CONFIG_FILE_MODE);
 
-	return parseGatewayModelsPayload(payload);
-}
-
-export async function loadMappedModels(
-	baseUrlInput: string,
-	apiKey: string,
-	options?: LoadMappedModelsOptions,
-): Promise<{ models: PiProviderModel[]; inferenceBaseUrl: string; modelsUrl: string }> {
-	const endpoints = resolveEndpoints(baseUrlInput);
-	const remoteModels = await fetchGatewayModels(endpoints.modelsUrl, apiKey, options);
-	const models = remoteModels.map(toPiModel).filter((model): model is PiProviderModel => model !== null);
-
-	return {
-		models,
-		inferenceBaseUrl: endpoints.inferenceBaseUrl,
-		modelsUrl: endpoints.modelsUrl,
-	};
-}
-
-export function loadMappedModelsDeduped(
-	baseUrlInput: string,
-	apiKey: string,
-	options?: LoadMappedModelsOptions,
-): Promise<{ models: PiProviderModel[]; inferenceBaseUrl: string; modelsUrl: string }> {
-	const key = `${baseUrlInput}\0${apiKey}`;
-	if (inflightCatalog?.key === key) {
-		return inflightCatalog.promise;
-	}
-
-	const promise = loadMappedModels(baseUrlInput, apiKey, options).finally(() => {
-		if (inflightCatalog?.key === key) {
-			inflightCatalog = null;
+		// Best-effort parent directory fsync for durability on supporting platforms.
+		try {
+			const dirFd = openSync(dirname(configPath), constants.O_RDONLY);
+			try {
+				fsyncSync(dirFd);
+			} finally {
+				closeSync(dirFd);
+			}
+		} catch {
+			// Directory fsync is optional.
 		}
-	});
-	inflightCatalog = { key, promise };
-	return promise;
+	} catch (error) {
+		if (fd !== undefined) {
+			try {
+				closeSync(fd);
+			} catch {
+				// ignore
+			}
+		}
+		try {
+			unlinkSync(tempPath);
+		} catch {
+			// ignore
+		}
+		throw error;
+	} finally {
+		try {
+			unlinkSync(tempPath);
+		} catch {
+			// ignore if already renamed/removed
+		}
+	}
 }
 
-export function resolveConnectionForRefresh(
+/** @deprecated Prefer saveConfigFilePreservingSecrets for login paths. */
+export function saveConfigFile(
 	agentDir: string,
-	providerId: string,
-	credential?: Credential,
-): ResolvedConnection | null {
-	const connection = resolveConnection(agentDir, providerId);
-	if (!connection) {
-		return null;
+	config: LLMGatesConfigFile,
+	options?: { omitApiKey?: boolean },
+): void {
+	const patch = {
+		baseUrl: config.baseUrl,
+		providerId: config.providerId,
+		providerName: config.providerName,
+	};
+	saveConfigFilePreservingSecrets(agentDir, patch);
+	if (!options?.omitApiKey && typeof config.apiKey === "string") {
+		// Ambient non-interactive setup may still need to write apiKey.
+		const current = loadConfigFile(agentDir);
+		const next = { ...current, apiKey: config.apiKey };
+		writeFileSync(join(agentDir, CONFIG_FILE_NAME), `${JSON.stringify(next, null, 2)}\n`, {
+			mode: CONFIG_FILE_MODE,
+		});
+		chmodSync(join(agentDir, CONFIG_FILE_NAME), CONFIG_FILE_MODE);
 	}
-
-	const credentialApiKey = resolveApiKeyFromCredential(credential);
-	if (credential?.type === "oauth") {
-		const meta = decodeRefreshMeta(typeof credential.refresh === "string" ? credential.refresh : undefined);
-		if (meta?.baseUrl) {
-			const baseUrlInput = normalizeGatewayBaseUrl(meta.baseUrl)!;
-			const endpoints = resolveEndpoints(baseUrlInput);
-			return {
-				baseUrlInput,
-				apiKey: credentialApiKey ?? connection.apiKey,
-				inferenceBaseUrl: endpoints.inferenceBaseUrl,
-				modelsUrl: endpoints.modelsUrl,
-			};
-		}
-	}
-
-	if (credentialApiKey) {
-		return { ...connection, apiKey: credentialApiKey };
-	}
-
-	return connection;
-}
-
-export async function fetchCreditsSnapshot(inferenceBaseUrl: string, apiKey: string): Promise<CreditsSnapshot> {
-	const creditsUrl = resolveCreditsUrl(inferenceBaseUrl);
-	const response = await fetchWithTimeout(creditsUrl, {
-		headers: {
-			Authorization: `Bearer ${apiKey}`,
-			Accept: "application/json",
-			"User-Agent": USER_AGENT,
-		},
-	});
-
-	if (!response.ok) {
-		const body = await response.text().catch(() => "");
-		throw new CreditsHttpError(response.status, response.statusText, body);
-	}
-
-	return (await response.json()) as CreditsSnapshot;
 }
