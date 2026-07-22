@@ -9,7 +9,13 @@
  * Non-interactive: ~/.pi/agent/llmgates.json or LLMGATES_* env vars.
  */
 
-import type { Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import type {
+	Model,
+	OAuthCredentials,
+	OAuthLoginCallbacks,
+	ProviderModelsStore,
+	RefreshModelsContext,
+} from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	CONFIG_FILE_NAME,
@@ -18,20 +24,24 @@ import {
 	decodeRefreshMeta,
 	encodeRefreshMeta,
 	firstNonEmpty,
+	isOfflineMode,
 	isUnauthorizedModelsError,
 	loadAuthConnection,
 	loadConfigFile,
-	loadMappedModels,
+	loadMappedModelsDeduped,
 	normalizeGatewayBaseUrl,
 	type PiProviderModel,
+	providerModelsToStoredModels,
 	resolveConnection,
+	resolveConnectionForRefresh,
 	resolveEndpoints,
 	resolveIdentity,
 	saveConfigFile,
+	STARTUP_MODELS_FETCH_TIMEOUT_MS,
+	storedModelsToProviderModels,
+	writeModelsStoreEntry,
+	type ResolvedConnection,
 } from "./lib.js";
-
-/** Stop infinite re-prompt loops when credentials keep failing validation. */
-const MAX_LOGIN_VALIDATION_ATTEMPTS = 5;
 
 class ConfigPersistenceError extends Error {
 	constructor(cause: unknown) {
@@ -39,6 +49,13 @@ class ConfigPersistenceError extends Error {
 		super(`Failed to save ${CONFIG_FILE_NAME}: ${message}`, { cause });
 		this.name = "ConfigPersistenceError";
 	}
+}
+
+interface CatalogContext {
+	agentDir: string;
+	providerId: string;
+	providerName: string;
+	defaultBaseUrl: string;
 }
 
 function logWarn(message: string): void {
@@ -119,107 +136,143 @@ async function promptConnection(
 	return { baseUrlInput, apiKey };
 }
 
-async function configureAndRegister(options: {
-	pi: ExtensionAPI;
-	agentDir: string;
-	providerId: string;
-	providerName: string;
-	baseUrlInput: string;
-	apiKey: string;
-	defaultBaseUrl: string;
-}): Promise<{ modelCount: number; modelsUrl: string }> {
-	const { pi, agentDir, providerId, providerName, baseUrlInput, apiKey, defaultBaseUrl } = options;
-
-	const loaded = await loadMappedModels(baseUrlInput, apiKey);
-
-	try {
-		// Credentials live in auth.json after /login; keep llmgates.json free of apiKey.
-		saveConfigFile(
-			agentDir,
-			{
-				baseUrl: baseUrlInput,
-				providerId,
-				providerName,
-			},
-			{ omitApiKey: true },
-		);
-	} catch (error) {
-		throw new ConfigPersistenceError(error);
+function warnCatalogLoadFailure(providerName: string, error: unknown): void {
+	const message = error instanceof Error ? error.message : String(error);
+	if (isUnauthorizedModelsError(error)) {
+		logWarn(`models request unauthorized (${message}). Use /login ${providerName} to reconfigure.`);
+		return;
 	}
-
-	registerProvider(pi, {
-		providerId,
-		providerName,
-		baseUrlInput,
-		apiKey,
-		models: loaded.models,
-		defaultBaseUrl: baseUrlInput || defaultBaseUrl,
-		agentDir,
-	});
-
-	return { modelCount: loaded.models.length, modelsUrl: loaded.modelsUrl };
+	logWarn(
+		`failed to load models (${message}). Use /login ${providerName} or check ${CONFIG_FILE_NAME} / LLMGATES_* env vars.`,
+	);
 }
 
-function createOAuthHandlers(options: {
-	pi: ExtensionAPI;
-	agentDir: string;
-	providerId: string;
-	providerName: string;
-	defaultBaseUrl: string;
-}) {
+function persistCatalogSnapshot(
+	context: CatalogContext,
+	loaded: Awaited<ReturnType<typeof loadMappedModelsDeduped>>,
+	store?: ProviderModelsStore,
+): void {
+	const entry = {
+		models: providerModelsToStoredModels(context.providerId, loaded.models, loaded.inferenceBaseUrl),
+		checkedAt: Date.now(),
+	};
+	if (store) {
+		void store.write(entry);
+		return;
+	}
+	writeModelsStoreEntry(context.agentDir, context.providerId, entry);
+}
+
+function applyLoadedCatalog(
+	pi: ExtensionAPI,
+	context: CatalogContext,
+	connection: ResolvedConnection,
+	loaded: Awaited<ReturnType<typeof loadMappedModelsDeduped>>,
+	store?: ProviderModelsStore,
+): void {
+	const hasStoredLogin = hasLoginCredential(context.agentDir, context.providerId);
+	registerProvider(pi, {
+		providerId: context.providerId,
+		providerName: context.providerName,
+		baseUrlInput: connection.baseUrlInput,
+		apiKey: hasStoredLogin ? undefined : connection.apiKey,
+		models: loaded.models,
+		defaultBaseUrl: context.defaultBaseUrl,
+		agentDir: context.agentDir,
+	});
+
+	if (loaded.models.length === 0) {
+		logWarn("catalog loaded but no models are available for this API key.");
+	} else {
+		logInfo(`registered ${loaded.models.length} models from ${loaded.modelsUrl}`);
+	}
+
+	persistCatalogSnapshot(context, loaded, store);
+}
+
+/** Fire-and-forget catalog fetch — never await from startup, login, or refreshModels. */
+function scheduleCatalogLoad(
+	pi: ExtensionAPI,
+	context: CatalogContext,
+	connection: ResolvedConnection,
+	store?: ProviderModelsStore,
+): void {
+	if (isOfflineMode()) {
+		return;
+	}
+
+	void loadMappedModelsDeduped(connection.baseUrlInput, connection.apiKey, {
+		timeoutMs: STARTUP_MODELS_FETCH_TIMEOUT_MS,
+	})
+		.then((loaded) => applyLoadedCatalog(pi, context, connection, loaded, store))
+		.catch((error) => warnCatalogLoadFailure(context.providerName, error));
+}
+
+function createRefreshModelsHandler(options: CatalogContext & { pi: ExtensionAPI }) {
+	return async (context: RefreshModelsContext): Promise<PiProviderModel[]> => {
+		const stored = await context.store.read();
+		const models = stored?.models ? storedModelsToProviderModels(stored.models) : [];
+
+		if (!context.allowNetwork || context.signal?.aborted || isOfflineMode()) {
+			return models;
+		}
+
+		const connection = resolveConnectionForRefresh(options.agentDir, options.providerId, context.credential);
+		if (!connection) {
+			return models;
+		}
+
+		scheduleCatalogLoad(options.pi, options, connection, context.store);
+		return models;
+	};
+}
+
+function createOAuthHandlers(options: CatalogContext & { pi: ExtensionAPI }) {
 	const { pi, agentDir, providerId, providerName, defaultBaseUrl } = options;
 
 	return {
 		name: providerName,
 
 		async login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
-			let promptDefaultBaseUrl = resolveDefaultBaseUrl(agentDir, providerId) || defaultBaseUrl;
-			let validationAttempts = 0;
+			const promptDefaultBaseUrl = resolveDefaultBaseUrl(agentDir, providerId) || defaultBaseUrl;
+			const { baseUrlInput, apiKey } = await promptConnection(callbacks, {
+				baseUrl: promptDefaultBaseUrl,
+			});
 
-			while (true) {
-				const { baseUrlInput, apiKey } = await promptConnection(callbacks, {
-					baseUrl: promptDefaultBaseUrl,
-				});
-
-				callbacks.onProgress?.("Validating credentials via models endpoint...");
-				try {
-					const result = await configureAndRegister({
-						pi,
-						agentDir,
+			try {
+				saveConfigFile(
+					agentDir,
+					{
+						baseUrl: baseUrlInput,
 						providerId,
 						providerName,
-						baseUrlInput,
-						apiKey,
-						defaultBaseUrl,
-					});
-
-					if (result.modelCount === 0) {
-						callbacks.onProgress?.(
-							"Login succeeded, but no models are available for this API key. Check key permissions on LLMGates.",
-						);
-					}
-
-					logInfo(`login ok: registered ${result.modelCount} models from ${result.modelsUrl}`);
-					return buildOAuthCredentials(baseUrlInput, apiKey);
-				} catch (error) {
-					validationAttempts += 1;
-					const message = error instanceof Error ? error.message : String(error);
-					logWarn(`login validation failed: ${message}`);
-					if (error instanceof ConfigPersistenceError) {
-						callbacks.onProgress?.(message);
-						throw error;
-					}
-					if (validationAttempts >= MAX_LOGIN_VALIDATION_ATTEMPTS) {
-						const limitMessage = `Login failed after ${MAX_LOGIN_VALIDATION_ATTEMPTS} attempts. Last error: ${message}`;
-						callbacks.onProgress?.(limitMessage);
-						throw new Error(limitMessage, { cause: error });
-					}
-					callbacks.onProgress?.(
-						`Login validation failed (${validationAttempts}/${MAX_LOGIN_VALIDATION_ATTEMPTS}): ${message}\nPlease re-enter base URL and API key.`,
-					);
-					promptDefaultBaseUrl = baseUrlInput || promptDefaultBaseUrl;
-				}
+					},
+					{ omitApiKey: true },
+				);
+			} catch (error) {
+				throw new ConfigPersistenceError(error);
 			}
+
+			const endpoints = resolveEndpoints(baseUrlInput);
+			const connection: ResolvedConnection = {
+				baseUrlInput,
+				apiKey,
+				inferenceBaseUrl: endpoints.inferenceBaseUrl,
+				modelsUrl: endpoints.modelsUrl,
+			};
+
+			registerProvider(pi, {
+				providerId,
+				providerName,
+				baseUrlInput,
+				apiKey,
+				defaultBaseUrl: baseUrlInput || defaultBaseUrl,
+				agentDir,
+			});
+
+			scheduleCatalogLoad(pi, options, connection);
+			callbacks.onProgress?.("Login saved. Loading model catalog in background…");
+			return buildOAuthCredentials(baseUrlInput, apiKey);
 		},
 
 		async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
@@ -265,17 +318,16 @@ function registerProvider(
 	const { providerId, providerName, baseUrlInput, apiKey, models, defaultBaseUrl, agentDir } = options;
 
 	const endpoints = resolveEndpoints(baseUrlInput || defaultBaseUrl);
-	const oauth = createOAuthHandlers({
-		pi,
+	const catalogContext: CatalogContext = {
 		agentDir,
 		providerId,
 		providerName,
 		defaultBaseUrl,
-	});
+	};
+	const oauth = createOAuthHandlers({ pi, ...catalogContext });
 
 	pi.unregisterProvider(providerId);
 
-	// Default api for provider-level fallback; each model carries its own api.
 	const defaultApi = models?.[0]?.api ?? "openai-responses";
 
 	pi.registerProvider(providerId, {
@@ -284,25 +336,34 @@ function registerProvider(
 		api: defaultApi,
 		authHeader: true,
 		oauth,
+		refreshModels: createRefreshModelsHandler({ pi, ...catalogContext }),
 		...(apiKey ? { apiKey } : {}),
 		...(models && models.length > 0 ? { models } : {}),
 	});
 }
 
-export default async function (pi: ExtensionAPI): Promise<void> {
+export default function (pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
 	const identity = resolveIdentity(agentDir);
 	const defaultBaseUrl = resolveDefaultBaseUrl(agentDir, identity.providerId);
+	const connection = resolveConnection(agentDir, identity.providerId);
+
+	const catalogContext: CatalogContext = {
+		agentDir,
+		providerId: identity.providerId,
+		providerName: identity.providerName,
+		defaultBaseUrl,
+	};
 
 	registerProvider(pi, {
 		providerId: identity.providerId,
 		providerName: identity.providerName,
-		baseUrlInput: defaultBaseUrl,
+		baseUrlInput: connection?.baseUrlInput ?? defaultBaseUrl,
+		apiKey: connection && !hasLoginCredential(agentDir, identity.providerId) ? connection.apiKey : undefined,
 		defaultBaseUrl,
 		agentDir,
 	});
 
-	const connection = resolveConnection(agentDir, identity.providerId);
 	if (!connection) {
 		logInfo(
 			`not configured yet. Use /login ${identity.providerName} or /login ${identity.providerId}. ` +
@@ -312,26 +373,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		return;
 	}
 
-	try {
-		const loaded = await loadMappedModels(connection.baseUrlInput, connection.apiKey);
-		const hasStoredLogin = hasLoginCredential(agentDir, identity.providerId);
-		registerProvider(pi, {
-			providerId: identity.providerId,
-			providerName: identity.providerName,
-			baseUrlInput: connection.baseUrlInput,
-			apiKey: hasStoredLogin ? undefined : connection.apiKey,
-			models: loaded.models,
-			defaultBaseUrl,
-			agentDir,
-		});
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		if (isUnauthorizedModelsError(error)) {
-			logWarn(`models request unauthorized (${message}). Use /login ${identity.providerName} to reconfigure.`);
-		} else {
-			logWarn(
-				`failed to load models (${message}). Use /login ${identity.providerName} or check ${CONFIG_FILE_NAME} / LLMGATES_* env vars.`,
-			);
-		}
-	}
+	pi.on("session_start", () => {
+		scheduleCatalogLoad(pi, catalogContext, connection);
+	});
+
+	scheduleCatalogLoad(pi, catalogContext, connection);
 }

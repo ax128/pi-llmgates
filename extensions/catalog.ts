@@ -2,6 +2,7 @@
  * Pure gateway catalog helpers (no pi-coding-agent import — safe for fast unit tests).
  */
 
+import type { Api, Model } from "@earendil-works/pi-ai";
 import packageJson from "../package.json" with { type: "json" };
 
 export type ThinkingLevelMap = Partial<
@@ -18,12 +19,17 @@ export const PACKAGE_VERSION = packageJson.version;
 export const USER_AGENT = `pi-llmgates-provider/${PACKAGE_VERSION}`;
 export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
+/** Background / refresh fetches — aligned with pi model selector (15s). */
+export const STARTUP_MODELS_FETCH_TIMEOUT_MS = 15_000;
+
 export const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 export const DEFAULT_MAX_TOKENS = 16384;
 export const DEFAULT_CONTEXT_WINDOW = 128000;
 
 const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
-const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+/** Plugin fallback when gateway omits supported_reasoning_levels (off + 低/中/高). */
+export const DEFAULT_PI_REASONING_EFFORTS = ["none", "low", "medium", "high"] as const;
 
 /** LLMGates tags for image/video generation — not selectable in pi coding agent. */
 const GENERATION_CAPABILITY_TAGS = new Set([
@@ -227,20 +233,7 @@ export function inferReasoningEfforts(model: GatewayModel): string[] {
 	if (explicit.length > 0) {
 		return explicit;
 	}
-
-	const id = gatewayModelId(model).toLowerCase();
-	const provider = (model.provider_id ?? "").trim().toLowerCase();
-	const endpoint = resolveInferenceEndpoint(model);
-
-	if (provider === "anthropic" || id.includes("claude")) {
-		return [...REASONING_EFFORT_LEVELS];
-	}
-
-	if (endpoint === "responses" && (provider === "openai" || /^gpt-5|^o[0-9]/.test(id))) {
-		return [...REASONING_EFFORT_LEVELS];
-	}
-
-	return [];
+	return [...DEFAULT_PI_REASONING_EFFORTS];
 }
 
 export function buildThinkingLevelMap(efforts: string[]): ThinkingLevelMap | undefined {
@@ -406,20 +399,33 @@ export function formatCreditsMessage(snapshot: CreditsSnapshot): string {
 
 export async function fetchWithTimeout(
 	url: string,
-	init: RequestInit,
+	init: RequestInit = {},
 	timeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
 ): Promise<Response> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	const externalSignal = init.signal;
+	const onExternalAbort = (): void => controller.abort();
+	if (externalSignal) {
+		if (externalSignal.aborted) {
+			clearTimeout(timer);
+			throw new DOMException("The operation was aborted.", "AbortError");
+		}
+		externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+	}
 	try {
 		return await fetch(url, { ...init, signal: controller.signal });
 	} catch (error) {
 		if (error instanceof Error && error.name === "AbortError") {
+			if (externalSignal?.aborted) {
+				throw error;
+			}
 			throw new Error(`request timed out after ${timeoutMs}ms: ${url}`);
 		}
 		throw error;
 	} finally {
 		clearTimeout(timer);
+		externalSignal?.removeEventListener("abort", onExternalAbort);
 	}
 }
 
@@ -437,4 +443,35 @@ export function parseGatewayModelsPayload(payload: unknown): GatewayModel[] {
 		}
 	}
 	return [];
+}
+
+export function isOfflineMode(): boolean {
+	const value = process.env.PI_OFFLINE?.trim().toLowerCase();
+	return value === "1" || value === "true" || value === "yes";
+}
+
+export function providerModelsToStoredModels(
+	providerId: string,
+	models: PiProviderModel[],
+	inferenceBaseUrl: string,
+): Model<Api>[] {
+	return models.map((model) => ({
+		...model,
+		provider: providerId,
+		baseUrl: inferenceBaseUrl,
+	}));
+}
+
+export function storedModelsToProviderModels(models: readonly Model<Api>[]): PiProviderModel[] {
+	return models.map(({ id, name, api, reasoning, thinkingLevelMap, input, cost, contextWindow, maxTokens }) => ({
+		id,
+		name,
+		api: api as PiApiType,
+		reasoning,
+		thinkingLevelMap,
+		input,
+		cost,
+		contextWindow,
+		maxTokens,
+	}));
 }

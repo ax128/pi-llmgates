@@ -1,15 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	defaultInferenceEndpoint,
 	formatCreditsMessage,
 	inferReasoningEfforts,
+	isOfflineMode,
 	isPiSelectableModel,
 	isUnauthorizedModelsError,
 	ModelsHttpError,
 	normalizeGatewayBaseUrl,
+	providerModelsToStoredModels,
 	resolveCreditsUrl,
 	resolveEndpoints,
 	resolveInferenceEndpoint,
+	storedModelsToProviderModels,
 	toPiApiType,
 	toPiModel,
 } from "../extensions/catalog.js";
@@ -106,14 +109,30 @@ describe("toPiModel", () => {
 		expect(model?.reasoning).toBe(true);
 	});
 
-	it("infers anthropic reasoning levels including minimal and xhigh", () => {
+	it("falls back to off + low/medium/high when gateway omits reasoning levels", () => {
 		const efforts = inferReasoningEfforts({
 			id: "claude-sonnet-4-6",
 			provider_id: "anthropic",
 			web_chat_endpoint: "messages",
 		});
 
-		expect(efforts).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"]);
+		expect(efforts).toEqual(["none", "low", "medium", "high"]);
+	});
+
+	it("maps grok with empty gateway levels to plugin fallback thinking map", () => {
+		const model = toPiModel({
+			id: "grok-4.5",
+			provider_id: "xai",
+			web_chat_endpoint: "responses",
+			supported_reasoning_levels: [],
+		});
+
+		expect(model?.reasoning).toBe(true);
+		expect(model?.thinkingLevelMap?.off).toBe("none");
+		expect(model?.thinkingLevelMap?.low).toBe("low");
+		expect(model?.thinkingLevelMap?.medium).toBe("medium");
+		expect(model?.thinkingLevelMap?.high).toBe("high");
+		expect(model?.thinkingLevelMap?.xhigh).toBeNull();
 	});
 
 	it("skips hidden models", () => {
@@ -157,6 +176,28 @@ describe("toPiModel", () => {
 		expect(model?.thinkingLevelMap?.off).toBe("none");
 		expect(model?.thinkingLevelMap?.medium).toBeNull();
 	});
+
+	it("prefers full gateway catalog over plugin fallback", () => {
+		const model = toPiModel({
+			id: "gpt-5.6-sol",
+			provider_id: "openai",
+			web_chat_endpoint: "chat_completions",
+			supported_reasoning_levels: [
+				{ effort: "none" },
+				{ effort: "minimal" },
+				{ effort: "low" },
+				{ effort: "medium" },
+				{ effort: "high" },
+				{ effort: "xhigh" },
+				{ effort: "max" },
+				{ effort: "ultra" },
+			],
+		});
+
+		expect(model?.thinkingLevelMap?.minimal).toBe("minimal");
+		expect(model?.thinkingLevelMap?.xhigh).toBe("xhigh");
+		expect(model?.thinkingLevelMap?.ultra).toBe("ultra");
+	});
 });
 
 describe("auth errors", () => {
@@ -193,5 +234,66 @@ describe("credits helpers", () => {
 		expect(message).toContain("Available: 55.34 USD");
 		expect(message).toContain("wallet 10.34");
 		expect(message).toContain("subscription used 10.00 / 50.00 (20%)");
+	});
+});
+
+describe("isOfflineMode", () => {
+	const previous = process.env.PI_OFFLINE;
+
+	afterEach(() => {
+		if (previous === undefined) {
+			delete process.env.PI_OFFLINE;
+		} else {
+			process.env.PI_OFFLINE = previous;
+		}
+	});
+
+	it("treats PI_OFFLINE=1/true/yes as offline", () => {
+		process.env.PI_OFFLINE = "1";
+		expect(isOfflineMode()).toBe(true);
+		process.env.PI_OFFLINE = "true";
+		expect(isOfflineMode()).toBe(true);
+		process.env.PI_OFFLINE = "yes";
+		expect(isOfflineMode()).toBe(true);
+	});
+
+	it("is false when unset", () => {
+		delete process.env.PI_OFFLINE;
+		expect(isOfflineMode()).toBe(false);
+	});
+});
+
+describe("model catalog store roundtrip", () => {
+	it("preserves provider model fields through store conversion", () => {
+		const models = providerModelsToStoredModels(
+			"llmgates",
+			[
+				{
+					id: "gpt-test",
+					name: "GPT Test",
+					reasoning: true,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128000,
+					maxTokens: 8192,
+					api: "openai-responses",
+				},
+			],
+			"https://apicn.llmgates.com/v1",
+		);
+
+		expect(models[0]?.provider).toBe("llmgates");
+		expect(models[0]?.baseUrl).toBe("https://apicn.llmgates.com/v1");
+
+		expect(storedModelsToProviderModels(models)[0]).toEqual({
+			id: "gpt-test",
+			name: "GPT Test",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 8192,
+			api: "openai-responses",
+		});
 	});
 });
