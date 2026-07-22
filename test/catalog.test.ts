@@ -8,6 +8,8 @@ import {
 	isUnauthorizedModelsError,
 	ModelsHttpError,
 	normalizeGatewayBaseUrl,
+	parseCreditsPayload,
+	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
 	resolveCreditsUrl,
 	resolveEndpoints,
@@ -303,5 +305,47 @@ describe("model catalog store roundtrip", () => {
 			maxTokens: 8192,
 			api: "openai-responses",
 		});
+	});
+});
+
+describe("parseGatewayModelsPayload strict", () => {
+	it("accepts empty arrays in all supported envelopes", () => {
+		expect(parseGatewayModelsPayload([])).toEqual([]);
+		expect(parseGatewayModelsPayload({ data: [] })).toEqual([]);
+		expect(parseGatewayModelsPayload({ models: [] })).toEqual([]);
+	});
+
+	it("rejects null, primitives, and missing arrays", () => {
+		expect(() => parseGatewayModelsPayload(null)).toThrow(/catalog/i);
+		expect(() => parseGatewayModelsPayload("x")).toThrow(/catalog/i);
+		expect(() => parseGatewayModelsPayload({})).toThrow(/catalog/i);
+		expect(() => parseGatewayModelsPayload({ data: null })).toThrow(/catalog/i);
+	});
+
+	it("rejects non-object array members", () => {
+		expect(() => parseGatewayModelsPayload([null, "x", 1])).toThrow(/member/i);
+	});
+
+	it("filters unsafe optional fields without throwing", () => {
+		const models = parseGatewayModelsPayload([
+			{
+				id: "safe",
+				name: "Safe",
+				context_window: "not-a-number",
+				capability_tags: "nope",
+				input_modalities: { bad: true },
+			},
+		]);
+		const mapped = models.map(toPiModel).filter(Boolean);
+		expect(mapped).toHaveLength(1);
+		expect(mapped[0]!.id).toBe("safe");
+	});
+});
+
+describe("parseCreditsPayload strict", () => {
+	it("accepts plain objects and rejects arrays/null", () => {
+		expect(parseCreditsPayload({ balance: 1 })).toMatchObject({ balance: 1 });
+		expect(() => parseCreditsPayload([])).toThrow(/balance/i);
+		expect(() => parseCreditsPayload(null)).toThrow(/balance/i);
 	});
 });

@@ -163,8 +163,21 @@ export function gatewayModelId(model: GatewayModel): string {
 	return (model.slug ?? model.id ?? "").trim();
 }
 
+function asStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const out: string[] = [];
+	for (const item of value) {
+		if (typeof item === "string" && item.trim()) {
+			out.push(item.trim());
+		}
+	}
+	return out;
+}
+
 export function isPiSelectableModel(model: GatewayModel): boolean {
-	const tags = (model.capability_tags ?? []).map((tag) => tag.trim().toLowerCase()).filter(Boolean);
+	const tags = asStringArray(model.capability_tags).map((tag) => tag.toLowerCase());
 	if (tags.length === 0) {
 		return true;
 	}
@@ -211,10 +224,15 @@ export function toPiApiType(endpoint: string, providerId: string): PiApiType {
 }
 
 export function extractReasoningEfforts(model: GatewayModel): string[] {
-	const raw = model.supported_reasoning_levels ?? [];
+	const raw = Array.isArray(model.supported_reasoning_levels) ? model.supported_reasoning_levels : [];
 	const efforts: string[] = [];
 	for (const entry of raw) {
-		const effort = typeof entry === "string" ? entry : typeof entry?.effort === "string" ? entry.effort : "";
+		const effort =
+			typeof entry === "string"
+				? entry
+				: entry && typeof entry === "object" && typeof (entry as { effort?: unknown }).effort === "string"
+					? (entry as { effort: string }).effort
+					: "";
 		const normalized = effort.trim().toLowerCase();
 		if (!normalized) continue;
 		if (!efforts.includes(normalized)) {
@@ -252,17 +270,20 @@ export function buildThinkingLevelMap(efforts: string[]): ThinkingLevelMap | und
 }
 
 export function buildInputModalities(model: GatewayModel): Array<"text" | "image"> {
-	const raw = model.input_modalities ?? [];
+	const raw = Array.isArray(model.input_modalities) ? model.input_modalities : [];
 	const input: Array<"text" | "image"> = [];
 	for (const modality of raw) {
-		const value = String(modality).trim().toLowerCase();
+		if (typeof modality !== "string") {
+			continue;
+		}
+		const value = modality.trim().toLowerCase();
 		if ((value === "text" || value === "image") && !input.includes(value)) {
 			input.push(value);
 		}
 	}
 
 	if (input.length === 0) {
-		const tags = (model.capability_tags ?? []).map((t) => t.toLowerCase());
+		const tags = asStringArray(model.capability_tags).map((t) => t.toLowerCase());
 		if (tags.some((t) => t === "vision" || t.includes("image"))) {
 			input.push("text", "image");
 		} else {
@@ -425,20 +446,76 @@ export async function fetchWithTimeout(
 	}
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 export function parseGatewayModelsPayload(payload: unknown): GatewayModel[] {
+	let list: unknown;
 	if (Array.isArray(payload)) {
-		return payload as GatewayModel[];
+		list = payload;
+	} else if (isPlainObject(payload) && Array.isArray(payload.data)) {
+		list = payload.data;
+	} else if (isPlainObject(payload) && Array.isArray(payload.models)) {
+		list = payload.models;
+	} else {
+		throw new Error("Invalid models catalog: expected array or object with data/models array");
 	}
-	if (payload && typeof payload === "object") {
-		const obj = payload as GatewayModelsResponse;
-		if (Array.isArray(obj.data)) {
-			return obj.data;
-		}
-		if (Array.isArray(obj.models)) {
-			return obj.models;
+
+	for (const [index, item] of (list as unknown[]).entries()) {
+		if (!isPlainObject(item)) {
+			throw new Error(`Invalid models catalog member at index ${index}`);
 		}
 	}
-	return [];
+	return list as GatewayModel[];
+}
+
+function optionalFiniteNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function optionalString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+	return typeof value === "boolean" ? value : undefined;
+}
+
+export function parseCreditsPayload(payload: unknown): CreditsSnapshot {
+	if (!isPlainObject(payload)) {
+		throw new Error("Invalid balance payload: expected object");
+	}
+
+	const snapshot: CreditsSnapshot = {};
+	const isActive = optionalBoolean(payload.is_active);
+	if (isActive !== undefined) {
+		snapshot.is_active = isActive;
+	}
+	const unit = optionalString(payload.unit);
+	if (unit !== undefined) {
+		snapshot.unit = unit;
+	}
+	const balance = optionalFiniteNumber(payload.balance);
+	if (balance !== undefined) {
+		snapshot.balance = balance;
+	}
+	for (const key of [
+		"remaining_usd",
+		"wallet_usd",
+		"bonus_usd",
+		"subscription_usd",
+		"subscription_total_usd",
+		"subscription_used_usd",
+	] as const) {
+		const raw = payload[key];
+		if (typeof raw === "string") {
+			snapshot[key] = raw;
+		} else if (typeof raw === "number" && Number.isFinite(raw)) {
+			snapshot[key] = String(raw);
+		}
+	}
+	return snapshot;
 }
 
 export function isOfflineMode(): boolean {
