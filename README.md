@@ -4,17 +4,104 @@ Pi provider extension for [LLMGates](https://llmgates.com) (TokenX gateway). Dis
 
 参考实现：[@router-for-me/pi-cliproxyapi-provider](https://pi.dev/packages/@router-for-me/pi-cliproxyapi-provider)
 
+**网关 base URL：** `https://apicn.llmgates.com/v1`  
+**API Key：** `sk-llmgates-...`
+
 ## 快速开始
 
+任选一种安装方式，然后登录即可使用：
+
 ```bash
+# 方式 A：npm（推荐）
 pi install npm:@llmgates_api/pi-llmgates-provider
+
+# 方式 B：git（跟踪 main）
+pi install git:github.com/ax128/pi-llmgates
+
 pi
 /login LLMGates
 ```
 
-- **国内 base URL**：`https://apicn.llmgates.com/v1`
-- **海外 base URL**：`https://api.llmgates.com/v1`
-- **API Key**：`sk-llmgates-...`
+## 安装
+
+需要 [pi](https://pi.dev)，Node **≥ 22.19**，`@earendil-works/pi-coding-agent` **≥ 0.80.9, < 0.82.0**。
+
+### npm 安装
+
+```bash
+# 安装最新版
+pi install npm:@llmgates_api/pi-llmgates-provider
+
+# 指定版本
+pi install npm:@llmgates_api/pi-llmgates-provider@0.1.1
+
+# 仅当前项目（不加则全局安装到 ~/.pi/agent/）
+pi install -l npm:@llmgates_api/pi-llmgates-provider
+```
+
+### git 安装
+
+```bash
+# 跟踪 main 分支
+pi install git:github.com/ax128/pi-llmgates
+
+# 固定到 tag / commit
+pi install git:github.com/ax128/pi-llmgates@0.1.1
+
+# SSH
+pi install git:git@github.com:ax128/pi-llmgates.git
+
+# 仅当前项目
+pi install -l git:github.com/ax128/pi-llmgates
+```
+
+### 本地开发 / 一次性运行
+
+```bash
+git clone https://github.com/ax128/pi-llmgates.git
+cd pi-llmgates
+npm install
+pi install .
+
+# 或单次试用，不写入全局配置
+pi -e git:github.com/ax128/pi-llmgates
+pi -e npm:@llmgates_api/pi-llmgates-provider
+```
+
+安装后执行 `/reload` 或重启 pi 使扩展生效。
+
+## 使用
+
+```bash
+pi
+/login LLMGates
+```
+
+菜单路径：`/login` → Sign in with an account → LLMGates
+
+| 字段 | 默认值 |
+| --- | --- |
+| base URL | `https://apicn.llmgates.com/v1` |
+| API key | 你的 `sk-llmgates-*` |
+
+登录成功后：
+
+- 模型立即注册可用
+- **API key** 存入 pi `auth.json`（OAuth 凭证）
+- **baseUrl**、`providerId`、`providerName` 写入 `~/.pi/agent/llmgates.json`（交互式登录不写 apiKey）
+
+凭证校验失败最多重试 5 次，之后中止登录。
+
+常用命令：
+
+| 命令 | 说明 |
+| --- | --- |
+| `/login LLMGates` | 配置 baseUrl + API key |
+| `/balance` | 查看钱包、赠金、订阅余额 |
+| `/model` | 选择已注册的 LLMGates 模型 |
+| `/reload` | 安装或更新插件后重载扩展 |
+
+重新配置：随时再跑 `/login LLMGates`。`/logout` 仅清除 `auth.json`；如需改 baseUrl 或 env，请编辑 `llmgates.json` 或环境变量。
 
 ## What it does
 
@@ -26,49 +113,11 @@ pi
 6. `/balance` — account wallet + subscription via `GET /v1/user/balance`
 7. TUI footer: elapsed time + TPS / token summary after each turn
 
-## Install
-
-```bash
-# npm (recommended)
-pi install npm:@llmgates_api/pi-llmgates-provider
-
-# local checkout
-pi install /absolute/path/to/pi-llmgates
-
-# one-off run
-pi -e /absolute/path/to/pi-llmgates
-```
-
-Requires [pi](https://pi.dev) with Node **≥ 22.19** and `@earendil-works/pi-coding-agent` **≥ 0.80.9, < 0.82.0**.
-
-## Login
-
-```
-/login LLMGates
-```
-
-Menu path: `/login` → Sign in with an account → LLMGates
-
-| Field | Default |
-| --- | --- |
-| base URL | `https://apicn.llmgates.com/v1` (CN) |
-| API key | your `sk-llmgates-*` key |
-
-On success:
-
-- Models registered immediately
-- **API key** stored in pi `auth.json` (OAuth credentials)
-- **baseUrl**, `providerId`, `providerName` saved to `~/.pi/agent/llmgates.json` (no API key written on interactive login)
-
-Validation retries up to 5 times on credential errors, then login aborts.
-
-Re-run `/login LLMGates` anytime to reconfigure. `/logout` clears `auth.json` only — edit or remove `llmgates.json` / env vars if needed.
-
 ## Security
 
 - All HTTP requests go only to the **base URL you configure** (`/v1/models`, `/v1/user/balance`, and inference on the same origin). There is no third-party telemetry.
 - Prefer `/login` or `LLMGATES_API_KEY` over storing keys in `llmgates.json`. If you use the file, it is written with mode `0600`.
-- You are responsible for the base URL you enter — only use trusted LLMGates endpoints.
+- Default gateway: `https://apicn.llmgates.com/v1`.
 
 ## Non-interactive config
 
@@ -76,7 +125,7 @@ For CI or headless setups, use env vars (recommended) or `~/.pi/agent/llmgates.j
 
 ```json
 {
-  "baseUrl": "https://api.llmgates.com/v1",
+  "baseUrl": "https://apicn.llmgates.com/v1",
   "providerId": "llmgates",
   "providerName": "LLMGates"
 }
@@ -86,7 +135,7 @@ Optional `apiKey` in the file is supported but not written by `/login`:
 
 ```json
 {
-  "baseUrl": "https://api.llmgates.com/v1",
+  "baseUrl": "https://apicn.llmgates.com/v1",
   "apiKey": "sk-llmgates-...",
   "providerId": "llmgates",
   "providerName": "LLMGates"
@@ -101,14 +150,6 @@ Optional `apiKey` in the file is supported but not written by `/login`:
 | `LLMGATES_PROVIDER_NAME` | `providerName` |
 
 Resolution: env → `llmgates.json` → `/login` auth.json → default baseUrl.
-
-## Commands
-
-| Command | Description |
-| --- | --- |
-| `/login LLMGates` | Configure baseUrl + API key |
-| `/balance` | Show wallet, bonus, subscription remaining |
-| `/model` | Select from registered LLMGates models |
 
 ## Model mapping
 
@@ -136,9 +177,9 @@ Cost is reported as zero (billing on LLMGates).
 
 | Symptom | Fix |
 | --- | --- |
+| Extension not loaded after install | `/reload` or restart pi |
 | No models after install | `/login LLMGates`; check key `allowed_models` on LLMGates |
 | `401` / `403` on startup | Re-login or update `LLMGATES_API_KEY` |
-| Wrong region / latency | CN: `apicn.llmgates.com/v1` · Overseas: `api.llmgates.com/v1` |
 | Image/video models missing | By design — generation models are filtered by `capability_tags` |
 | Unexpected generation model in list | Backend must tag models with `image_generation`, `video_*`, etc.; untagged models are kept |
 

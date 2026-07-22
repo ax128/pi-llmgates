@@ -90,9 +90,7 @@ async function promptConnection(
 	callbacks: OAuthLoginCallbacks,
 	defaults: { baseUrl: string },
 ): Promise<{ baseUrlInput: string; apiKey: string }> {
-	callbacks.onProgress?.(
-		"Configure LLMGates. Default CN: https://apicn.llmgates.com/v1 · Overseas: https://api.llmgates.com/v1",
-	);
+	callbacks.onProgress?.("Configure LLMGates. Default base URL: https://apicn.llmgates.com/v1");
 
 	const baseUrlRaw = await callbacks.onPrompt({
 		message: `LLMGates base URL [${defaults.baseUrl}]:`,

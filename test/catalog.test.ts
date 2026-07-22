@@ -21,13 +21,13 @@ describe("resolveEndpoints", () => {
 	});
 
 	it("keeps explicit /v1 base", () => {
-		const result = resolveEndpoints("https://api.llmgates.com/v1");
-		expect(result.inferenceBaseUrl).toBe("https://api.llmgates.com/v1");
+		const result = resolveEndpoints("https://apicn.llmgates.com/v1");
+		expect(result.inferenceBaseUrl).toBe("https://apicn.llmgates.com/v1");
 	});
 
 	it("appends /v1 when missing", () => {
-		const result = resolveEndpoints("https://api.llmgates.com");
-		expect(result.inferenceBaseUrl).toBe("https://api.llmgates.com/v1");
+		const result = resolveEndpoints("https://apicn.llmgates.com");
+		expect(result.inferenceBaseUrl).toBe("https://apicn.llmgates.com/v1");
 	});
 });
 
