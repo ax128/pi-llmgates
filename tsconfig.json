@@ -9,5 +9,5 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["extensions/**/*.ts", "package.json"]
+  "include": ["extensions/**/*.ts", "test/**/*.ts", "package.json"]
 }
