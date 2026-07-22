@@ -24,7 +24,9 @@ pi
 
 ## 安装
 
-需要 [pi](https://pi.dev)，Node **≥ 22.19**，`@earendil-works/pi-coding-agent` **≥ 0.80.9, < 0.82.0**。
+需要 [pi](https://pi.dev)，Node **≥ 22.19**，`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.82.0**（基线 0.81.1）。
+
+本扩展使用 **native Provider** API，**不支持 pi 0.80.x**。
 
 ### npm 安装
 
@@ -90,7 +92,7 @@ pi
 - **API key** 存入 pi `auth.json`（OAuth 凭证）
 - **baseUrl**、`providerId`、`providerName` 写入 `~/.pi/agent/llmgates.json`（交互式登录不写 apiKey）
 
-凭证校验失败最多重试 5 次，之后中止登录。
+凭证校验失败最多重试 5 次（含非法 URL、网络/HTTP/JSON 错误），之后中止登录。远程 HTTP 会被拒绝，可在 5 次内改正为 HTTPS 或 loopback HTTP。
 
 常用命令：
 
@@ -101,7 +103,7 @@ pi
 | `/model` | 选择已注册的 LLMGates 模型 |
 | `/reload` | 安装或更新插件后重载扩展 |
 
-重新配置：随时再跑 `/login LLMGates`。`/logout` 仅清除 `auth.json`；如需改 baseUrl 或 env，请编辑 `llmgates.json` 或环境变量。
+重新配置：随时再跑 `/login LLMGates`。`/logout` 清除 `auth.json` 登录凭证后，env/`llmgates.json` ambient 配置才会重新生效。交互式登录**不会**写入新的 API Key，也**不会**删除文件中已有的 ambient `apiKey`。
 
 ## What it does
 
@@ -115,9 +117,21 @@ pi
 
 ## Security
 
-- All HTTP requests go only to the **base URL you configure** (`/v1/models`, `/v1/user/balance`, and inference on the same origin). There is no third-party telemetry.
-- Prefer `/login` or `LLMGATES_API_KEY` over storing keys in `llmgates.json`. If you use the file, it is written with mode `0600`.
+- API keys are treated as **literal strings**. Characters like `!`, `$`, `${...}`, `$$`, `$!` are never interpreted as shell commands or env expansions by this provider.
+- Connection ownership is atomic:
+  1. Saved OAuth login credential (whole connection)
+  2. else `LLMGATES_API_KEY` + optional `LLMGATES_BASE_URL` (default HTTPS if URL omitted)
+  3. else `llmgates.json` `apiKey` + optional file `baseUrl` (default HTTPS if URL omitted)
+  - Env key never borrows file URL; file key never borrows env URL; OAuth never borrows env/file URL.
+- Remote gateways must use **HTTPS**. HTTP is allowed only for loopback (`localhost`, `127.0.0.0/8`, `::1`, IPv4-mapped loopback). No insecure override env.
+- Network calls use a full-operation timeout, 5 MiB body limit, and same-origin manual redirects.
+- Startup is cache-first; model refresh runs in the background after session start and does not block availability. Failed refreshes keep the previous catalog.
+- Login cache-write failure does not undo login: session uses the validated catalog and keeps the old disk cache.
+- Prefer `/login` or `LLMGATES_API_KEY` over storing keys in `llmgates.json`. Config writes use mode `0600` and atomic rename.
+- **Unsupported / unsafe:** configuring this provider’s `apiKey` via `~/.pi/agent/models.json` overlay (pi may re-enable config-value syntax). Do not do that.
+- **Legacy migration:** if `auth.json` has `type: "api_key"` for this provider, registration is **fail-closed**. Remove the entry or `/logout`, then `/reload`. The extension does not auto-migrate or rewrite `auth.json`.
 - Default gateway: `https://apicn.llmgates.com/v1`.
+- `PI_OFFLINE=1` skips network catalog refresh.
 
 ## Non-interactive config
 
@@ -149,7 +163,11 @@ Optional `apiKey` in the file is supported but not written by `/login`:
 | `LLMGATES_PROVIDER_ID` | `providerId` |
 | `LLMGATES_PROVIDER_NAME` | `providerName` |
 
-Resolution: env → `llmgates.json` → `/login` auth.json → default baseUrl.
+Resolution (no cross-source borrowing):
+
+1. OAuth login credential in `auth.json` (if present)
+2. else env key + env URL (or official default URL)
+3. else file key + file URL (or official default URL)
 
 ## Model mapping
 

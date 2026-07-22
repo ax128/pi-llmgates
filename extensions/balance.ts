@@ -1,42 +1,88 @@
 /**
- * /balance — read-only account credits via GET /v1/user/balance.
+ * /balance command — uses the same canonical auth as inference.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { formatCreditsMessage, parseCreditsPayload, resolveCreditsUrl, USER_AGENT } from "./catalog.js";
+import { resolveProviderIdentity } from "./connection.js";
 import {
-	fetchCreditsSnapshot,
-	formatCreditsMessage,
-	isUnauthorizedCreditsError,
-	resolveConnection,
-	resolveIdentity,
-} from "./lib.js";
+	BALANCE_REQUEST_TIMEOUT_MS,
+	isUnauthorizedStatus,
+	MAX_RESPONSE_BYTES,
+	requestLimitedJson,
+} from "./http.js";
 
-export function registerBalanceCommand(pi: ExtensionAPI, agentDir: string, providerId: string): void {
+export async function fetchBalanceMessage(options: {
+	getAuth: () => Promise<{ apiKey?: string; baseUrl?: string } | undefined>;
+	signal?: AbortSignal;
+	legacyBlocked?: boolean;
+}): Promise<string> {
+	if (options.legacyBlocked) {
+		throw new Error(
+			'LLMGates is blocked by a legacy auth.json type "api_key" entry. Remove it or /logout, then /reload.',
+		);
+	}
+
+	const auth = await options.getAuth();
+	const apiKey = auth?.apiKey?.trim();
+	const baseUrl = auth?.baseUrl?.trim();
+	if (!apiKey || !baseUrl) {
+		throw new Error("LLMGates is not configured. Use /login or set LLMGATES_API_KEY.");
+	}
+
+	const balanceUrl = resolveCreditsUrl(baseUrl);
+	const payload = await requestLimitedJson({
+		url: balanceUrl,
+		headers: {
+			Authorization: `Bearer ${apiKey}`,
+			Accept: "application/json",
+			"User-Agent": USER_AGENT,
+		},
+		signal: options.signal,
+		timeoutMs: BALANCE_REQUEST_TIMEOUT_MS,
+		maxBytes: MAX_RESPONSE_BYTES,
+		operation: "balance",
+	});
+
+	const snapshot = parseCreditsPayload(payload);
+	return formatCreditsMessage(snapshot);
+}
+
+export function registerBalanceCommand(
+	pi: ExtensionAPI,
+	providerId: string,
+	options?: { legacyBlocked?: boolean },
+): void {
 	pi.registerCommand("balance", {
-		description: "Show LLMGates account balance (wallet + bonus + subscription).",
+		description: "Show LLMGates account balance",
 		handler: async (args, ctx) => {
 			if (args.trim()) {
 				ctx.ui.notify("Usage: /balance", "error");
 				return;
 			}
-
-			const connection = resolveConnection(agentDir, providerId);
-			if (!connection) {
-				ctx.ui.notify("LLMGates is not configured. Use /login LLMGates first.", "warning");
-				return;
-			}
-
 			try {
-				const snapshot = await fetchCreditsSnapshot(connection.inferenceBaseUrl, connection.apiKey);
-				ctx.ui.notify(formatCreditsMessage(snapshot), "info");
+				const message = await fetchBalanceMessage({
+					legacyBlocked: options?.legacyBlocked,
+					getAuth: async () => {
+						const result = await ctx.modelRegistry.getProviderAuth(providerId);
+						if (!result) {
+							return undefined;
+						}
+						return {
+							apiKey: result.auth.apiKey,
+							baseUrl: result.auth.baseUrl,
+						};
+					},
+				});
+				ctx.ui.notify(message, "info");
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				if (isUnauthorizedCreditsError(error)) {
-					ctx.ui.notify("LLMGates API key unauthorized. Use /login LLMGates to reconfigure.", "error");
+				if (isUnauthorizedStatus(error)) {
+					ctx.ui.notify("Balance request unauthorized. Try /login again.", "error");
 					return;
 				}
-				ctx.ui.notify(`Failed to fetch balance: ${message}`, "error");
+				const text = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(text, "error");
 			}
 		},
 	});
@@ -44,6 +90,10 @@ export function registerBalanceCommand(pi: ExtensionAPI, agentDir: string, provi
 
 export default function (pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
-	const identity = resolveIdentity(agentDir);
-	registerBalanceCommand(pi, agentDir, identity.providerId);
+	try {
+		const identity = resolveProviderIdentity(agentDir);
+		registerBalanceCommand(pi, identity.providerId);
+	} catch (error) {
+		console.warn(`[pi-llmgates-provider] ${error instanceof Error ? error.message : String(error)}`);
+	}
 }

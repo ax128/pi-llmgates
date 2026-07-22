@@ -414,38 +414,6 @@ export function formatCreditsMessage(snapshot: CreditsSnapshot): string {
 	return parts.join(" · ");
 }
 
-export async function fetchWithTimeout(
-	url: string,
-	init: RequestInit = {},
-	timeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
-): Promise<Response> {
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), timeoutMs);
-	const externalSignal = init.signal;
-	const onExternalAbort = (): void => controller.abort();
-	if (externalSignal) {
-		if (externalSignal.aborted) {
-			clearTimeout(timer);
-			throw new DOMException("The operation was aborted.", "AbortError");
-		}
-		externalSignal.addEventListener("abort", onExternalAbort, { once: true });
-	}
-	try {
-		return await fetch(url, { ...init, signal: controller.signal });
-	} catch (error) {
-		if (error instanceof Error && error.name === "AbortError") {
-			if (externalSignal?.aborted) {
-				throw error;
-			}
-			throw new Error(`request timed out after ${timeoutMs}ms: ${url}`);
-		}
-		throw error;
-	} finally {
-		clearTimeout(timer);
-		externalSignal?.removeEventListener("abort", onExternalAbort);
-	}
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
