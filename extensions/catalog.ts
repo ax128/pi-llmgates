@@ -91,16 +91,12 @@ export interface CreditsSnapshot {
 	subscription_used_usd?: string;
 }
 
-/** Map legacy overseas hostname to the public default (apicn). */
+/** Trim user/base config; do not rewrite explicit gateway hostnames. */
 export function normalizeGatewayBaseUrl(baseUrl: string | undefined): string | undefined {
 	if (!baseUrl?.trim()) {
 		return undefined;
 	}
-	const trimmed = baseUrl.trim();
-	if (/^https?:\/\/api\.llmgates\.com(\/v1)?\/?$/i.test(trimmed) || /^api\.llmgates\.com(\/v1)?\/?$/i.test(trimmed)) {
-		return DEFAULT_BASE_URL;
-	}
-	return trimmed;
+	return baseUrl.trim();
 }
 
 export function firstNonEmpty(...values: Array<string | undefined | null>): string | undefined {

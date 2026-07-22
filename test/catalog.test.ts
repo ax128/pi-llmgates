@@ -18,19 +18,27 @@ import {
 } from "../extensions/catalog.js";
 
 describe("normalizeGatewayBaseUrl", () => {
-	it("maps legacy api.llmgates.com to apicn default", () => {
-		expect(normalizeGatewayBaseUrl("https://api.llmgates.com/v1")).toBe("https://apicn.llmgates.com/v1");
-		expect(normalizeGatewayBaseUrl("https://api.llmgates.com")).toBe("https://apicn.llmgates.com/v1");
-		expect(normalizeGatewayBaseUrl("api.llmgates.com")).toBe("https://apicn.llmgates.com/v1");
+	it("trims and preserves explicit gateway hosts", () => {
+		expect(normalizeGatewayBaseUrl("https://api.llmgates.com/v1")).toBe("https://api.llmgates.com/v1");
+		expect(normalizeGatewayBaseUrl("https://apicn.llmgates.com/v1")).toBe("https://apicn.llmgates.com/v1");
+		expect(normalizeGatewayBaseUrl("https://gateway.example.com/v1")).toBe("https://gateway.example.com/v1");
+		expect(normalizeGatewayBaseUrl("  https://api.llmgates.com/v1  ")).toBe("https://api.llmgates.com/v1");
 	});
 
-	it("keeps apicn and custom hosts unchanged", () => {
-		expect(normalizeGatewayBaseUrl("https://apicn.llmgates.com/v1")).toBe("https://apicn.llmgates.com/v1");
+	it("returns undefined for empty input", () => {
+		expect(normalizeGatewayBaseUrl(undefined)).toBeUndefined();
+		expect(normalizeGatewayBaseUrl("   ")).toBeUndefined();
 	});
 });
 
 describe("resolveEndpoints", () => {
-	it("normalizes host-only to https with /v1", () => {
+	it("normalizes host-only api.llmgates.com to https with /v1", () => {
+		const result = resolveEndpoints("api.llmgates.com");
+		expect(result.inferenceBaseUrl).toBe("https://api.llmgates.com/v1");
+		expect(result.modelsUrl).toBe("https://api.llmgates.com/v1/models?client_version=pi");
+	});
+
+	it("normalizes host-only apicn to https with /v1", () => {
 		const result = resolveEndpoints("apicn.llmgates.com");
 		expect(result.inferenceBaseUrl).toBe("https://apicn.llmgates.com/v1");
 		expect(result.modelsUrl).toBe("https://apicn.llmgates.com/v1/models?client_version=pi");

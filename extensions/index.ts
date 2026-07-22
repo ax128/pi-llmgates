@@ -32,6 +32,7 @@ import {
 	normalizeGatewayBaseUrl,
 	type PiProviderModel,
 	providerModelsToStoredModels,
+	readModelsStoreEntry,
 	resolveConnection,
 	resolveConnectionForRefresh,
 	resolveEndpoints,
@@ -42,6 +43,9 @@ import {
 	writeModelsStoreEntry,
 	type ResolvedConnection,
 } from "./lib.js";
+
+/** Background refresh when cache is older than this (ms). */
+const CATALOG_BACKGROUND_REFRESH_MS = 5 * 60 * 1000;
 
 class ConfigPersistenceError extends Error {
 	constructor(cause: unknown) {
@@ -58,6 +62,9 @@ interface CatalogContext {
 	defaultBaseUrl: string;
 }
 
+const scheduledCatalogLoads = new Set<string>();
+const reportedCatalogFailures = new Set<string>();
+
 function logWarn(message: string): void {
 	console.warn(`[pi-llmgates-provider] ${message}`);
 }
@@ -66,9 +73,34 @@ function logInfo(message: string): void {
 	console.info(`[pi-llmgates-provider] ${message}`);
 }
 
+function catalogLoadKey(connection: ResolvedConnection): string {
+	return `${connection.baseUrlInput}\0${connection.apiKey}`;
+}
+
 function hasLoginCredential(agentDir: string, providerId: string): boolean {
 	try {
 		return Boolean(loadAuthConnection(agentDir, providerId)?.apiKey);
+	} catch {
+		return false;
+	}
+}
+
+function loadCachedProviderModels(agentDir: string, providerId: string): PiProviderModel[] {
+	try {
+		const stored = readModelsStoreEntry(agentDir, providerId);
+		return stored?.models?.length ? storedModelsToProviderModels(stored.models) : [];
+	} catch {
+		return [];
+	}
+}
+
+function isCatalogCacheFresh(agentDir: string, providerId: string): boolean {
+	try {
+		const stored = readModelsStoreEntry(agentDir, providerId);
+		if (!stored?.checkedAt || !stored.models?.length) {
+			return false;
+		}
+		return Date.now() - stored.checkedAt < CATALOG_BACKGROUND_REFRESH_MS;
 	} catch {
 		return false;
 	}
@@ -110,7 +142,9 @@ async function promptConnection(
 	callbacks: OAuthLoginCallbacks,
 	defaults: { baseUrl: string },
 ): Promise<{ baseUrlInput: string; apiKey: string }> {
-	callbacks.onProgress?.("Configure LLMGates. Default base URL: https://apicn.llmgates.com/v1");
+	callbacks.onProgress?.(
+		`Configure LLMGates. Press Enter for default (${DEFAULT_BASE_URL}) or enter another gateway base URL.`,
+	);
 
 	const baseUrlRaw = await callbacks.onPrompt({
 		message: `LLMGates base URL [${defaults.baseUrl}]:`,
@@ -136,8 +170,18 @@ async function promptConnection(
 	return { baseUrlInput, apiKey };
 }
 
-function warnCatalogLoadFailure(providerName: string, error: unknown): void {
+function warnCatalogLoadFailure(providerName: string, error: unknown, options?: { hasCache?: boolean }): void {
+	if (options?.hasCache) {
+		return;
+	}
+
 	const message = error instanceof Error ? error.message : String(error);
+	const failureKey = isUnauthorizedModelsError(error) ? "unauthorized" : message;
+	if (reportedCatalogFailures.has(failureKey)) {
+		return;
+	}
+	reportedCatalogFailures.add(failureKey);
+
 	if (isUnauthorizedModelsError(error)) {
 		logWarn(`models request unauthorized (${message}). Use /login ${providerName} to reconfigure.`);
 		return;
@@ -195,17 +239,32 @@ function scheduleCatalogLoad(
 	pi: ExtensionAPI,
 	context: CatalogContext,
 	connection: ResolvedConnection,
-	store?: ProviderModelsStore,
+	options?: { store?: ProviderModelsStore; force?: boolean },
 ): void {
 	if (isOfflineMode()) {
 		return;
 	}
 
+	if (!options?.force && isCatalogCacheFresh(context.agentDir, context.providerId)) {
+		return;
+	}
+
+	const key = catalogLoadKey(connection);
+	if (scheduledCatalogLoads.has(key)) {
+		return;
+	}
+	scheduledCatalogLoads.add(key);
+
+	const hasCache = loadCachedProviderModels(context.agentDir, context.providerId).length > 0;
+
 	void loadMappedModelsDeduped(connection.baseUrlInput, connection.apiKey, {
 		timeoutMs: STARTUP_MODELS_FETCH_TIMEOUT_MS,
 	})
-		.then((loaded) => applyLoadedCatalog(pi, context, connection, loaded, store))
-		.catch((error) => warnCatalogLoadFailure(context.providerName, error));
+		.then((loaded) => applyLoadedCatalog(pi, context, connection, loaded, options?.store))
+		.catch((error) => warnCatalogLoadFailure(context.providerName, error, { hasCache }))
+		.finally(() => {
+			scheduledCatalogLoads.delete(key);
+		});
 }
 
 function createRefreshModelsHandler(options: CatalogContext & { pi: ExtensionAPI }) {
@@ -222,7 +281,10 @@ function createRefreshModelsHandler(options: CatalogContext & { pi: ExtensionAPI
 			return models;
 		}
 
-		scheduleCatalogLoad(options.pi, options, connection, context.store);
+		scheduleCatalogLoad(options.pi, options, connection, {
+			store: context.store,
+			force: context.force,
+		});
 		return models;
 	};
 }
@@ -270,7 +332,7 @@ function createOAuthHandlers(options: CatalogContext & { pi: ExtensionAPI }) {
 				agentDir,
 			});
 
-			scheduleCatalogLoad(pi, options, connection);
+			scheduleCatalogLoad(pi, options, connection, { force: true });
 			callbacks.onProgress?.("Login saved. Loading model catalog in background…");
 			return buildOAuthCredentials(baseUrlInput, apiKey);
 		},
@@ -347,6 +409,7 @@ export default function (pi: ExtensionAPI): void {
 	const identity = resolveIdentity(agentDir);
 	const defaultBaseUrl = resolveDefaultBaseUrl(agentDir, identity.providerId);
 	const connection = resolveConnection(agentDir, identity.providerId);
+	const cachedModels = loadCachedProviderModels(agentDir, identity.providerId);
 
 	const catalogContext: CatalogContext = {
 		agentDir,
@@ -360,6 +423,7 @@ export default function (pi: ExtensionAPI): void {
 		providerName: identity.providerName,
 		baseUrlInput: connection?.baseUrlInput ?? defaultBaseUrl,
 		apiKey: connection && !hasLoginCredential(agentDir, identity.providerId) ? connection.apiKey : undefined,
+		models: cachedModels.length > 0 ? cachedModels : undefined,
 		defaultBaseUrl,
 		agentDir,
 	});
@@ -368,13 +432,15 @@ export default function (pi: ExtensionAPI): void {
 		logInfo(
 			`not configured yet. Use /login ${identity.providerName} or /login ${identity.providerId}. ` +
 				`Menu path: /login → Sign in with an account → ${identity.providerName}. ` +
-				`Or set ${CONFIG_FILE_NAME} / LLMGATES_API_KEY.`,
+				`Or set ${CONFIG_FILE_NAME} / LLMGATES_* env vars.`,
 		);
 		return;
 	}
 
-	pi.on("session_start", () => {
-		scheduleCatalogLoad(pi, catalogContext, connection);
+	pi.on("session_start", (event) => {
+		if (event.reason === "reload") {
+			scheduleCatalogLoad(pi, catalogContext, connection, { force: true });
+		}
 	});
 
 	scheduleCatalogLoad(pi, catalogContext, connection);

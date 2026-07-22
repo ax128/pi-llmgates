@@ -161,6 +161,28 @@ export function saveConfigFile(agentDir: string, config: LLMGatesConfigFile, opt
 	writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`, { mode: CONFIG_FILE_MODE });
 }
 
+export function readModelsStoreEntry(agentDir: string, providerId: string): PersistedModelsStoreEntry | null {
+	const storePath = join(agentDir, MODELS_STORE_FILE_NAME);
+	try {
+		const raw = readFileSync(storePath, "utf8");
+		const parsed: unknown = JSON.parse(raw);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return null;
+		}
+		const entry = (parsed as Record<string, PersistedModelsStoreEntry>)[providerId];
+		if (!entry || !Array.isArray(entry.models)) {
+			return null;
+		}
+		return entry;
+	} catch (error) {
+		const err = error as NodeJS.ErrnoException;
+		if (err.code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
 export function writeModelsStoreEntry(
 	agentDir: string,
 	providerId: string,
