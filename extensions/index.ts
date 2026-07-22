@@ -22,6 +22,7 @@ import {
 	loadAuthConnection,
 	loadConfigFile,
 	loadMappedModels,
+	normalizeGatewayBaseUrl,
 	type PiProviderModel,
 	resolveConnection,
 	resolveEndpoints,
@@ -83,7 +84,9 @@ function resolveDefaultBaseUrl(agentDir: string, providerId: string): string {
 		logWarn(`failed to read auth.json: ${err.message}`);
 	}
 
-	return firstNonEmpty(process.env.LLMGATES_BASE_URL, fileBaseUrl, authBaseUrl, DEFAULT_BASE_URL)!;
+	return normalizeGatewayBaseUrl(
+		firstNonEmpty(process.env.LLMGATES_BASE_URL, fileBaseUrl, authBaseUrl, DEFAULT_BASE_URL),
+	)!;
 }
 
 async function promptConnection(
@@ -94,7 +97,7 @@ async function promptConnection(
 
 	const baseUrlRaw = await callbacks.onPrompt({
 		message: `LLMGates base URL [${defaults.baseUrl}]:`,
-		placeholder: defaults.baseUrl,
+		placeholder: DEFAULT_BASE_URL,
 		allowEmpty: true,
 	});
 	const baseUrlInput = firstNonEmpty(baseUrlRaw, defaults.baseUrl)!;

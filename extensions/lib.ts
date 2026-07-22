@@ -17,6 +17,7 @@ import {
 	fetchWithTimeout,
 	firstNonEmpty,
 	ModelsHttpError,
+	normalizeGatewayBaseUrl,
 	parseGatewayModelsPayload,
 	type PiProviderModel,
 	resolveCreditsUrl,
@@ -46,6 +47,7 @@ export {
 	gatewayModelId,
 	inferReasoningEfforts,
 	isPiSelectableModel,
+	normalizeGatewayBaseUrl,
 	isUnauthorizedCreditsError,
 	isUnauthorizedHttpError,
 	isUnauthorizedModelsError,
@@ -171,7 +173,9 @@ export function resolveConnection(agentDir: string, providerId: string): Resolve
 		auth = null;
 	}
 
-	const baseUrlInput = firstNonEmpty(process.env.LLMGATES_BASE_URL, file.baseUrl, auth?.baseUrl, DEFAULT_BASE_URL)!;
+	const baseUrlInput = normalizeGatewayBaseUrl(
+		firstNonEmpty(process.env.LLMGATES_BASE_URL, file.baseUrl, auth?.baseUrl, DEFAULT_BASE_URL),
+	)!;
 	const apiKey = firstNonEmpty(process.env.LLMGATES_API_KEY, file.apiKey, auth?.apiKey);
 	if (!apiKey) {
 		return null;

@@ -6,12 +6,25 @@ import {
 	isPiSelectableModel,
 	isUnauthorizedModelsError,
 	ModelsHttpError,
+	normalizeGatewayBaseUrl,
 	resolveCreditsUrl,
 	resolveEndpoints,
 	resolveInferenceEndpoint,
 	toPiApiType,
 	toPiModel,
 } from "../extensions/catalog.js";
+
+describe("normalizeGatewayBaseUrl", () => {
+	it("maps legacy api.llmgates.com to apicn default", () => {
+		expect(normalizeGatewayBaseUrl("https://api.llmgates.com/v1")).toBe("https://apicn.llmgates.com/v1");
+		expect(normalizeGatewayBaseUrl("https://api.llmgates.com")).toBe("https://apicn.llmgates.com/v1");
+		expect(normalizeGatewayBaseUrl("api.llmgates.com")).toBe("https://apicn.llmgates.com/v1");
+	});
+
+	it("keeps apicn and custom hosts unchanged", () => {
+		expect(normalizeGatewayBaseUrl("https://apicn.llmgates.com/v1")).toBe("https://apicn.llmgates.com/v1");
+	});
+});
 
 describe("resolveEndpoints", () => {
 	it("normalizes host-only to https with /v1", () => {
