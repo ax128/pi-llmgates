@@ -123,6 +123,45 @@ export function isLoopbackHostname(hostname: string): boolean {
 	return false;
 }
 
+export function assertUrlTransportAllowed(input: string): { ok: true; url: URL } | { ok: false; error: string } {
+	const trimmed = input.trim();
+	if (!trimmed) {
+		return { ok: false, error: "URL is empty" };
+	}
+
+	let url: URL;
+	try {
+		url = new URL(trimmed);
+	} catch {
+		return { ok: false, error: "URL is not valid" };
+	}
+
+	if (url.username || url.password) {
+		return { ok: false, error: "URL must not include credentials" };
+	}
+
+	const protocol = url.protocol.toLowerCase();
+	if (protocol !== "https:" && protocol !== "http:") {
+		return { ok: false, error: "URL must use http or https" };
+	}
+
+	const hostname = url.hostname;
+	if (!hostname) {
+		return { ok: false, error: "URL is missing hostname" };
+	}
+
+	if (protocol === "http:" && !isLoopbackHostname(hostname)) {
+		return { ok: false, error: "remote HTTP is not allowed; use HTTPS or loopback HTTP" };
+	}
+
+	const bareHost = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+	if (bareHost === "0.0.0.0" || bareHost === "::") {
+		return { ok: false, error: "URL host is not allowed" };
+	}
+
+	return { ok: true, url };
+}
+
 export function normalizeAndValidateBaseUrl(input: string | undefined): UrlValidationResult {
 	const trimmed = input?.trim();
 	if (!trimmed) {
@@ -134,43 +173,17 @@ export function normalizeAndValidateBaseUrl(input: string | undefined): UrlValid
 		raw = `https://${raw}`;
 	}
 
-	let url: URL;
-	try {
-		url = new URL(raw);
-	} catch {
-		return { ok: false, error: "baseUrl is not a valid URL" };
-	}
-
-	if (url.username || url.password) {
-		return { ok: false, error: "baseUrl must not include credentials" };
-	}
-
-	const protocol = url.protocol.toLowerCase();
-	if (protocol !== "https:" && protocol !== "http:") {
-		return { ok: false, error: "baseUrl must use http or https" };
-	}
-
-	const hostname = url.hostname;
-	if (!hostname) {
-		return { ok: false, error: "baseUrl is missing hostname" };
-	}
-
-	if (protocol === "http:" && !isLoopbackHostname(hostname)) {
-		return { ok: false, error: "remote HTTP is not allowed; use HTTPS or loopback HTTP" };
-	}
-
-	// Explicitly reject unspecified addresses even if parser accepts them.
-	const bareHost = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-	if (bareHost === "0.0.0.0" || bareHost === "::") {
-		return { ok: false, error: "baseUrl host is not allowed" };
+	const allowed = assertUrlTransportAllowed(raw);
+	if (!allowed.ok) {
+		return { ok: false, error: allowed.error.replace(/^URL/, "baseUrl") };
 	}
 
 	try {
-		const endpoints = resolveEndpoints(url.toString());
+		const endpoints = resolveEndpoints(allowed.url.toString());
 		const balanceUrl = `${endpoints.inferenceBaseUrl.replace(/\/+$/, "")}/user/balance`;
 		return {
 			ok: true,
-			baseUrlInput: url.toString(),
+			baseUrlInput: allowed.url.toString(),
 			inferenceBaseUrl: endpoints.inferenceBaseUrl,
 			modelsUrl: endpoints.modelsUrl,
 			balanceUrl,
