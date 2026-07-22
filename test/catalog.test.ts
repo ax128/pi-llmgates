@@ -131,7 +131,7 @@ describe("toPiModel", () => {
 		expect(isPiSelectableModel({ id: "gpt-5.6-sol", capability_tags: [] })).toBe(true);
 	});
 
-	it("uses backend reasoning levels when present", () => {
+	it("uses gateway reasoning levels when present", () => {
 		const model = toPiModel({
 			id: "gpt-5.5",
 			provider_id: "openai",

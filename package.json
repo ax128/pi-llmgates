@@ -1,13 +1,12 @@
 {
   "name": "@llmgates_api/pi-llmgates-provider",
   "version": "0.1.1",
-  "description": "Pi provider extension for LLMGates (TokenX gateway): dynamic models from /v1/models and /login setup",
+  "description": "Pi provider extension for LLMGates: dynamic models from /v1/models and /login setup",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension",
     "llmgates",
-    "tokenx",
     "tps"
   ],
   "license": "MIT",

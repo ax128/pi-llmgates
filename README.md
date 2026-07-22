@@ -1,6 +1,6 @@
 # @llmgates_api/pi-llmgates-provider
 
-Pi provider extension for [LLMGates](https://llmgates.com) (TokenX gateway). Discovers chat models from `GET /v1/models`, registers them in pi, and routes inference to the correct OpenAI-compatible endpoint per model.
+Pi provider extension for [LLMGates](https://llmgates.com). Discovers chat models from `GET /v1/models`, registers them in pi, and routes inference to the correct OpenAI-compatible endpoint per model.
 
 参考实现：[@router-for-me/pi-cliproxyapi-provider](https://pi.dev/packages/@router-for-me/pi-cliproxyapi-provider)
 
@@ -181,7 +181,7 @@ Cost is reported as zero (billing on LLMGates).
 | No models after install | `/login LLMGates`; check key `allowed_models` on LLMGates |
 | `401` / `403` on startup | Re-login or update `LLMGATES_API_KEY` |
 | Image/video models missing | By design — generation models are filtered by `capability_tags` |
-| Unexpected generation model in list | Backend must tag models with `image_generation`, `video_*`, etc.; untagged models are kept |
+| Unexpected generation model in list | Gateway catalog must tag models with `image_generation`, `video_*`, etc.; untagged models are kept |
 
 ## Development
 
@@ -200,14 +200,6 @@ npm run check
 npm pack --dry-run
 npm publish --access public
 ```
-
-## Backend roadmap
-
-Non-blocking for plugin v0.1.x:
-
-- [TokenX #1080](https://github.com/ax128/TokenX/issues/1080) — pi enriched catalog
-- [TokenX #1082](https://github.com/ax128/TokenX/issues/1082) — reasoning levels seed data
-- [TokenX #1083](https://github.com/ax128/TokenX/issues/1083) — pi client observability
 
 ## License
 
