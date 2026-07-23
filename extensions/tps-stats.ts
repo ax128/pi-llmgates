@@ -36,13 +36,6 @@ export function usageModelLabel(provider: string | undefined, modelId: string): 
 	return vendor ? `${vendor}/${id}` : id;
 }
 
-export function modelCallLabel(model: Model<Api> | undefined): string {
-	if (!model) {
-		return "unknown";
-	}
-	return usageModelLabel(model.provider, model.id);
-}
-
 export function assistantMessageLabel(message: AssistantMessage): string {
 	return usageModelLabel(message.provider, message.model);
 }
