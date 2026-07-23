@@ -1,5 +1,7 @@
 # LLMGates Native Provider Security Hardening Implementation Plan
 
+> **Status: 已实施。** 现行产品与配置说明以 [README](../../../README.md) 与源码为准；本文保留为 Task 分解与验收历史。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the legacy LLMGates provider registration path with a full custom native Provider that treats API keys as literals, enforces source-bound connections, bounds all network I/O, and proves login/cache/lifecycle safety with real tests on pi `0.81.x`.
@@ -358,7 +360,7 @@ describe("resolveCanonicalConnection", () => {
       const conn = resolveCanonicalConnection(agentDir, "llmgates");
       expect(conn?.source).toBe("env");
       expect(conn?.apiKey).toBe("env-key");
-      expect(conn?.inferenceBaseUrl).toBe("https://apicn.llmgates.com/v1");
+      expect(conn?.inferenceBaseUrl).toBe("https://apihk.llmgates.com/v1");
     } finally {
       cleanup();
     }

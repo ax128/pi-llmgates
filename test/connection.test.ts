@@ -58,7 +58,7 @@ describe("resolveCanonicalConnection", () => {
 			const conn = resolveCanonicalConnection(agentDir, "llmgates");
 			expect(conn?.source).toBe("env");
 			expect(conn?.apiKey).toBe("env-key");
-			expect(conn?.inferenceBaseUrl).toBe("https://apicn.llmgates.com/v1");
+			expect(conn?.inferenceBaseUrl).toBe("https://apihk.llmgates.com/v1");
 		} finally {
 			cleanup();
 		}

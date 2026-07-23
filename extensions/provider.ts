@@ -28,6 +28,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import {
 	applyGatewayModelCosts,
+	DEFAULT_BASE_URL,
 	isOfflineMode,
 	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
@@ -168,7 +169,7 @@ function connectionFromCredential(credential: Credential | undefined): Canonical
 		const source = credential.env?.LLMGATES_RESOLVED_SOURCE === "file" ? "file" : "env";
 		const conn = connectionFromOAuthCredential({
 			access: key,
-			refresh: encodeOAuthRefreshMeta(baseUrl ?? "https://apicn.llmgates.com/v1"),
+			refresh: encodeOAuthRefreshMeta(baseUrl ?? DEFAULT_BASE_URL),
 		});
 		if (!conn) return null;
 		return { ...conn, source };
