@@ -14,7 +14,7 @@ export type PiApiType = "openai-responses" | "openai-completions" | "anthropic-m
 
 export const DEFAULT_PROVIDER_ID = "llmgates";
 export const DEFAULT_PROVIDER_NAME = "LLMGates";
-export const DEFAULT_BASE_URL = "https://apicn.llmgates.com/v1";
+export const DEFAULT_BASE_URL = "https://apihk.llmgates.com/v1";
 export const CLIENT_VERSION = "pi";
 export const PACKAGE_VERSION = packageJson.version;
 export const USER_AGENT = `pi-llmgates-provider/${PACKAGE_VERSION}`;

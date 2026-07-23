@@ -1,60 +1,63 @@
 # @llmgates_api/pi-llmgates-provider
 
-Pi provider extension for [LLMGates](https://llmgates.com). Discovers chat models from `GET /v1/models`, registers them in pi, and routes inference to the correct OpenAI-compatible endpoint per model.
+Pi provider 扩展，对接 [LLMGates](https://llmgates.com) 网关：从 `GET /v1/models` 动态发现模型，注册到 pi，并按模型路由到对应的 OpenAI 兼容推理端点。
 
 参考实现：[@router-for-me/pi-cliproxyapi-provider](https://pi.dev/packages/@router-for-me/pi-cliproxyapi-provider)
 
-**网关 base URL：** `https://apicn.llmgates.com/v1`  
-**API Key：** `sk-llmgates-...`
+**默认网关：** `https://apihk.llmgates.com/v1`  
+**API Key 格式：** `sk-llmgates-...`
+
+## 目录
+
+- [快速开始](#快速开始)
+- [安装](#安装)
+- [使用](#使用)
+- [多网关 2API 兼容层](#多网关-2api-兼容层)
+- [功能概览](#功能概览)
+- [配置](#配置)
+- [模型映射](#模型映射)
+- [定价与费用估算](#定价与费用估算)
+- [安全](#安全)
+- [故障排查](#故障排查)
+- [开发](#开发)
+- [发布（维护者）](#发布维护者)
+- [相关文档](#相关文档)
+- [许可证](#许可证)
 
 ## 快速开始
 
-任选一种安装方式，然后登录即可使用：
-
 ```bash
-# 方式 A：npm（推荐）
+# 安装（任选 npm 或 git）
 pi install npm:@llmgates_api/pi-llmgates-provider
-
-# 方式 B：git（跟踪 main）
-pi install git:github.com/ax128/pi-llmgates
+# pi install git:github.com/ax128/pi-llmgates
 
 pi
 /login LLMGates
 ```
 
+安装或更新后执行 `/reload` 或重启 pi 使扩展生效。详细安装选项见 [安装](#安装)。
+
 ## 安装
 
-需要 [pi](https://pi.dev)，Node **≥ 22.19**，`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.82.0**（基线 0.81.1）。
+**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.82.0**（基线 0.81.1）。
 
 本扩展使用 **native Provider** API，**不支持 pi 0.80.x**。
 
-### npm 安装
+### npm
 
 ```bash
-# 安装最新版
-pi install npm:@llmgates_api/pi-llmgates-provider
-
-# 指定版本
-pi install npm:@llmgates_api/pi-llmgates-provider@0.1.1
-
-# 仅当前项目（不加则全局安装到 ~/.pi/agent/）
-pi install -l npm:@llmgates_api/pi-llmgates-provider
+pi install npm:@llmgates_api/pi-llmgates-provider          # 最新版
+pi install npm:@llmgates_api/pi-llmgates-provider@0.1.7   # 指定版本
+pi install -l npm:@llmgates_api/pi-llmgates-provider      # 仅当前项目（否则装到 ~/.pi/agent/）
 ```
 
-### git 安装
+### git
 
 ```bash
-# 跟踪 main 分支
-pi install git:github.com/ax128/pi-llmgates
-
-# 固定到 tag / commit
-pi install git:github.com/ax128/pi-llmgates@0.1.1
-
-# SSH
-pi install git:git@github.com:ax128/pi-llmgates.git
-
-# 仅当前项目
-pi install -l git:github.com/ax128/pi-llmgates
+pi install git:github.com/ax128/pi-llmgates               # 跟踪 main
+pi install git:github.com/ax128/pi-llmgates@0.1.7         # 固定 tag / commit
+pi install git:git@github.com:ax128/pi-llmgates.git       # SSH
+pi install -l git:github.com/ax128/pi-llmgates            # 仅当前项目
 ```
 
 ### 本地开发 / 一次性运行
@@ -65,12 +68,10 @@ cd pi-llmgates
 npm install
 pi install .
 
-# 或单次试用，不写入全局配置
+# 单次试用，不写入全局配置
 pi -e git:github.com/ax128/pi-llmgates
 pi -e npm:@llmgates_api/pi-llmgates-provider
 ```
-
-安装后执行 `/reload` 或重启 pi 使扩展生效。
 
 ## 使用
 
@@ -79,11 +80,11 @@ pi
 /login LLMGates
 ```
 
-菜单路径：`/login` → Sign in with an account → LLMGates
+菜单路径：`/login` → Sign in with an account → **LLMGates**
 
 | 字段 | 默认值 |
 | --- | --- |
-| base URL | `https://apicn.llmgates.com/v1` |
+| base URL | `https://apihk.llmgates.com/v1` |
 | API key | 你的 `sk-llmgates-*` |
 
 登录成功后：
@@ -94,146 +95,136 @@ pi
 
 凭证校验失败最多重试 5 次（含非法 URL、网络/HTTP/JSON 错误），之后中止登录。远程 HTTP 会被拒绝，可在 5 次内改正为 HTTPS 或 loopback HTTP。
 
-常用命令：
+### 常用命令
 
 | 命令 | 说明 |
 | --- | --- |
 | `/login LLMGates` | 配置 baseUrl + API key |
 | `/balance` | 查看钱包、订阅余额 |
 | `/model` | 选择已注册的 LLMGates 模型 |
+| `/calls` | 查看本轮或本会话的 per-model 用量与费用明细 |
 | `/reload` | 安装或更新插件后重载扩展 |
 
-重新配置：随时再跑 `/login LLMGates`。`/logout` 清除 `auth.json` 登录凭证后，env/`llmgates.json` ambient 配置才会重新生效。交互式登录**不会**写入新的 API Key，也**不会**删除文件中已有的 ambient `apiKey`。
+重新配置：随时再跑 `/login LLMGates`。`/logout` 清除 `auth.json` 登录凭证后，env / `llmgates.json` 中的 ambient 配置才会重新生效。交互式登录**不会**写入新的 API Key，也**不会**删除文件中已有的 ambient `apiKey`。
 
-### 多网关 2api 兼容层
+## 多网关 2API 兼容层
 
-要添加 NewAPI、Sub2API 或 CLIProxyAPI 实例，运行：
+添加 NewAPI、Sub2API 或 CLIProxyAPI 实例：
 
 ```text
 /login llmgates-2api
 ```
 
-提示顺序为：scheme → instance provider ID → display name（留空则使用 ID）→ base URL → API key。instance ID 必须手动指定，不会自动生成；base URL 和 API key 都必须显式输入，scheme 只提供标签和 URL 占位提示（占位不是默认值）。所有 scheme 共用同一个 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名切换协议。
+提示顺序：scheme → instance provider ID → display name（留空则使用 ID）→ base URL → API key。instance ID 须手动指定；base URL 和 API key 须显式输入。scheme 只提供标签和 URL 占位提示（占位不是默认值）。所有 scheme 共用同一 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名切换协议。
 
 | 命令 | 说明 |
 | --- | --- |
 | `/2api list` | 列出实例 ID、scheme、base URL 和 display name（不显示密钥） |
-| `/2api remove <id>` | 删除指定实例及其 registry/auth 记录 |
+| `/2api remove <id>` | 删除指定实例及其 registry / auth 记录 |
+| `/2api help` | 显示用法与已知限制 |
 | `/login <id>` | 重新配置该实例的 base URL 和 API key |
 
 每个实例只提供模型发现和推理，不提供余额、钱包、订阅或账号功能；`/balance` 仅适用于 core `llmgates`。Pi 0.81 的模型选择器按 provider ID 区分同名模型，例如 `grok-4.5 [work-newapi]`。
 
-`/2api remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能列出已删除的 ID，执行 `/reload` 后才会消失。如果 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/2api remove` 无法处理它；必须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目，才能复用该 ID。
+**已知限制：** `/2api remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能列出已删除的 ID，执行 `/reload` 后才会消失。若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/2api remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
 
 2api API key 以 literal string 存入 `~/.pi/agent/auth.json`，不会展开 `!cmd`、`$ENV` 或 `${...}`。`auth.json` 和 `llmgates-2api.json` 均以 `0600` 权限写入，并使用跨进程文件锁、锁内重读和原子替换保护并发更新。
 
-## What it does
+## 功能概览
 
-1. Registers provider `llmgates` in `/login`
-2. Interactive setup: `/login LLMGates` or `/login llmgates` (baseUrl + API key)
-3. Validates credentials via `GET /v1/models?client_version=pi`
-4. Maps gateway catalog to pi models with per-model `api` (`responses` / `chat_completions` / `messages`)
-5. Skips image/video **generation** models (not suitable for pi coding agent)
-6. `/balance` — account wallet + subscription via `GET /v1/user/balance`
-7. TUI footer extension line: elapsed time, call count (including subagent/Task rollups), estimated **cost**, and `/calls` for per-model breakdown (turn or session); settle notification also shows TPS (tok/s). Parent-session assistant usage is tracked on `message_end`; pi `subagent` / Cursor `Task` tool results and `.pi-subagents/artifacts/*_meta.json` rollups are merged into the same counters. Usage aggregation runs on a background task chain and never blocks the agent loop.
+1. 在 `/login` 中注册 provider `llmgates`
+2. 交互式配置：`/login LLMGates` 或 `/login llmgates`（baseUrl + API key）
+3. 通过 `GET /v1/models?client_version=pi` 校验凭证并拉取目录
+4. 将网关 catalog 映射为 pi 模型，按模型设置 `api`（`responses` / `chat_completions` / `messages`）
+5. 跳过 image / video **生成** 类模型（不适合 pi coding agent）
+6. `/balance` — 通过 `GET /v1/user/balance` 查询钱包与订阅
+7. TUI 扩展状态行：耗时、调用次数（含 subagent / Task 汇总）、估算**费用**，以及 `/calls` 查看 per-model 明细；结算通知还显示 TPS（tok/s）。父会话 assistant 用量在 `message_end` 时统计；pi `subagent` / Cursor `Task` 工具结果与 `.pi-subagents/artifacts/*_meta.json` 汇总计入同一计数器。用量聚合在后台任务链中执行，不阻塞 agent 循环。
 
-## Security
+## 配置
 
-- API keys are treated as **literal strings**. Characters like `!`, `$`, `${...}`, `$$`, `$!` are never interpreted as shell commands or env expansions by this provider.
-- Connection ownership is atomic:
-  1. Saved OAuth login credential (whole connection)
-  2. else `LLMGATES_API_KEY` + optional `LLMGATES_BASE_URL` (default HTTPS if URL omitted)
-  3. else `llmgates.json` `apiKey` + optional file `baseUrl` (default HTTPS if URL omitted)
-  - Env key never borrows file URL; file key never borrows env URL; OAuth never borrows env/file URL.
-- Remote gateways must use **HTTPS**. HTTP is allowed only for loopback (`localhost`, `127.0.0.0/8`, `::1`, IPv4-mapped loopback). No insecure override env.
-- Network calls to your gateway (`/models`, `/balance`, inference) use a full-operation timeout, 5 MiB body limit, and same-origin manual redirects.
-- When `pricingAutoUpdate` is enabled, retail price sync fetches a fixed public JSON file from `raw.githubusercontent.com` (LiteLLM). This runs in the background, uses the same bounded HTTP client (30s timeout, 8 MiB cap), and never blocks catalog listing or inference. Disable with `"pricingAutoUpdate": false` or `LLMGATES_PRICING_AUTO_UPDATE=0`.
-- TPS / cost statistics preprocess assistant usage off the hot path (background queue). Malformed usage is skipped or zeroed; failures are ignored (`LLMGATES_DEBUG=1` logs details) and never interrupt inference or the agent loop.
-- Startup is cache-first; model refresh runs in the background after session start and does not block availability. Failed refreshes keep the previous catalog.
-- Login cache-write failure does not undo login: session uses the validated catalog and keeps the old disk cache.
-- Prefer `/login` or `LLMGATES_API_KEY` over storing keys in `llmgates.json`. Config writes use mode `0600` and atomic rename.
-- **Unsupported / unsafe:** configuring this provider’s `apiKey` via `~/.pi/agent/models.json` overlay (pi may re-enable config-value syntax). Do not do that.
-- **Legacy migration:** if `auth.json` has `type: "api_key"` for this provider, registration is **fail-closed**. Remove the entry or `/logout`, then `/reload`. The extension does not auto-migrate or rewrite `auth.json`.
-- Default gateway: `https://apicn.llmgates.com/v1`.
-- `PI_OFFLINE=1` skips network catalog refresh.
+### 非交互式配置
 
-## Non-interactive config
-
-For CI or headless setups, use env vars (recommended) or `~/.pi/agent/llmgates.json`:
+适用于 CI 或无头环境，推荐使用环境变量，或使用 `~/.pi/agent/llmgates.json`：
 
 ```json
 {
-  "baseUrl": "https://apicn.llmgates.com/v1",
+  "baseUrl": "https://apihk.llmgates.com/v1",
   "providerId": "llmgates",
   "providerName": "LLMGates"
 }
 ```
 
-Optional `apiKey` in the file is supported but not written by `/login`:
+可选在文件中写入 `apiKey`（`/login` 不会写入该字段）：
 
 ```json
 {
-  "baseUrl": "https://apicn.llmgates.com/v1",
+  "baseUrl": "https://apihk.llmgates.com/v1",
   "apiKey": "sk-llmgates-...",
   "providerId": "llmgates",
   "providerName": "LLMGates"
 }
 ```
 
-| Variable | Overrides |
+**连接解析优先级**（各来源不交叉借用 URL / key）：
+
+1. `auth.json` 中的 OAuth 登录凭证（若存在）
+2. 否则 env 中的 key + env URL（或官方默认 URL）
+3. 否则文件中的 key + 文件 URL（或官方默认 URL）
+
+### 环境变量
+
+| 变量 | 作用 |
 | --- | --- |
-| `LLMGATES_BASE_URL` | `baseUrl` |
-| `LLMGATES_API_KEY` | `apiKey` |
-| `LLMGATES_PROVIDER_ID` | `providerId` |
-| `LLMGATES_PROVIDER_NAME` | `providerName` |
-| `LLMGATES_PRICING_AUTO_UPDATE` | `pricingAutoUpdate` in `llmgates.json` (default: true) |
+| `LLMGATES_BASE_URL` | 覆盖 `llmgates.json` 的 `baseUrl` |
+| `LLMGATES_API_KEY` | 覆盖 `llmgates.json` 的 `apiKey` |
+| `LLMGATES_PROVIDER_ID` | 覆盖 `providerId`（勿与内置 provider 冲突） |
+| `LLMGATES_PROVIDER_NAME` | 覆盖 `providerName` |
+| `LLMGATES_PRICING_AUTO_UPDATE` | 覆盖 `pricingAutoUpdate`（默认 `true`；`0` / `false` 关闭） |
+| `LLMGATES_DEBUG` | 设为 `1` / `true` / `yes` 时输出调试日志 |
+| `PI_OFFLINE` | 设为 `1` / `true` / `yes` 时跳过网络 catalog 刷新 |
 
-Resolution (no cross-source borrowing):
+## 模型映射
 
-1. OAuth login credential in `auth.json` (if present)
-2. else env key + env URL (or official default URL)
-3. else file key + file URL (or official default URL)
-
-## Model mapping
-
-| Gateway | Pi |
+| 网关字段 | Pi 字段 |
 | --- | --- |
 | `id` | `id` |
 | `display_name` | `name` |
 | `context_window` | `contextWindow` |
 | `max_output_tokens` | `maxTokens` |
-| `capability_tags` (vision) | `input` text + image |
-| `capability_tags` (image/video generation) | **skipped** |
-| `inference_endpoint` or `web_chat_endpoint` | `api` per model |
+| `capability_tags`（vision） | `input`：text + image |
+| `capability_tags`（image / video generation） | **跳过** |
+| `inference_endpoint` 或 `web_chat_endpoint` | 每模型 `api` |
 
-| endpoint value | pi `api` |
+| endpoint 值 | pi `api` |
 | --- | --- |
 | `responses` | `openai-responses` |
 | `chat_completions` | `openai-completions` |
 | `messages` | `anthropic-messages` |
 
-`inference_endpoint` takes precedence over `web_chat_endpoint` when both are present.
+同时存在时，`inference_endpoint` 优先于 `web_chat_endpoint`。
 
-Cost is estimated from **upstream retail API rates** (not LLMGates wallet billing; use `/balance` for account spend).
+## 定价与费用估算
 
-### Pricing files (JSON, under `~/.pi/agent/`)
+TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与 LLMGates 钱包扣费可能不同；账户实际消费请用 `/balance` 查询。
 
-**`llmgates.json`** — provider config + auto-update switch:
+配置文件位于 `~/.pi/agent/`：
+
+**`llmgates.json`** — provider 配置与自动更新开关：
 
 ```json
 {
-  "baseUrl": "https://apicn.llmgates.com/v1",
+  "baseUrl": "https://apihk.llmgates.com/v1",
   "pricingAutoUpdate": true
 }
 ```
 
-Set `"pricingAutoUpdate": false` (or env `LLMGATES_PRICING_AUTO_UPDATE=0`) to manage prices manually only.
+设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
 
-**`llmgates-model-pricing.json`** — editable USD per **1M tokens** (`input`, `output`, `cacheRead`, `cacheWrite`). Keys: `modelId` or `provider/modelId` (e.g. `openai/gpt-5.6-sol`).
+**`llmgates-model-pricing.json`** — 可编辑的 USD / **100 万 token** 单价（`input`、`output`、`cacheRead`、`cacheWrite`）。键为 `modelId` 或 `provider/modelId`（如 `openai/gpt-5.6-sol`）：
 
 ```json
 {
-  "_comment": "overrides always win over rates and auto-sync",
+  "_comment": "overrides 始终优先于 rates 与自动同步",
   "updatedAt": 0,
   "lastAutoSyncAt": 0,
   "rates": {
@@ -245,31 +236,50 @@ Set `"pricingAutoUpdate": false` (or env `LLMGATES_PRICING_AUTO_UPDATE=0`) to ma
 }
 ```
 
-When `pricingAutoUpdate` is enabled, each `/models` refresh syncs [LiteLLM](https://github.com/BerriAI/litellm) retail prices for catalog models in the background (does not block model listing): missing models fetch immediately; otherwise refresh every 24h. Sync failures are ignored — cached disk rates and static rules remain in effect (`LLMGATES_DEBUG=1` logs details). Auto-sync writes to `rates` only — **`overrides` are never touched**. Use **`overrides`** for prices that must never be overwritten by auto-sync; `rates` entries for catalog models are refreshed from LiteLLM on each TTL cycle. Off-catalog entries in `rates` are preserved across refreshes. On every refresh the file is re-read from disk so hand edits apply without restart. Static rules in `extensions/model-pricing.ts` remain the offline fallback. Registered model `cost` fields are patched in memory after a successful background sync (no extra catalog fetch).
+启用 `pricingAutoUpdate` 时，每次 `/models` 刷新会在后台从 [LiteLLM](https://github.com/BerriAI/litellm) 同步 catalog 模型的零售价（不阻塞列表）：缺失模型立即拉取，否则每 24h 刷新。同步失败时保留缓存与静态规则（`LLMGATES_DEBUG=1` 可查看详情）。自动同步**只写 `rates`**，**不修改 `overrides`**。catalog 外 `rates` 条目在刷新时保留。每次刷新会重读磁盘，手改无需重启。`extensions/model-pricing.ts` 中的静态规则为离线兜底。同步成功后会在内存中 patch 已注册模型的 `cost` 字段，不额外请求 catalog。
 
-The TUI extension status and `/calls` show estimated cost aligned with pi’s `usage.cost`. Pi’s built-in footer may still append `(sub)` for OAuth auth — that is not LLMGates billing.
+Pi 内置 footer 在 OAuth 登录时可能仍显示 `(sub)`，该标记与 LLMGates 计费无关。
 
-## Troubleshooting
+## 安全
 
-| Symptom | Fix |
+- API key 一律视为 **literal string**；`!`、`$`、`${...}`、`$$`、`$!` 等不会被解释为 shell 命令或环境变量展开。
+- 连接归属原子化，优先级见 [连接解析优先级](#非交互式配置)；env key 不借用 file URL，file key 不借用 env URL，OAuth 不借用 env / file URL。
+- 远程网关须使用 **HTTPS**；HTTP 仅允许 loopback（`localhost`、`127.0.0.0/8`、`::1`、IPv4-mapped loopback）。无 insecure 覆盖开关。
+- 网关网络调用（`/models`、`/balance`、推理）使用全操作超时、5 MiB 响应体上限、同源手动重定向。
+- 启用 `pricingAutoUpdate` 时，零售价同步从 `raw.githubusercontent.com` 拉取固定 LiteLLM JSON（后台、30s 超时、8 MiB 上限），不阻塞目录或推理。可通过配置或 `LLMGATES_PRICING_AUTO_UPDATE=0` 关闭。
+- TPS / 费用统计在后台队列预处理 assistant usage；畸形 usage 跳过或归零，失败不影响推理（`LLMGATES_DEBUG=1` 记录详情）。
+- 启动采用 cache-first；模型刷新在 session 启动后后台进行，失败保留旧 catalog。
+- 登录后 cache 写入失败不撤销登录：会话使用已验证目录，磁盘保留旧缓存。
+- 优先 `/login` 或 `LLMGATES_API_KEY`，避免在 `llmgates.json` 存 key。配置写入 mode `0600` 且原子替换。
+- **不支持 / 不安全：** 通过 `~/.pi/agent/models.json` overlay 配置本 provider 的 `apiKey`（pi 可能重新启用 config-value 语法）。请勿这样做。
+- **历史迁移：** `auth.json` 中若存在 `type: "api_key"` 凭证，注册 **fail-closed**。删除该条目或 `/logout` 后 `/reload`；扩展不会自动迁移或改写 `auth.json`。
+- 默认网关：`https://apihk.llmgates.com/v1`。
+
+## 故障排查
+
+| 现象 | 处理 |
 | --- | --- |
-| Extension not loaded after install | `/reload` or restart pi |
-| No models after install | `/login LLMGates`; check key `allowed_models` on LLMGates |
-| `401` / `403` on startup | Re-login or update `LLMGATES_API_KEY` |
-| Image/video models missing | By design — generation models are filtered by `capability_tags` |
-| Unexpected generation model in list | Gateway catalog must tag models with `image_generation`, `video_*`, etc.; untagged models are kept |
+| 安装后扩展未加载 | `/reload` 或重启 pi |
+| 安装后无模型 | `/login LLMGates`；检查 LLMGates 侧 key 的 `allowed_models` |
+| 启动时 `401` / `403` | 重新 `/login` 或更新 `LLMGATES_API_KEY` |
+| 看不到 image / video 模型 | 预期行为 — 生成类模型按 `capability_tags` 过滤 |
+| 列表出现意外生成模型 | 网关 catalog 须用 `image_generation`、`video_*` 等 tag 标记；未标记的模型会保留 |
+| 费用与账单不一致 | TUI 费用为上游零售价估算；账户消费看 `/balance` |
+| 需要调试日志 | `LLMGATES_DEBUG=1` 后 `/reload` |
 
-## Development
+## 开发
 
 ```bash
 git clone https://github.com/ax128/pi-llmgates.git
 cd pi-llmgates
 npm install
-npm run check
+npm run check    # typecheck + vitest
 pi install .
 ```
 
-## Publish (maintainers)
+设计与实现文档见 [docs/README.md](docs/README.md)。
+
+## 发布（维护者）
 
 ```bash
 npm run check
@@ -277,6 +287,14 @@ npm pack --dry-run
 npm publish --access public
 ```
 
-## License
+## 相关文档
 
-MIT — see [LICENSE](LICENSE)
+| 文档 | 说明 |
+| --- | --- |
+| [docs/README.md](docs/README.md) | 内部设计规格、实施计划与源码入口索引 |
+| [LLMGates](https://llmgates.com) | 网关与 API Key |
+| [pi 文档](https://pi.dev) | Pi 扩展与 Provider API |
+
+## 许可证
+
+MIT — 见 [LICENSE](LICENSE)
