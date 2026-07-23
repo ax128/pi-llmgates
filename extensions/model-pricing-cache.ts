@@ -53,9 +53,6 @@ export interface ModelPricingFile {
 	contextWindows?: Record<string, number>;
 }
 
-/** @deprecated alias */
-export type ModelPricingCacheFile = ModelPricingFile;
-
 interface LiteLLMPriceEntry {
 	input_cost_per_token?: number;
 	output_cost_per_token?: number;
@@ -249,7 +246,6 @@ export function readModelPricingFile(agentDir: string): ModelPricingFile | null 
 }
 
 /** @deprecated alias */
-export const readPricingCacheFile = readModelPricingFile;
 
 function writeModelPricingFile(agentDir: string, file: ModelPricingFile): void {
 	const path = join(agentDir, MODEL_PRICING_CACHE_FILE);

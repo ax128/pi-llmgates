@@ -18,10 +18,6 @@ export const DEFAULT_BASE_URL = "https://apihk.llmgates.com/v1";
 export const CLIENT_VERSION = "pi";
 export const PACKAGE_VERSION = packageJson.version;
 export const USER_AGENT = `pi-llmgates-provider/${PACKAGE_VERSION}`;
-export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
-
-/** Background / refresh fetches — aligned with pi model selector (15s). */
-export const STARTUP_MODELS_FETCH_TIMEOUT_MS = 15_000;
 
 export const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 export const DEFAULT_MAX_TOKENS = 16384;
@@ -74,10 +70,6 @@ export interface PiProviderModel {
 	maxTokens: number;
 	api: PiApiType;
 	thinkingLevelMap?: ThinkingLevelMap;
-}
-
-export interface OAuthRefreshMeta {
-	baseUrl: string;
 }
 
 export interface CreditsSnapshot {
@@ -138,26 +130,6 @@ export function resolveEndpoints(baseUrlInput: string): {
 	const modelsUrl = `${inferenceBaseUrl}/models?client_version=${encodeURIComponent(CLIENT_VERSION)}`;
 
 	return { inferenceBaseUrl, modelsUrl };
-}
-
-export function encodeRefreshMeta(baseUrl: string): string {
-	const meta: OAuthRefreshMeta = { baseUrl };
-	return JSON.stringify(meta);
-}
-
-export function decodeRefreshMeta(refresh: string | undefined): OAuthRefreshMeta | null {
-	if (!refresh?.trim()) {
-		return null;
-	}
-	try {
-		const parsed = JSON.parse(refresh) as OAuthRefreshMeta;
-		if (parsed && typeof parsed.baseUrl === "string" && parsed.baseUrl.trim()) {
-			return { baseUrl: parsed.baseUrl.trim() };
-		}
-	} catch {
-		// ignore
-	}
-	return null;
 }
 
 export function gatewayModelId(model: GatewayModel): string {
@@ -361,45 +333,6 @@ export function applyGatewayModelCosts(
 		const vendor = vendorById.get(model.id);
 		model.cost = resolveModelCostRates(model.id, vendor || undefined);
 	}
-}
-
-export class ModelsHttpError extends Error {
-	readonly status: number;
-	readonly statusText: string;
-
-	constructor(status: number, statusText: string, _body: string) {
-		super(`models request failed: ${status} ${statusText}`);
-		this.name = "ModelsHttpError";
-		this.status = status;
-		this.statusText = statusText;
-	}
-}
-
-export class CreditsHttpError extends Error {
-	readonly status: number;
-	readonly statusText: string;
-
-	constructor(status: number, statusText: string, _body: string) {
-		super(`credits request failed: ${status} ${statusText}`);
-		this.name = "CreditsHttpError";
-		this.status = status;
-		this.statusText = statusText;
-	}
-}
-
-export function isUnauthorizedHttpError(error: unknown): boolean {
-	return (
-		(error instanceof ModelsHttpError || error instanceof CreditsHttpError) &&
-		(error.status === 401 || error.status === 403)
-	);
-}
-
-export function isUnauthorizedModelsError(error: unknown): boolean {
-	return isUnauthorizedHttpError(error) && error instanceof ModelsHttpError;
-}
-
-export function isUnauthorizedCreditsError(error: unknown): boolean {
-	return isUnauthorizedHttpError(error) && error instanceof CreditsHttpError;
 }
 
 export function resolveCreditsUrl(inferenceBaseUrl: string): string {
