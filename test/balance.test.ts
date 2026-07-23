@@ -44,4 +44,21 @@ describe("fetchBalanceMessage", () => {
 			await server.close();
 		}
 	});
+
+	it("respects abort signal", async () => {
+		const server = await startLoopbackServer([
+			{ path: "/v1/user/balance", hangAfterHeaders: true, headers: { "Content-Type": "application/json" } },
+		]);
+		try {
+			const controller = new AbortController();
+			const pending = fetchBalanceMessage({
+				getAuth: async () => ({ apiKey: "k", baseUrl: `${server.baseUrl}/v1` }),
+				signal: controller.signal,
+			});
+			controller.abort();
+			await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+		} finally {
+			await server.close();
+		}
+	});
 });

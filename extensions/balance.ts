@@ -3,9 +3,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { formatCreditsMessage, parseCreditsPayload, resolveCreditsUrl, USER_AGENT } from "./catalog.js";
-import { resolveProviderIdentity } from "./connection.js";
 import {
 	BALANCE_REQUEST_TIMEOUT_MS,
 	isUnauthorizedStatus,
@@ -64,6 +62,7 @@ export function registerBalanceCommand(
 			try {
 				const message = await fetchBalanceMessage({
 					legacyBlocked: options?.legacyBlocked,
+					signal: ctx.signal,
 					getAuth: async () => {
 						const result = await ctx.modelRegistry.getProviderAuth(providerId);
 						if (!result) {
@@ -86,14 +85,4 @@ export function registerBalanceCommand(
 			}
 		},
 	});
-}
-
-export default function (pi: ExtensionAPI): void {
-	const agentDir = getAgentDir();
-	try {
-		const identity = resolveProviderIdentity(agentDir);
-		registerBalanceCommand(pi, identity.providerId);
-	} catch (error) {
-		console.warn(`[pi-llmgates-provider] ${error instanceof Error ? error.message : String(error)}`);
-	}
 }

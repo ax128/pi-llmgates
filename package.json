@@ -33,7 +33,6 @@
   "pi": {
     "extensions": [
       "./extensions/index.ts",
-      "./extensions/balance.ts",
       "./extensions/tps.ts"
     ]
   },

@@ -259,10 +259,20 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		return mapGatewayPayload(providerId, connection.inferenceBaseUrl, payload);
 	}
 
+	function connectionStillMatches(expected: CanonicalConnection): boolean {
+		if (!lastConnection) {
+			return true;
+		}
+		return (
+			lastConnection.inferenceBaseUrl === expected.inferenceBaseUrl &&
+			keysEqual(lastConnection.apiKey, expected.apiKey)
+		);
+	}
+
 	function pendingMatches(credential: OAuthCredential): boolean {
 		if (!pending) return false;
-		if (pending.loginGeneration !== generation && pending.loginGeneration !== generation) {
-			// generation may stay same between login and refresh in same session
+		if (pending.loginGeneration !== generation) {
+			return false;
 		}
 		if (now() > pending.expiresAt) {
 			clearPending();
@@ -370,12 +380,8 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				throw new DOMException("The operation was aborted.", "AbortError");
 			}
 			if (requestId !== latestRequestId) return;
-			if (
-				lastConnection &&
-				(lastConnection.inferenceBaseUrl !== requestConnection.inferenceBaseUrl ||
-					!keysEqual(lastConnection.apiKey, requestConnection.apiKey))
-			) {
-				// connection changed after fetch started
+			if (!connectionStillMatches(requestConnection)) {
+				return;
 			}
 			try {
 				await context.store.write({ models: fetched, checkedAt: now() });
@@ -603,21 +609,23 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			}
 
 			const controller = sessionController ?? new AbortController();
+			const requestConnection = connection;
 			const requestId = nextRequestId++;
 			latestRequestId = requestId;
 			const gen = generation;
 
 			const task = (async () => {
 				try {
-					const fetched = await fetchCatalog(connection, controller.signal);
+					const fetched = await fetchCatalog(requestConnection, controller.signal);
 					await withCommit(async () => {
 						if (shutDown || gen !== generation) return;
 						if (requestId !== latestRequestId) return;
 						if (controller.signal.aborted) return;
+						if (!connectionStillMatches(requestConnection)) return;
 						await store.write({ models: fetched, checkedAt: now() });
 						if (shutDown || gen !== generation) return;
 						setModels(fetched);
-						lastConnection = connection;
+						lastConnection = requestConnection;
 						lastCheckedAt = now();
 					});
 				} catch (error) {

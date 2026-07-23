@@ -154,6 +154,90 @@ describe("lifecycle", () => {
 		}
 	});
 
+	it("discards stale refresh when connection changes before commit", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				body: async function* () {
+					await gate;
+					yield Buffer.from(JSON.stringify([{ id: "stale", name: "Stale" }]));
+				},
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_API_KEY = "key-a";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const store = createMemoryStore({
+				models: [
+					{
+						id: "cached",
+						name: "Cached",
+						provider: "llmgates",
+						api: "openai-responses",
+						baseUrl: `${server.baseUrl}/v1`,
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 1,
+						maxTokens: 1,
+					},
+				],
+				checkedAt: Date.now(),
+			});
+			const ambientCredential = {
+				type: "api_key" as const,
+				key: "key-a",
+				env: {
+					LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+					LLMGATES_RESOLVED_SOURCE: "env",
+				},
+			};
+			await provider.refreshModels!({
+				store,
+				allowNetwork: false,
+				credential: ambientCredential,
+			});
+
+			const slowRefresh = provider.refreshModels!({
+				store,
+				allowNetwork: true,
+				force: true,
+				credential: ambientCredential,
+			});
+			await provider.refreshModels!({
+				store,
+				allowNetwork: false,
+				credential: {
+					type: "api_key",
+					key: "key-b",
+					env: {
+						LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+						LLMGATES_RESOLVED_SOURCE: "env",
+					},
+				},
+			});
+			release();
+			await slowRefresh;
+
+			expect(provider.getModels().some((m) => m.id === "stale")).toBe(false);
+			expect(store.writes.some((w) => w.models.some((m) => m.id === "stale"))).toBe(false);
+			expect(provider.getModels().some((m) => m.id === "cached")).toBe(true);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
 	it("PI_OFFLINE skips network background refresh", async () => {
 		let hits = 0;
 		const server = await startLoopbackServer([

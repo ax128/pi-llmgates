@@ -117,6 +117,35 @@ describe("native oauth login", () => {
 		}
 	});
 
+	it("rejects pending consume after beginSession bumps generation", async () => {
+		const server = await startLoopbackServer([
+			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", name: "M1" }]) },
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const interaction = scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]);
+			const cred = await provider.auth.oauth!.login(interaction);
+			provider.beginSession("reload");
+			const store = createMemoryStore();
+			await provider.refreshModels!({
+				credential: cred,
+				store,
+				allowNetwork: false,
+			});
+			expect(provider.getInternalState().hasPending).toBe(true);
+			expect(provider.getModels()).toHaveLength(0);
+			expect(store.writes).toHaveLength(0);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
 	it("rejects pending consume when nonce differs even if key/baseUrl match", async () => {
 		const server = await startLoopbackServer([
 			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", name: "M1" }]) },
