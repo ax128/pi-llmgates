@@ -224,13 +224,6 @@ export function mergeModelUsageEntries(a: ModelUsageEntry, b: ModelUsageEntry): 
 	};
 }
 
-export function incrementModelCall(stats: ModelUsageStats, model: Model<Api> | undefined): void {
-	const label = modelCallLabel(model);
-	const entry = stats.get(label) ?? emptyModelUsageEntry();
-	entry.calls += 1;
-	stats.set(label, entry);
-}
-
 export function recordAssistantUsage(stats: ModelUsageStats, message: AssistantMessage): void {
 	const label = assistantMessageLabel(message);
 	const usage = message.usage;
@@ -404,22 +397,4 @@ export function formatUsageSummaryMessage(
 			: "";
 	const lines = formatUsageBreakdownOptions(stats);
 	return `${scopePrefix}: ${calls.toLocaleString()} ${callLabel}${elapsed} · cost ${formatCostUsd(usage.costUsd)} · in ${formatTokenCount(usage.input)} out ${formatTokenCount(usage.output)}. ${lines.join("; ")}`;
-}
-
-/** @deprecated Use formatUsageBreakdownOptions */
-export function formatCallBreakdownOptions(stats: ReadonlyMap<string, ModelUsageEntry>): string[] {
-	return formatUsageBreakdownOptions(stats);
-}
-
-/** @deprecated Use formatUsageSummaryMessage */
-export function formatCallSummaryMessage(
-	stats: ReadonlyMap<string, ModelUsageEntry>,
-	elapsedSeconds?: number,
-): string {
-	return formatUsageSummaryMessage(stats, { scope: "turn", elapsedSeconds });
-}
-
-/** @deprecated Use cloneModelUsageStats */
-export function cloneCallCounts(stats: ReadonlyMap<string, ModelUsageEntry>): ModelUsageStats {
-	return cloneModelUsageStats(stats);
 }

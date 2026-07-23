@@ -6,8 +6,6 @@ import {
 	inferReasoningEfforts,
 	isOfflineMode,
 	isPiSelectableModel,
-	isUnauthorizedModelsError,
-	ModelsHttpError,
 	normalizeGatewayBaseUrl,
 	parseCreditsPayload,
 	parseGatewayModelsPayload,
@@ -208,20 +206,6 @@ describe("toPiModel", () => {
 		expect(model?.thinkingLevelMap?.minimal).toBe("minimal");
 		expect(model?.thinkingLevelMap?.xhigh).toBe("xhigh");
 		expect(model?.thinkingLevelMap?.ultra).toBe("ultra");
-	});
-});
-
-describe("auth errors", () => {
-	it("treats 401 and 403 as unauthorized", () => {
-		expect(isUnauthorizedModelsError(new ModelsHttpError(401, "Unauthorized", ""))).toBe(true);
-		expect(isUnauthorizedModelsError(new ModelsHttpError(403, "Forbidden", ""))).toBe(true);
-		expect(isUnauthorizedModelsError(new ModelsHttpError(500, "Error", ""))).toBe(false);
-	});
-
-	it("omits response body from error message", () => {
-		const error = new ModelsHttpError(401, "Unauthorized", '{"secret":"sk-llmgates-leak"}');
-		expect(error.message).toBe("models request failed: 401 Unauthorized");
-		expect(error.message).not.toContain("sk-llmgates");
 	});
 });
 

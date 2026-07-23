@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfigFile, saveConfigFile, saveConfigFilePreservingSecrets } from "../extensions/lib.js";
+import { loadValidatedConfigFile } from "../extensions/connection.js";
+import { saveConfigFilePreservingSecrets } from "../extensions/lib.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
 
 describe("saveConfigFilePreservingSecrets", () => {
@@ -38,7 +39,7 @@ describe("saveConfigFilePreservingSecrets", () => {
 			});
 			const raw = JSON.parse(readFileSync(join(agentDir, "llmgates.json"), "utf8"));
 			expect(raw.apiKey).toBeUndefined();
-			expect(loadConfigFile(agentDir).baseUrl).toContain("new.example");
+			expect(loadValidatedConfigFile(agentDir).baseUrl).toContain("new.example");
 		} finally {
 			cleanup();
 		}
@@ -60,25 +61,6 @@ describe("saveConfigFilePreservingSecrets", () => {
 			expect(raw.apiKey).toBe("keep-me");
 			expect(raw.providerId).toBe("llmgates");
 			expect(raw.providerName).toBe("LLMGates");
-		} finally {
-			cleanup();
-		}
-	});
-});
-
-describe("saveConfigFile", () => {
-	it("atomically writes ambient apiKey with mode 0600", async () => {
-		const { agentDir, cleanup } = withTempAgentDir();
-		try {
-			await saveConfigFile(agentDir, {
-				baseUrl: "https://file.example/v1",
-				apiKey: "ambient-secret",
-				providerId: "llmgates",
-			});
-			const path = join(agentDir, "llmgates.json");
-			const raw = JSON.parse(readFileSync(path, "utf8"));
-			expect(raw.apiKey).toBe("ambient-secret");
-			expect(statSync(path).mode & 0o777).toBe(0o600);
 		} finally {
 			cleanup();
 		}

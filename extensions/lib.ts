@@ -1,6 +1,5 @@
 /**
- * Config I/O helpers and compatibility re-exports.
- * Connection ownership lives in connection.ts; network in http.ts.
+ * Config I/O helpers. Connection ownership lives in connection.ts; network in http.ts.
  */
 
 import {
@@ -23,91 +22,6 @@ import {
 	type LLMGatesConfigFile,
 } from "./connection.js";
 
-export {
-	CLIENT_VERSION,
-	CreditsHttpError,
-	DEFAULT_BASE_URL,
-	DEFAULT_CONTEXT_WINDOW,
-	DEFAULT_FETCH_TIMEOUT_MS,
-	DEFAULT_MAX_TOKENS,
-	DEFAULT_PI_REASONING_EFFORTS,
-	DEFAULT_PROVIDER_ID,
-	DEFAULT_PROVIDER_NAME,
-	ModelsHttpError,
-	PACKAGE_VERSION,
-	USER_AGENT,
-	ZERO_COST,
-	decodeRefreshMeta,
-	defaultInferenceEndpoint,
-	encodeRefreshMeta,
-	firstNonEmpty,
-	formatCreditsMessage,
-	gatewayModelId,
-	inferReasoningEfforts,
-	isOfflineMode,
-	isPiSelectableModel,
-	normalizeGatewayBaseUrl,
-	isUnauthorizedCreditsError,
-	isUnauthorizedHttpError,
-	isUnauthorizedModelsError,
-	parseCreditsPayload,
-	parseGatewayModelsPayload,
-	providerModelsToStoredModels,
-	resolveCreditsUrl,
-	resolveInferenceEndpoint,
-	resolveEndpoints,
-	STARTUP_MODELS_FETCH_TIMEOUT_MS,
-	storedModelsToProviderModels,
-	toPiApiType,
-	toPiModel,
-} from "./catalog.js";
-
-export type {
-	GatewayModel,
-	OAuthRefreshMeta,
-	PiApiType,
-	PiProviderModel,
-	ThinkingLevelMap,
-	CreditsSnapshot,
-} from "./catalog.js";
-
-export {
-	AUTH_FILE_NAME,
-	BUILTIN_PROVIDER_IDS,
-	CONFIG_FILE_NAME,
-	assertUrlTransportAllowed,
-	connectionFromAmbientEnv,
-	connectionFromConfigFile,
-	connectionFromOAuthCredential,
-	decodeOAuthRefreshMeta,
-	detectLegacyApiKeyCredential,
-	encodeOAuthRefreshMeta,
-	isLoopbackHostname,
-	normalizeAndValidateBaseUrl,
-	resolveCanonicalConnection,
-	resolveProviderIdentity,
-	resolvePricingAutoUpdate,
-} from "./connection.js";
-
-export type {
-	CanonicalConnection,
-	ConnectionSource,
-	ProviderIdentity,
-	UrlValidationResult,
-} from "./connection.js";
-
-export {
-	BALANCE_REQUEST_TIMEOUT_MS,
-	HttpStatusError,
-	LITELLM_PRICING_REQUEST_TIMEOUT_MS,
-	MAX_RESPONSE_BYTES,
-	MODELS_REQUEST_TIMEOUT_MS,
-	RequestTimeoutError,
-	ResponseLimitError,
-	isUnauthorizedStatus,
-	requestLimitedJson,
-} from "./http.js";
-
 export const CREDENTIAL_TTL_MS = 100 * 365 * 24 * 60 * 60 * 1000;
 
 export type { LLMGatesConfigFile };
@@ -125,10 +39,6 @@ const LOCK_OPTIONS: lockfile.LockOptions = {
 		randomize: true,
 	},
 };
-
-export function loadConfigFile(agentDir: string): LLMGatesConfigFile {
-	return loadValidatedConfigFile(agentDir);
-}
 
 function ensureAgentDir(agentDir: string): void {
 	const created = mkdirSync(agentDir, { recursive: true, mode: CONFIG_DIR_MODE });
@@ -213,8 +123,7 @@ async function withConfigLock<T>(agentDir: string, fn: (configPath: string) => P
 
 function mergeConfigPreservingSecrets(
 	existing: LLMGatesConfigFile,
-	patch: { baseUrl?: string; providerId?: string; providerName?: string; apiKey?: string },
-	options?: { writeApiKey?: boolean },
+	patch: { baseUrl?: string; providerId?: string; providerName?: string },
 ): LLMGatesConfigFile {
 	const next: LLMGatesConfigFile = { ...existing };
 
@@ -228,9 +137,7 @@ function mergeConfigPreservingSecrets(
 		next.providerName = patch.providerName;
 	}
 
-	if (options?.writeApiKey && typeof patch.apiKey === "string") {
-		next.apiKey = patch.apiKey;
-	} else if (typeof existing.apiKey === "string" && existing.apiKey.length > 0) {
+	if (typeof existing.apiKey === "string" && existing.apiKey.length > 0) {
 		// Never accept apiKey from login patch. Preserve existing ambient file key only.
 		next.apiKey = existing.apiKey;
 	} else {
@@ -256,36 +163,6 @@ export async function saveConfigFilePreservingSecrets(
 			}
 		}
 		const next = mergeConfigPreservingSecrets(existing, patch);
-		atomicReplaceConfig(join(agentDir, CONFIG_FILE_NAME), next);
-	});
-}
-
-/** @deprecated Prefer saveConfigFilePreservingSecrets for login paths. */
-export async function saveConfigFile(
-	agentDir: string,
-	config: LLMGatesConfigFile,
-	options?: { omitApiKey?: boolean },
-): Promise<void> {
-	await withConfigLock(agentDir, () => {
-		let existing: LLMGatesConfigFile = {};
-		try {
-			existing = loadValidatedConfigFile(agentDir);
-		} catch (error) {
-			const err = error as NodeJS.ErrnoException;
-			if (err.code !== "ENOENT") {
-				throw error;
-			}
-		}
-		const next = mergeConfigPreservingSecrets(
-			existing,
-			{
-				baseUrl: config.baseUrl,
-				providerId: config.providerId,
-				providerName: config.providerName,
-				apiKey: config.apiKey,
-			},
-			{ writeApiKey: !options?.omitApiKey && typeof config.apiKey === "string" },
-		);
 		atomicReplaceConfig(join(agentDir, CONFIG_FILE_NAME), next);
 	});
 }
