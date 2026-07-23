@@ -86,6 +86,7 @@ export {
 	normalizeAndValidateBaseUrl,
 	resolveCanonicalConnection,
 	resolveProviderIdentity,
+	resolvePricingAutoUpdate,
 } from "./connection.js";
 
 export type {

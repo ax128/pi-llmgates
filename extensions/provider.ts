@@ -27,8 +27,14 @@ import {
 	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
 	toPiModel,
+	type GatewayModel,
 	type PiProviderModel,
 } from "./catalog.js";
+import {
+	applyPricingCacheToResolver,
+	readModelPricingFile,
+	refreshModelPricing,
+} from "./model-pricing-cache.js";
 import {
 	connectionFromAmbientEnv,
 	connectionFromConfigFile,
@@ -115,8 +121,11 @@ function isModelStructValid(model: unknown, providerId: string, inferenceBaseUrl
 	return true;
 }
 
-function mapGatewayPayload(providerId: string, inferenceBaseUrl: string, payload: unknown): Model<Api>[] {
-	const gatewayModels = parseGatewayModelsPayload(payload);
+function mapGatewayPayload(
+	providerId: string,
+	inferenceBaseUrl: string,
+	gatewayModels: readonly GatewayModel[],
+): Model<Api>[] {
 	const mapped: PiProviderModel[] = [];
 	const seen = new Set<string>();
 	for (const item of gatewayModels) {
@@ -180,6 +189,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	let warnedLoginStoreFailure = false;
 
 	const ambientAtStart = connectionFromAmbientEnv() ?? connectionFromConfigFile(agentDir);
+	applyPricingCacheToResolver(readModelPricingFile(agentDir));
 
 	function track<T>(promise: Promise<T>): Promise<T> {
 		activeTasks.add(promise);
@@ -256,7 +266,9 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			operation: "models",
 			fetchImpl,
 		});
-		return mapGatewayPayload(providerId, connection.inferenceBaseUrl, payload);
+		const gatewayModels = parseGatewayModelsPayload(payload);
+		void track(refreshModelPricing(agentDir, gatewayModels, { fetchImpl, now }));
+		return mapGatewayPayload(providerId, connection.inferenceBaseUrl, gatewayModels);
 	}
 
 	function connectionStillMatches(expected: CanonicalConnection): boolean {

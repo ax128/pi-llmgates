@@ -4,6 +4,7 @@
 
 import type { Api, Model } from "@earendil-works/pi-ai";
 import packageJson from "../package.json" with { type: "json" };
+import { resolveModelCostRates } from "./model-pricing.js";
 
 export type ThinkingLevelMap = Partial<
 	Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra", string | null>
@@ -327,7 +328,7 @@ export function toPiModel(model: GatewayModel): PiProviderModel | null {
 		name: (model.display_name ?? model.name ?? id).trim() || id,
 		reasoning: hasReasoning,
 		input: buildInputModalities(model),
-		cost: { ...ZERO_COST },
+		cost: resolveModelCostRates(id, providerId || undefined),
 		contextWindow,
 		maxTokens,
 		api: toPiApiType(endpoint, providerId),

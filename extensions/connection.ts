@@ -275,6 +275,8 @@ export interface LLMGatesConfigFile {
 	apiKey?: string;
 	providerId?: string;
 	providerName?: string;
+	/** When true (default), sync upstream retail prices for /models catalog entries. */
+	pricingAutoUpdate?: boolean;
 	[key: string]: unknown;
 }
 
@@ -298,6 +300,9 @@ export function loadValidatedConfigFile(agentDir: string): LLMGatesConfigFile {
 		}
 		if (config.providerName !== undefined && typeof config.providerName !== "string") {
 			throw new Error(`${CONFIG_FILE_NAME}.providerName must be a string`);
+		}
+		if (config.pricingAutoUpdate !== undefined && typeof config.pricingAutoUpdate !== "boolean") {
+			throw new Error(`${CONFIG_FILE_NAME}.pricingAutoUpdate must be a boolean`);
 		}
 		return config;
 	} catch (error) {
@@ -339,6 +344,26 @@ export function resolveProviderIdentity(agentDir: string): ProviderIdentity {
 	}
 
 	return { providerId, providerName };
+}
+
+/** Env LLMGATES_PRICING_AUTO_UPDATE overrides llmgates.json. Default: true. */
+export function resolvePricingAutoUpdate(agentDir: string): boolean {
+	const env = process.env.LLMGATES_PRICING_AUTO_UPDATE?.trim().toLowerCase();
+	if (env === "0" || env === "false" || env === "no" || env === "off") {
+		return false;
+	}
+	if (env === "1" || env === "true" || env === "yes" || env === "on") {
+		return true;
+	}
+	try {
+		const file = loadValidatedConfigFile(agentDir);
+		if (typeof file.pricingAutoUpdate === "boolean") {
+			return file.pricingAutoUpdate;
+		}
+	} catch {
+		// fall through to default
+	}
+	return true;
 }
 
 function connectionFromParts(
