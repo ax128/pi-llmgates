@@ -19,9 +19,13 @@ import type {
 	SimpleStreamOptions,
 	ProviderModelsStore,
 } from "@earendil-works/pi-ai";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
+// pi extension loader aliases "@earendil-works/pi-ai" to compat.js; subpath api/*.lazy
+// imports resolve incorrectly (compat.js/api/...). Use the compat entrypoint.
+import {
+	anthropicMessagesApi,
+	openAICompletionsApi,
+	openAIResponsesApi,
+} from "@earendil-works/pi-ai/compat";
 import {
 	applyGatewayModelCosts,
 	isOfflineMode,
