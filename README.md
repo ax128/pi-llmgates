@@ -113,7 +113,7 @@ pi
 4. Maps gateway catalog to pi models with per-model `api` (`responses` / `chat_completions` / `messages`)
 5. Skips image/video **generation** models (not suitable for pi coding agent)
 6. `/balance` — account wallet + subscription via `GET /v1/user/balance`
-7. TUI footer extension line: elapsed time, call count, estimated **cost**, and `/calls` for per-model breakdown (turn or session); settle notification also shows TPS (tok/s). Usage aggregation runs on a background task chain and never blocks the agent loop.
+7. TUI footer extension line: elapsed time, call count (including subagent/Task rollups), estimated **cost**, and `/calls` for per-model breakdown (turn or session); settle notification also shows TPS (tok/s). Parent-session assistant usage is tracked on `message_end`; pi `subagent` / Cursor `Task` tool results and `.pi-subagents/artifacts/*_meta.json` rollups are merged into the same counters. Usage aggregation runs on a background task chain and never blocks the agent loop.
 
 ## Security
 
