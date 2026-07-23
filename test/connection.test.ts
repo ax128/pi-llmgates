@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { join } from "node:path";
 import {
 	BUILTIN_PROVIDER_IDS,
@@ -93,6 +94,15 @@ describe("normalizeAndValidateBaseUrl", () => {
 		expect(normalizeAndValidateBaseUrl("http://evil.example/v1").ok).toBe(false);
 		expect(normalizeAndValidateBaseUrl("http://0.0.0.0/v1").ok).toBe(false);
 		expect(normalizeAndValidateBaseUrl("https://user:pass@example.com/v1").ok).toBe(false);
+	});
+});
+
+describe("builtin provider reservations", () => {
+	it("is a superset of installed Pi builtin provider IDs and keeps legacy reservations", () => {
+		for (const provider of builtinProviders()) {
+			expect(BUILTIN_PROVIDER_IDS.has(provider.id), provider.id).toBe(true);
+		}
+		expect(BUILTIN_PROVIDER_IDS.has("google-gemini-cli")).toBe(true);
 	});
 });
 

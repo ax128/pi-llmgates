@@ -24,8 +24,6 @@ import {
 	requestLimitedJson,
 } from "./http.js";
 
-const LLMGATES_PROVIDER_ID = "llmgates";
-
 export const MODEL_PRICING_CACHE_FILE = "llmgates-model-pricing.json";
 export const MODEL_PRICING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 export const LITELLM_PRICING_URL =
@@ -51,6 +49,8 @@ export interface ModelPricingFile {
 	rates: Record<string, ModelCostRates>;
 	/** Manual overrides — always beat `rates` and auto-sync. */
 	overrides?: Record<string, ModelCostRates>;
+	/** Auto-synced LiteLLM input context windows. */
+	contextWindows?: Record<string, number>;
 }
 
 /** @deprecated alias */
@@ -62,10 +62,34 @@ interface LiteLLMPriceEntry {
 	cache_read_input_token_cost?: number;
 	input_cost_per_token_cache_hit?: number;
 	cache_creation_input_token_cost?: number;
+	max_input_tokens?: number;
+	max_tokens?: number;
+	max_output_tokens?: number;
 }
 
+const PROVIDER_LITELLM_PREFIXES: Record<string, readonly string[]> = {
+	openai: ["openai"],
+	anthropic: ["anthropic"],
+	google: ["google", "gemini", "vertex_ai"],
+	deepseek: ["deepseek"],
+	xai: ["xai"],
+	grok: ["xai"],
+	antigravity: ["antigravity"],
+	kiro: ["kiro"],
+	kling: ["kling"],
+	mistral: ["mistral"],
+	openmodels: ["openmodels"],
+};
+
+export const KNOWN_UPSTREAM_VENDOR_IDS: ReadonlySet<string> = new Set(
+	Object.keys(PROVIDER_LITELLM_PREFIXES),
+);
+
 let memoryRates: Record<string, ModelCostRates> | undefined;
+let memoryOverrides: Record<string, ModelCostRates> | undefined;
+let memoryContextWindows: Record<string, number> | undefined;
 let pricingSyncChain: Promise<void> = Promise.resolve();
+const activePricingSyncs = new Map<string, Promise<ModelPricingFile | null>>();
 
 function logPricingSyncIssue(message: string): void {
 	const debug = process.env.LLMGATES_DEBUG?.trim().toLowerCase();
@@ -77,19 +101,19 @@ function logPricingSyncIssue(message: string): void {
 export function pricingCacheKey(modelId: string, providerId?: string): string {
 	const id = modelId.trim();
 	const vendor = providerId?.trim().toLowerCase();
-	if (vendor && vendor !== LLMGATES_PROVIDER_ID) {
-		return `${vendor}/${id}`;
-	}
-	return id;
+	return vendor && KNOWN_UPSTREAM_VENDOR_IDS.has(vendor) ? `${vendor}/${id}` : id;
 }
 
 export function clearPricingCacheMemory(): void {
 	memoryRates = undefined;
+	memoryOverrides = undefined;
+	memoryContextWindows = undefined;
 }
 
-/** @internal test helper — reset single-flight chain between tests. */
+/** @internal test helper — reset single-flights between tests. */
 export function resetPricingSyncChainForTests(): void {
 	pricingSyncChain = Promise.resolve();
+	activePricingSyncs.clear();
 }
 
 export function mergePricingRates(file: ModelPricingFile): Record<string, ModelCostRates> {
@@ -104,25 +128,32 @@ export function mergePricingRates(file: ModelPricingFile): Record<string, ModelC
 }
 
 export function applyPricingCacheToResolver(file: ModelPricingFile | null | undefined): void {
-	memoryRates = file ? mergePricingRates(file) : undefined;
+	memoryRates = file?.rates ? { ...file.rates } : undefined;
+	memoryOverrides = file?.overrides ? { ...file.overrides } : undefined;
+	memoryContextWindows = file?.contextWindows ? { ...file.contextWindows } : undefined;
+}
+
+function memoryLookupKeys(modelId: string, providerId?: string): string[] {
+	const bare = modelId.trim();
+	const scoped = pricingCacheKey(bare, providerId);
+	return scoped === bare ? [bare] : [scoped, bare];
 }
 
 export function lookupMemoryPricingRates(modelId: string, providerId?: string): ModelCostRates | undefined {
-	if (!memoryRates) {
-		return undefined;
-	}
-	const id = modelId.trim();
-	const vendor = providerId?.trim().toLowerCase();
-	const upstreamVendor = vendor && vendor !== LLMGATES_PROVIDER_ID ? vendor : undefined;
+	const keys = memoryLookupKeys(modelId, providerId);
+	const rates = keys.map((key) => memoryOverrides?.[key]).find(Boolean) ??
+		keys.map((key) => memoryRates?.[key]).find(Boolean);
+	return rates ? { ...rates } : undefined;
+}
 
-	if (upstreamVendor) {
-		const keyed = memoryRates[`${upstreamVendor}/${id}`];
-		if (keyed) {
-			return { ...keyed };
+export function lookupMemoryContextWindow(modelId: string, providerId?: string): number | undefined {
+	for (const key of memoryLookupKeys(modelId, providerId)) {
+		const contextWindow = memoryContextWindows?.[key];
+		if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+			return contextWindow;
 		}
 	}
-	const bare = memoryRates[id];
-	return bare ? { ...bare } : undefined;
+	return undefined;
 }
 
 function isModelCostRates(value: unknown): value is ModelCostRates {
@@ -152,6 +183,19 @@ function parseRatesObject(value: unknown): Record<string, ModelCostRates> {
 		}
 	}
 	return rates;
+}
+
+function parseContextWindows(value: unknown): Record<string, number> {
+	const contextWindows: Record<string, number> = {};
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return contextWindows;
+	}
+	for (const [key, contextWindow] of Object.entries(value as Record<string, unknown>)) {
+		if (key.trim() && typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+			contextWindows[key] = contextWindow;
+		}
+	}
+	return contextWindows;
 }
 
 export function readModelPricingFile(agentDir: string): ModelPricingFile | null {
@@ -197,6 +241,9 @@ export function readModelPricingFile(agentDir: string): ModelPricingFile | null 
 	const overrides = parseRatesObject(obj.overrides);
 	if (Object.keys(overrides).length > 0) {
 		file.overrides = overrides;
+	}
+	if (obj.contextWindows && typeof obj.contextWindows === "object" && !Array.isArray(obj.contextWindows)) {
+		file.contextWindows = parseContextWindows(obj.contextWindows);
 	}
 	return file;
 }
@@ -270,34 +317,20 @@ export function catalogRefsFromGatewayModels(models: readonly GatewayModel[]): C
 	return out;
 }
 
-const PROVIDER_LITELLM_PREFIXES: Record<string, readonly string[]> = {
-	openai: ["openai"],
-	anthropic: ["anthropic"],
-	google: ["google", "gemini", "vertex_ai"],
-	deepseek: ["deepseek"],
-	xai: ["xai"],
-	grok: ["xai"],
-};
-
 export function litellmLookupCandidates(modelId: string, providerId?: string): string[] {
 	const id = modelId.trim();
 	const vendor = providerId?.trim().toLowerCase();
-	const candidates: string[] = [];
-
-	if (vendor && vendor !== LLMGATES_PROVIDER_ID) {
-		const prefixes = PROVIDER_LITELLM_PREFIXES[vendor] ?? [vendor];
-		for (const prefix of prefixes) {
-			candidates.push(`${prefix}/${id}`);
-		}
+	if (!vendor || !KNOWN_UPSTREAM_VENDOR_IDS.has(vendor)) {
+		return [id];
 	}
 
-	candidates.push(id);
-
-	if (vendor && vendor !== LLMGATES_PROVIDER_ID) {
-		candidates.push(`${vendor}/${id}`);
-	}
-
-	return [...new Set(candidates)];
+	return [
+		...new Set([
+			...PROVIDER_LITELLM_PREFIXES[vendor].map((prefix) => `${prefix}/${id}`),
+			id,
+			`${vendor}/${id}`,
+		]),
+	];
 }
 
 export function ratesFromLiteLLMEntry(entry: LiteLLMPriceEntry): ModelCostRates | null {
@@ -344,17 +377,35 @@ export function lookupLiteLLMRates(
 	return null;
 }
 
-function hasCachedRate(file: ModelPricingFile, ref: CatalogModelRef): boolean {
-	const key = pricingCacheKey(ref.id, ref.providerId);
-	if (file.overrides?.[key] || file.overrides?.[ref.id]) {
-		return true;
+export function lookupLiteLLMContextWindow(
+	table: Record<string, LiteLLMPriceEntry>,
+	modelId: string,
+	providerId?: string,
+): number | undefined {
+	for (const key of litellmLookupCandidates(modelId, providerId)) {
+		const entry = table[key];
+		const contextWindow = entry?.max_input_tokens ?? entry?.max_tokens;
+		if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+			return contextWindow;
+		}
 	}
-	return key in file.rates || ref.id in file.rates;
+	return undefined;
+}
+
+function hasCachedRate(file: ModelPricingFile, ref: CatalogModelRef): boolean {
+	const keys = memoryLookupKeys(ref.id, ref.providerId);
+	if (keys.some((key) => Boolean(file.overrides?.[key]))) return true;
+	return keys.length === 1 ? keys[0]! in file.rates : keys[0]! in file.rates;
+}
+
+function hasCachedContextWindow(file: ModelPricingFile, ref: CatalogModelRef): boolean {
+	const key = memoryLookupKeys(ref.id, ref.providerId)[0]!;
+	const contextWindow = file.contextWindows?.[key];
+	return typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0;
 }
 
 function isOverridden(file: ModelPricingFile, ref: CatalogModelRef): boolean {
-	const key = pricingCacheKey(ref.id, ref.providerId);
-	return Boolean(file.overrides?.[key] || file.overrides?.[ref.id]);
+	return memoryLookupKeys(ref.id, ref.providerId).some((key) => Boolean(file.overrides?.[key]));
 }
 
 export interface SyncModelPricingCacheOptions {
@@ -395,13 +446,30 @@ export async function refreshModelPricing(
 		return existing;
 	}
 
-	let result: ModelPricingFile | null = existing;
-	const task = pricingSyncChain.then(async () => {
-		result = await syncModelPricingCache(agentDir, models, options, existing);
-	});
-	pricingSyncChain = task.catch(() => undefined);
-	await task;
-	return result;
+	const key = JSON.stringify([
+		agentDir,
+		catalogRefsFromGatewayModels(models)
+			.map((ref) => pricingCacheKey(ref.id, ref.providerId))
+			.sort(),
+	]);
+	const active = activePricingSyncs.get(key);
+	if (active) {
+		return active;
+	}
+
+	const task = pricingSyncChain.then(() => syncModelPricingCache(agentDir, models, options));
+	activePricingSyncs.set(key, task);
+	pricingSyncChain = task.then(
+		() => undefined,
+		() => undefined,
+	);
+	try {
+		return await task;
+	} finally {
+		if (activePricingSyncs.get(key) === task) {
+			activePricingSyncs.delete(key);
+		}
+	}
 }
 
 export async function syncModelPricingCache(
@@ -423,14 +491,16 @@ export async function syncModelPricingCache(
 		};
 
 	const stale = now() - (existing.lastAutoSyncAt ?? existing.updatedAt) >= MODEL_PRICING_CACHE_TTL_MS;
-	const missing = catalog.filter((ref) => !hasCachedRate(existing, ref));
+	const missingRates = catalog.filter((ref) => !hasCachedRate(existing, ref));
+	const missingContexts = catalog.filter((ref) => !hasCachedContextWindow(existing, ref));
 
-	if (!stale && missing.length === 0) {
+	if (!stale && missingRates.length === 0 && missingContexts.length === 0) {
 		applyPricingCacheToResolver(existing);
 		return existing;
 	}
 
-	const refsToResolve = stale ? catalog : missing;
+	const rateRefsToResolve = stale ? catalog : missingRates;
+	const contextRefsToResolve = stale ? catalog : missingContexts;
 	const loadTable =
 		options.loadLiteLLMTable ??
 		(async () => fetchLiteLLMPriceTable({ fetchImpl: options.fetchImpl }));
@@ -446,9 +516,9 @@ export async function syncModelPricingCache(
 		return existing;
 	}
 
-	// Keep existing rates as base so hand-edited entries survive TTL refresh.
+	// Keep existing values as base so hand-edited and off-catalog entries survive refresh.
 	const nextRates = { ...existing.rates };
-	for (const ref of refsToResolve) {
+	for (const ref of rateRefsToResolve) {
 		if (isOverridden(existing, ref)) {
 			continue;
 		}
@@ -456,9 +526,16 @@ export async function syncModelPricingCache(
 		if (!rates) {
 			continue;
 		}
-		const key = pricingCacheKey(ref.id, ref.providerId);
-		nextRates[key] = rates;
-		nextRates[ref.id] = rates;
+		nextRates[pricingCacheKey(ref.id, ref.providerId)] = rates;
+	}
+
+	const nextContextWindows = { ...existing.contextWindows };
+	for (const ref of contextRefsToResolve) {
+		const contextWindow = lookupLiteLLMContextWindow(table, ref.id, ref.providerId);
+		if (contextWindow === undefined) {
+			continue;
+		}
+		nextContextWindows[pricingCacheKey(ref.id, ref.providerId)] = contextWindow;
 	}
 
 	const next: ModelPricingFile = {
@@ -466,6 +543,7 @@ export async function syncModelPricingCache(
 		updatedAt: now(),
 		lastAutoSyncAt: now(),
 		rates: nextRates,
+		contextWindows: nextContextWindows,
 	};
 	if (existing.overrides && Object.keys(existing.overrides).length > 0) {
 		next.overrides = { ...existing.overrides };

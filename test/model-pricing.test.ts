@@ -1,8 +1,34 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { toPiModel } from "../extensions/catalog.js";
-import { MODEL_PRICING_LAST_UPDATED, resolveModelCostRates } from "../extensions/model-pricing.js";
+import { applyPricingCacheToResolver, clearPricingCacheMemory } from "../extensions/model-pricing-cache.js";
+import {
+	KNOWN_UPSTREAM_VENDOR_IDS,
+	MODEL_PRICING_LAST_UPDATED,
+	resolveModelCostRates,
+} from "../extensions/model-pricing.js";
 
 describe("resolveModelCostRates", () => {
+	beforeEach(() => clearPricingCacheMemory());
+
+	it("shares all supported upstream vendor ids used for provider filtering", () => {
+		expect([...KNOWN_UPSTREAM_VENDOR_IDS]).toEqual(
+			expect.arrayContaining([
+				"openai",
+				"anthropic",
+				"google",
+				"deepseek",
+				"xai",
+				"grok",
+				"antigravity",
+				"kiro",
+				"kling",
+				"mistral",
+				"openmodels",
+			]),
+		);
+		expect(KNOWN_UPSTREAM_VENDOR_IDS.has("work-newapi")).toBe(false);
+	});
+
 	it("matches vendor-specific OpenAI flagship tiers", () => {
 		expect(resolveModelCostRates("gpt-5.6-sol", "openai")).toMatchObject({
 			input: 5,
@@ -50,6 +76,24 @@ describe("resolveModelCostRates", () => {
 
 	it("resolves by model id when provider is llmgates", () => {
 		expect(resolveModelCostRates("claude-opus-4-8", "llmgates").input).toBe(5);
+	});
+
+	it("keeps same-id known vendors isolated while unknown instances use bare rates", () => {
+		const openai = { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 };
+		const mistral = { input: 3, output: 4, cacheRead: 0.3, cacheWrite: 3 };
+		const bare = { input: 11, output: 37, cacheRead: 2, cacheWrite: 13 };
+		applyPricingCacheToResolver({
+			updatedAt: Date.now(),
+			rates: {
+				"openai/shared-model": openai,
+				"mistral/shared-model": mistral,
+				"shared-model": bare,
+			},
+		});
+
+		expect(resolveModelCostRates("shared-model", "openai")).toEqual(openai);
+		expect(resolveModelCostRates("shared-model", "mistral")).toEqual(mistral);
+		expect(resolveModelCostRates("shared-model", "work-newapi")).toEqual(bare);
 	});
 
 	it("applies resolved cost to catalog models", () => {
