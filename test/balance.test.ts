@@ -15,6 +15,7 @@ describe("fetchBalanceMessage", () => {
 				getAuth: async () => ({ apiKey: "k", baseUrl: `${server.baseUrl}/v1` }),
 			});
 			expect(message).toMatch(/Available:/);
+			expect(message).not.toContain("bonus");
 			expect(message).not.toContain("k");
 		} finally {
 			await server.close();

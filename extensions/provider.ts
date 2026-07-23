@@ -55,6 +55,11 @@ import {
 	requestLimitedJson,
 } from "./http.js";
 import { CREDENTIAL_TTL_MS, saveConfigFilePreservingSecrets } from "./lib.js";
+import {
+	formatLoginValidationFailure,
+	LLMGATES_LOGIN_UI,
+	translateLoginError,
+} from "./login-ui.js";
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const PENDING_TTL_MS = 5 * 60 * 1000;
@@ -444,26 +449,34 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			if (interaction.signal?.aborted) {
 				throw new DOMException("The operation was aborted.", "AbortError");
 			}
+			if (attempt === 1) {
+				interaction.notify({
+					type: "info",
+					message: LLMGATES_LOGIN_UI.intro.message,
+					links: LLMGATES_LOGIN_UI.intro.links,
+				});
+			}
 
 			const baseUrlAnswer = await interaction.prompt({
 				type: "text",
-				message: "LLMGates base URL (empty for default)",
-				placeholder: "https://apicn.llmgates.com/v1",
+				message: LLMGATES_LOGIN_UI.baseUrl.message,
+				placeholder: LLMGATES_LOGIN_UI.baseUrl.placeholder,
 			});
-			const baseUrlInput = baseUrlAnswer.trim() || "https://apicn.llmgates.com/v1";
+			const baseUrlInput = baseUrlAnswer.trim() || LLMGATES_LOGIN_UI.baseUrl.placeholder;
 			const validated = normalizeAndValidateBaseUrl(baseUrlInput);
 			if (!validated.ok || !validated.inferenceBaseUrl || !validated.modelsUrl || !validated.balanceUrl) {
 				lastError = new Error(validated.error ?? "Invalid base URL");
-				interaction.notify({ type: "progress", message: lastError.message });
+				interaction.notify({ type: "progress", message: translateLoginError(lastError.message) });
 				continue;
 			}
 
 			const apiKey = await interaction.prompt({
 				type: "secret",
-				message: "LLMGates API key",
+				message: LLMGATES_LOGIN_UI.apiKey.message,
+				placeholder: LLMGATES_LOGIN_UI.apiKey.placeholder,
 			});
 			if (!apiKey.trim()) {
-				lastError = new Error("API key is required");
+				lastError = new Error(LLMGATES_LOGIN_UI.errors.apiKeyRequired);
 				interaction.notify({ type: "progress", message: lastError.message });
 				continue;
 			}
@@ -477,7 +490,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				balanceUrl: validated.balanceUrl,
 			};
 
-			interaction.notify({ type: "progress", message: "Validating credentials..." });
+			interaction.notify({ type: "progress", message: LLMGATES_LOGIN_UI.validating });
 			try {
 				const mapped = await fetchCatalog(connection, interaction.signal);
 				try {
@@ -526,7 +539,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 							: new Error(String(error));
 				interaction.notify({
 					type: "progress",
-					message: `Validation failed (${attempt}/${MAX_LOGIN_ATTEMPTS}): ${lastError.message}`,
+					message: formatLoginValidationFailure(attempt, MAX_LOGIN_ATTEMPTS, lastError),
 				});
 			}
 		}
@@ -536,8 +549,8 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	}
 
 	const oauthAuth = {
-		name: `${providerName} account`,
-		loginLabel: "Configure base URL + API key",
+		name: LLMGATES_LOGIN_UI.oauthAccountName(providerName),
+		loginLabel: LLMGATES_LOGIN_UI.loginLabel,
 		login,
 		async refresh(credential: OAuthCredential): Promise<OAuthCredential> {
 			return {

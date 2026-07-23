@@ -421,7 +421,6 @@ export function formatCreditsMessage(snapshot: CreditsSnapshot): string {
 	const unit = snapshot.unit ?? "USD";
 	const balance = parseUsd(snapshot.balance ?? snapshot.remaining_usd);
 	const wallet = parseUsd(snapshot.wallet_usd);
-	const bonus = parseUsd(snapshot.bonus_usd);
 	const subscriptionRemaining = parseUsd(snapshot.subscription_usd);
 	const subscriptionTotal = parseUsd(snapshot.subscription_total_usd);
 	const subscriptionUsed = parseUsd(snapshot.subscription_used_usd);
@@ -430,7 +429,6 @@ export function formatCreditsMessage(snapshot: CreditsSnapshot): string {
 	const parts = [
 		`Available: ${balance.toFixed(2)} ${unit}`,
 		`wallet ${wallet.toFixed(2)}`,
-		`bonus ${bonus.toFixed(2)}`,
 		`subscription remaining ${subscriptionRemaining.toFixed(2)}`,
 	];
 	if (subscriptionTotal > 0) {

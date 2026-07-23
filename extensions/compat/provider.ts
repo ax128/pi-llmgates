@@ -30,7 +30,13 @@ import {
 	requestLimitedJson,
 } from "../http.js";
 import { CREDENTIAL_TTL_MS } from "../lib.js";
-import { compatModelsUrl, mapCompatModelsPayload } from "./catalog.js";
+import {
+	COMPAT_BOOTSTRAP_LOGIN_UI,
+	compatInstanceLoginUi,
+	formatLoginValidationFailure,
+	translateLoginError,
+} from "../login-ui.js";
+import { compatModelsUrl, applyMoonshotKimiCompatModel, mapCompatModelsPayload } from "./catalog.js";
 import {
 	decodeCompatRefreshMeta,
 	encodeCompatRefreshMeta,
@@ -146,24 +152,35 @@ export function createCompatBootstrapProvider(options: CompatBootstrapProviderOp
 		let lastError: Error | undefined;
 		for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
 			if (interaction.signal?.aborted) throw abortError();
+			if (attempt === 1) {
+				interaction.notify({ type: "info", message: COMPAT_BOOTSTRAP_LOGIN_UI.intro.message });
+			}
 			const rawScheme = await interaction.prompt({
 				type: "select",
-				message: "Gateway scheme",
-				options: [
-					{ id: "newapi", label: "NewAPI" },
-					{ id: "sub2api", label: "Sub2API" },
-					{ id: "cpa", label: "CLIProxyAPI" },
-				],
+				message: COMPAT_BOOTSTRAP_LOGIN_UI.scheme.message,
+				options: COMPAT_BOOTSTRAP_LOGIN_UI.scheme.options,
 			});
-			const rawId = await interaction.prompt({ type: "text", message: "Instance provider ID" });
-			const rawName = await interaction.prompt({ type: "text", message: "Instance display name (empty uses ID)" });
+			const rawId = await interaction.prompt({
+				type: "text",
+				message: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.message,
+				placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.placeholder,
+			});
+			const rawName = await interaction.prompt({
+				type: "text",
+				message: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.message,
+				placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.placeholder,
+			});
 			const scheme = isCompatScheme(rawScheme) ? rawScheme : undefined;
 			const rawBaseUrl = await interaction.prompt({
 				type: "text",
-				message: "Gateway base URL",
+				message: COMPAT_BOOTSTRAP_LOGIN_UI.baseUrl.message,
 				placeholder: scheme ? BASE_URL_PLACEHOLDER_FOR_SCHEME[scheme] : undefined,
 			});
-			const apiKey = await interaction.prompt({ type: "secret", message: "Gateway API key" });
+			const apiKey = await interaction.prompt({
+				type: "secret",
+				message: COMPAT_BOOTSTRAP_LOGIN_UI.apiKey.message,
+				placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.apiKey.placeholder,
+			});
 
 			let instance: CompatInstance;
 			try {
@@ -179,11 +196,11 @@ export function createCompatBootstrapProvider(options: CompatBootstrapProviderOp
 				};
 			} catch (error) {
 				lastError = error instanceof Error ? error : new Error(String(error));
-				interaction.notify({ type: "progress", message: lastError.message });
+				interaction.notify({ type: "progress", message: translateLoginError(lastError.message) });
 				continue;
 			}
 
-			interaction.notify({ type: "progress", message: "Validating credentials..." });
+			interaction.notify({ type: "progress", message: COMPAT_BOOTSTRAP_LOGIN_UI.validating });
 			let initialCatalog: CompatBootstrapResult["initialCatalog"];
 			try {
 				const payload = await requestLimitedJson({
@@ -213,7 +230,7 @@ export function createCompatBootstrapProvider(options: CompatBootstrapProviderOp
 				lastError = error instanceof Error ? error : new Error(String(error));
 				interaction.notify({
 					type: "progress",
-					message: `Validation failed (${attempt}/${MAX_LOGIN_ATTEMPTS}): ${lastError.message}`,
+					message: formatLoginValidationFailure(attempt, MAX_LOGIN_ATTEMPTS, lastError),
 				});
 				continue;
 			}
@@ -238,11 +255,11 @@ export function createCompatBootstrapProvider(options: CompatBootstrapProviderOp
 
 	return {
 		id: BOOTSTRAP_PROVIDER_ID,
-		name: "LLMGates 2API",
+		name: COMPAT_BOOTSTRAP_LOGIN_UI.providerName,
 		auth: {
 			oauth: {
-				name: "Add OpenAI-compatible gateway",
-				loginLabel: "Add gateway instance",
+				name: COMPAT_BOOTSTRAP_LOGIN_UI.oauthName,
+				loginLabel: COMPAT_BOOTSTRAP_LOGIN_UI.loginLabel,
 				login,
 				async refresh(credential: OAuthCredential): Promise<OAuthCredential> {
 					return { ...credential, type: "oauth", expires: now() + CREDENTIAL_TTL_MS };
@@ -320,6 +337,7 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 	let commitChain: Promise<void> = Promise.resolve();
 	const activeTasks = new Set<Promise<unknown>>();
 	let provider!: CompatProvider;
+	const instanceLoginUi = () => compatInstanceLoginUi(currentInstance.name);
 
 	applyPricingCacheToResolver(readModelPricingFile(agentDir));
 
@@ -393,6 +411,7 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 
 	function patchCachedModels(cachedModels: readonly Model<Api>[]): void {
 		for (const model of cachedModels) {
+			applyMoonshotKimiCompatModel(model);
 			const cost = lookupMemoryPricingRates(model.id);
 			if (cost) model.cost = cost;
 			const contextWindow = lookupMemoryContextWindow(model.id);
@@ -624,18 +643,22 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		if (shutDown) throw new Error("Provider is shut down");
 		pending = null;
 		const loginGeneration = generation;
+		const loginUi = instanceLoginUi();
 		let lastError: Error | undefined;
 
 		for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
 			if (interaction.signal?.aborted || !lifecycleMatches(loginGeneration)) throw abortError();
+			if (attempt === 1) {
+				interaction.notify({ type: "info", message: loginUi.intro.message });
+			}
 			const rawBaseUrl = await interaction.prompt({
 				type: "text",
-				message: `${currentInstance.name} base URL`,
+				message: loginUi.baseUrl.message,
 				placeholder: currentInstance.baseUrl,
 			});
 			if (!lifecycleMatches(loginGeneration)) throw abortError();
 			if (!rawBaseUrl.trim()) {
-				lastError = new Error("Base URL is required");
+				lastError = new Error(loginUi.errors.baseUrlRequired);
 				interaction.notify({ type: "progress", message: lastError.message });
 				continue;
 			}
@@ -645,23 +668,24 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 				baseUrl = normalizeCompatBaseUrl(rawBaseUrl);
 			} catch (error) {
 				lastError = error instanceof Error ? error : new Error(String(error));
-				interaction.notify({ type: "progress", message: lastError.message });
+				interaction.notify({ type: "progress", message: translateLoginError(lastError.message) });
 				continue;
 			}
 
 			const apiKey = await interaction.prompt({
 				type: "secret",
-				message: `${currentInstance.name} API key`,
+				message: loginUi.apiKey.message,
+				placeholder: loginUi.apiKey.placeholder,
 			});
 			if (!lifecycleMatches(loginGeneration)) throw abortError();
 			if (!apiKey.trim()) {
-				lastError = new Error("API key is required");
+				lastError = new Error(loginUi.errors.apiKeyRequired);
 				interaction.notify({ type: "progress", message: lastError.message });
 				continue;
 			}
 
 			const connection = { apiKey, baseUrl };
-			interaction.notify({ type: "progress", message: "Validating credentials..." });
+			interaction.notify({ type: "progress", message: loginUi.validating });
 			try {
 				const catalog = await fetchCatalog(connection, interaction.signal, loginGeneration);
 				if (!lifecycleMatches(loginGeneration)) throw abortError();
@@ -692,7 +716,7 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 						: new Error(String(error));
 				interaction.notify({
 					type: "progress",
-					message: `Validation failed (${attempt}/${MAX_LOGIN_ATTEMPTS}): ${lastError.message}`,
+					message: formatLoginValidationFailure(attempt, MAX_LOGIN_ATTEMPTS, lastError),
 				});
 			}
 		}
@@ -707,8 +731,8 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		get baseUrl() { return currentInstance.baseUrl; },
 		auth: {
 			oauth: {
-				name: `${currentInstance.name} account`,
-				loginLabel: "Configure base URL + API key",
+				name: instanceLoginUi().oauthAccountName,
+				loginLabel: instanceLoginUi().loginLabel,
 				login,
 				async refresh(credential: OAuthCredential): Promise<OAuthCredential> {
 					return { ...credential, type: "oauth", expires: now() + CREDENTIAL_TTL_MS };

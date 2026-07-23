@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import type { Model } from "@earendil-works/pi-ai";
 import {
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_MAX_TOKENS,
@@ -8,8 +9,12 @@ import {
 	clearPricingCacheMemory,
 } from "../extensions/model-pricing-cache.js";
 import {
+	applyMoonshotKimiCompatModel,
 	compatModelsUrl,
+	isMoonshotKimiCompatModel,
+	isMoonshotKimiK3Model,
 	mapCompatModelsPayload,
+	moonshotKimiOpenAICompat,
 	resolveCompatContextWindow,
 } from "../extensions/compat/catalog.js";
 
@@ -208,5 +213,74 @@ describe("mapCompatModelsPayload", () => {
 			input: ["text", "image"],
 			thinkingLevelMap: { off: "none" },
 		});
+	});
+
+	it("injects Moonshot/Kimi openai-completions compat for CPA and Sub2API gateways", () => {
+		const sub2Options = {
+			providerId: "work-sub2api",
+			inferenceBaseUrl: "https://sub2.example/v1",
+		};
+		const { models } = mapCompatModelsPayload(
+			[
+				{ id: "kimi-k2.7-code-highspeed" },
+				{ id: "k3" },
+				{ id: "moonshot/kimi-k2.5", provider_id: "some-reseller" },
+				{ id: "gpt-4o", provider_id: "openai" },
+			],
+			sub2Options,
+		);
+
+		expect(models[0]?.compat).toEqual(moonshotKimiOpenAICompat("kimi-k2.7-code-highspeed"));
+		expect(models[1]?.compat).toEqual(moonshotKimiOpenAICompat("k3"));
+		expect(models[1]?.thinkingLevelMap).toMatchObject({ low: "low", high: "high", max: "max" });
+		expect(models[2]?.compat).toEqual(moonshotKimiOpenAICompat("moonshot/kimi-k2.5"));
+		expect(models[3]?.compat).toBeUndefined();
+	});
+
+	it("detects Moonshot/Kimi models by vendor or id prefix", () => {
+		expect(isMoonshotKimiCompatModel("custom-alias", "moonshotai-cn")).toBe(true);
+		expect(isMoonshotKimiCompatModel("kimi-k2.6")).toBe(true);
+		expect(isMoonshotKimiCompatModel("vendor/kimi-k3")).toBe(true);
+		expect(isMoonshotKimiCompatModel("k3")).toBe(true);
+		expect(isMoonshotKimiCompatModel("gpt-4o", "openai")).toBe(false);
+	});
+
+	it("uses kimi-k3-specific compat when the model id indicates k3", () => {
+		expect(moonshotKimiOpenAICompat("kimi-k3")).toMatchObject({
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: true,
+			deferredToolsMode: "kimi",
+		});
+		expect(moonshotKimiOpenAICompat("k3")).toMatchObject({
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: true,
+			deferredToolsMode: "kimi",
+		});
+		expect(moonshotKimiOpenAICompat("kimi-k2.7-code-highspeed")).toMatchObject({
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: false,
+			thinkingFormat: "deepseek",
+		});
+	});
+
+	it("patches cached gateway models that predate compat metadata", () => {
+		const cached: Model<"openai-completions"> = {
+			id: "k3",
+			name: "k3",
+			provider: "work-sub2api",
+			baseUrl: "https://sub2.example/v1",
+			api: "openai-completions",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_048_576,
+			maxTokens: 131_072,
+		};
+
+		applyMoonshotKimiCompatModel(cached);
+
+		expect(cached.compat).toEqual(moonshotKimiOpenAICompat("k3"));
+		expect(cached.thinkingLevelMap).toMatchObject({ low: "low", high: "high", max: "max", medium: null });
+		expect(isMoonshotKimiK3Model("k3")).toBe(true);
 	});
 });

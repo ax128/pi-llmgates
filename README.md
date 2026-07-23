@@ -99,7 +99,7 @@ pi
 | 命令 | 说明 |
 | --- | --- |
 | `/login LLMGates` | 配置 baseUrl + API key |
-| `/balance` | 查看钱包、赠金、订阅余额 |
+| `/balance` | 查看钱包、订阅余额 |
 | `/model` | 选择已注册的 LLMGates 模型 |
 | `/reload` | 安装或更新插件后重载扩展 |
 
