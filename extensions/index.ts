@@ -4,9 +4,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { registerBalanceCommand } from "./balance.js";
+import { registerCompatGateways } from "./compat/index.js";
 import { detectLegacyApiKeyCredential, resolveProviderIdentity } from "./connection.js";
 import { createLLMGatesProvider, type LLMGatesProvider } from "./provider.js";
-import { registerBalanceCommand } from "./balance.js";
 
 function logWarn(message: string): void {
 	console.warn(`[pi-llmgates-provider] ${message}`);
@@ -22,18 +23,33 @@ function logDebug(message: string): void {
 export default function (pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
 
-	let identity: { providerId: string; providerName: string };
+	let identity: { providerId: string; providerName: string } | undefined;
+	let identityError: unknown;
 	try {
 		identity = resolveProviderIdentity(agentDir);
 	} catch (error) {
+		identityError = error;
+	}
+
+	try {
+		registerCompatGateways(pi, agentDir, {
+			reservedProviderIds: ["llmgates", ...(identity ? [identity.providerId] : [])],
+		});
+	} catch (error) {
 		logWarn(error instanceof Error ? error.message : String(error));
+	}
+
+	if (!identity) {
+		logWarn(identityError instanceof Error ? identityError.message : String(identityError));
 		return;
 	}
 
 	const legacy = detectLegacyApiKeyCredential(agentDir, identity.providerId);
 	if (legacy.blocked) {
 		logWarn(
-			`Refusing to register ${identity.providerId}: legacy auth.json type "api_key" is blocked. Run /logout ${identity.providerName} or remove the entry, then /reload.`,
+			legacy.reason === "legacy_api_key"
+				? `Refusing to register ${identity.providerId}: legacy auth.json type "api_key" is blocked. Run /logout ${identity.providerName} or remove the entry, then /reload.`
+				: `Refusing to register ${identity.providerId}: auth.json is malformed or its ${identity.providerId} entry is invalid. Repair or remove auth.json, then /reload.`,
 		);
 		registerBalanceCommand(pi, identity.providerId, { legacyBlocked: true });
 		return;

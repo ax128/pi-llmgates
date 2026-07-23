@@ -105,6 +105,28 @@ pi
 
 重新配置：随时再跑 `/login LLMGates`。`/logout` 清除 `auth.json` 登录凭证后，env/`llmgates.json` ambient 配置才会重新生效。交互式登录**不会**写入新的 API Key，也**不会**删除文件中已有的 ambient `apiKey`。
 
+### 多网关 2api 兼容层
+
+要添加 NewAPI、Sub2API 或 CLIProxyAPI 实例，运行：
+
+```text
+/login llmgates-2api
+```
+
+提示顺序为：scheme → instance provider ID → display name（留空则使用 ID）→ base URL → API key。instance ID 必须手动指定，不会自动生成；base URL 和 API key 都必须显式输入，scheme 只提供标签和 URL 占位提示（占位不是默认值）。所有 scheme 共用同一个 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名切换协议。
+
+| 命令 | 说明 |
+| --- | --- |
+| `/2api list` | 列出实例 ID、scheme、base URL 和 display name（不显示密钥） |
+| `/2api remove <id>` | 删除指定实例及其 registry/auth 记录 |
+| `/login <id>` | 重新配置该实例的 base URL 和 API key |
+
+每个实例只提供模型发现和推理，不提供余额、钱包、订阅或账号功能；`/balance` 仅适用于 core `llmgates`。Pi 0.81 的模型选择器按 provider ID 区分同名模型，例如 `grok-4.5 [work-newapi]`。
+
+`/2api remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能列出已删除的 ID，执行 `/reload` 后才会消失。如果 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/2api remove` 无法处理它；必须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目，才能复用该 ID。
+
+2api API key 以 literal string 存入 `~/.pi/agent/auth.json`，不会展开 `!cmd`、`$ENV` 或 `${...}`。`auth.json` 和 `llmgates-2api.json` 均以 `0600` 权限写入，并使用跨进程文件锁、锁内重读和原子替换保护并发更新。
+
 ## What it does
 
 1. Registers provider `llmgates` in `/login`

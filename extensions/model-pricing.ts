@@ -7,7 +7,12 @@
  */
 
 import type { ModelCostRates } from "@earendil-works/pi-ai";
-import { lookupMemoryPricingRates } from "./model-pricing-cache.js";
+import {
+	KNOWN_UPSTREAM_VENDOR_IDS,
+	lookupMemoryPricingRates,
+} from "./model-pricing-cache.js";
+
+export { KNOWN_UPSTREAM_VENDOR_IDS } from "./model-pricing-cache.js";
 
 export const DEFAULT_PROVIDER_ID = "llmgates";
 export const MODEL_PRICING_LAST_UPDATED = "2026-07-23";
@@ -325,7 +330,7 @@ export const DEFAULT_MODEL_COST: ModelCostRates = {
 export function resolveModelCostRates(modelId: string, providerId?: string): ModelCostRates {
 	const id = modelId.trim();
 	const vendor = providerId?.trim().toLowerCase();
-	const upstreamVendor = vendor && vendor !== DEFAULT_PROVIDER_ID ? vendor : undefined;
+	const upstreamVendor = vendor && KNOWN_UPSTREAM_VENDOR_IDS.has(vendor) ? vendor : undefined;
 
 	// Dynamic cache (LiteLLM / official upstream retail) takes precedence over static rules.
 	const cached = lookupMemoryPricingRates(id, providerId);
