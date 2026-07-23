@@ -147,6 +147,22 @@ export function registerCompatGateways(
 		}
 	}
 
+	function rollbackStartupInstances(registered: readonly CompatProvider[]): void {
+		for (const provider of [...registered].reverse()) {
+			if (providers.get(provider.id) === provider) {
+				providers.delete(provider.id);
+			}
+			try {
+				pi.unregisterProvider(provider.id);
+			} catch (error) {
+				logWarn(`Failed to unregister ${provider.id} during startup rollback: ${errorText(error)}`);
+			}
+			void provider.shutdown().catch((error) => {
+				logWarn(`Failed to shut down ${provider.id} during startup rollback: ${errorText(error)}`);
+			});
+		}
+	}
+
 	function makeProvider(
 		instance: CompatInstance,
 		initialCatalog?: CompatProviderOptions["initialCatalog"],
@@ -209,20 +225,6 @@ export function registerCompatGateways(
 	});
 
 	pi.registerProvider(bootstrapProvider);
-	for (const instance of instances) {
-		if (!startupCredentials.has(instance.id)) {
-			logWarn(`Skipping ${instance.id}: registry metadata has no matching OAuth auth entry; run /login llmgates-2api or repair auth.json.`);
-			continue;
-		}
-		const provider = makeProvider(instance);
-		providers.set(instance.id, provider);
-		try {
-			pi.registerProvider(provider);
-		} catch (error) {
-			providers.delete(instance.id);
-			throw compatInitError(error);
-		}
-	}
 
 	pi.registerCommand("2api", {
 		description: "List, remove, or get help for 2api gateway instances",
@@ -312,6 +314,24 @@ export function registerCompatGateways(
 	pi.on("session_shutdown", async () => {
 		await Promise.allSettled([...providers.values()].map((provider) => provider.shutdown()));
 	});
+
+	const startupRegistered: CompatProvider[] = [];
+	for (const instance of instances) {
+		if (!startupCredentials.has(instance.id)) {
+			logWarn(`Skipping ${instance.id}: registry metadata has no matching OAuth auth entry; run /login llmgates-2api or repair auth.json.`);
+			continue;
+		}
+		const provider = makeProvider(instance);
+		providers.set(instance.id, provider);
+		try {
+			pi.registerProvider(provider);
+			startupRegistered.push(provider);
+		} catch (error) {
+			providers.delete(instance.id);
+			rollbackStartupInstances(startupRegistered);
+			throw compatInitError(error);
+		}
+	}
 
 	return { providers, bootstrapProvider };
 }

@@ -93,8 +93,9 @@ function fakeProviderFactory() {
 	return { providers, createProvider, releaseById };
 }
 
-function createPi() {
+function createPi(options: { failProviderId?: string } = {}) {
 	const registered: Provider[] = [];
+	const unregistered: string[] = [];
 	const handlers = new Map<string, Array<(event: unknown) => unknown>>();
 	const pi = {
 		on(event: string, handler: (event: unknown) => unknown) {
@@ -102,13 +103,23 @@ function createPi() {
 			current.push(handler);
 			handlers.set(event, current);
 		},
-		registerProvider(provider: Provider) { registered.push(provider); },
-		unregisterProvider() {},
+		registerProvider(provider: Provider) {
+			if (provider.id === options.failProviderId) {
+				throw new Error("runtime registration exploded");
+			}
+			registered.push(provider);
+		},
+		unregisterProvider(id: string) {
+			unregistered.push(id);
+			const index = registered.findIndex((provider) => provider.id === id);
+			if (index !== -1) registered.splice(index, 1);
+		},
 		registerCommand() {},
 	} as unknown as ExtensionAPI;
 	return {
 		pi,
 		registered,
+		unregistered,
 		async emit(event: string, payload: unknown = {}) {
 			await Promise.all((handlers.get(event) ?? []).map((handler) => handler(payload)));
 		},
@@ -116,6 +127,23 @@ function createPi() {
 }
 
 describe("compat lifecycle", () => {
+	it("rolls back earlier startup instances when a later runtime registration fails", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const fakes = fakeProviderFactory();
+		const pi = createPi({ failProviderId: "gateway-b" });
+		try {
+			seedStartup(agentDir);
+			expect(() => registerCompatGateways(pi.pi, agentDir, { createProvider: fakes.createProvider })).toThrow(
+				/compat initialization/i,
+			);
+			expect(pi.registered.map((provider) => provider.id)).toEqual(["llmgates-2api"]);
+			expect(pi.unregistered).toEqual(["gateway-a"]);
+			expect(fakes.providers.get("gateway-a")!.shutdown).toHaveBeenCalledOnce();
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("warns and skips registry metadata without matching OAuth auth", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		const pi = createPi();
