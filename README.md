@@ -113,7 +113,7 @@ pi
 4. Maps gateway catalog to pi models with per-model `api` (`responses` / `chat_completions` / `messages`)
 5. Skips image/video **generation** models (not suitable for pi coding agent)
 6. `/balance` — account wallet + subscription via `GET /v1/user/balance`
-7. TUI footer: elapsed time + TPS / token summary after each turn
+7. TUI footer extension line: elapsed time, call count, estimated **cost**, and `/calls` for per-model breakdown (turn or session)
 
 ## Security
 
@@ -189,7 +189,40 @@ Resolution (no cross-source borrowing):
 
 `inference_endpoint` takes precedence over `web_chat_endpoint` when both are present.
 
-Cost is reported as zero (billing on LLMGates).
+Cost is estimated from **upstream retail API rates** (not LLMGates wallet billing; use `/balance` for account spend).
+
+### Pricing files (JSON, under `~/.pi/agent/`)
+
+**`llmgates.json`** — provider config + auto-update switch:
+
+```json
+{
+  "baseUrl": "https://apicn.llmgates.com/v1",
+  "pricingAutoUpdate": true
+}
+```
+
+Set `"pricingAutoUpdate": false` (or env `LLMGATES_PRICING_AUTO_UPDATE=0`) to manage prices manually only.
+
+**`llmgates-model-pricing.json`** — editable USD per **1M tokens** (`input`, `output`, `cacheRead`, `cacheWrite`). Keys: `modelId` or `provider/modelId` (e.g. `openai/gpt-4o`).
+
+```json
+{
+  "_comment": "overrides always win over rates and auto-sync",
+  "updatedAt": 0,
+  "lastAutoSyncAt": 0,
+  "rates": {
+    "openai/gpt-4o": { "input": 2.5, "output": 10, "cacheRead": 1.25, "cacheWrite": 2.5 }
+  },
+  "overrides": {
+    "anthropic/claude-sonnet-4-6": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 }
+  }
+}
+```
+
+When `pricingAutoUpdate` is enabled, each `/models` refresh syncs [LiteLLM](https://github.com/BerriAI/litellm) retail prices for catalog models in the background (does not block model listing): missing models fetch immediately; otherwise refresh every 24h. Auto-sync writes to `rates` only — **`overrides` are never touched**. Use **`overrides`** for prices that must never be overwritten by auto-sync; `rates` entries for catalog models are refreshed from LiteLLM on each TTL cycle. Off-catalog entries in `rates` are preserved across refreshes. On every refresh the file is re-read from disk so hand edits apply without restart. Static rules in `extensions/model-pricing.ts` remain the offline fallback.
+
+The TUI extension status and `/calls` show estimated cost aligned with pi’s `usage.cost`. Pi’s built-in footer may still append `(sub)` for OAuth auth — that is not LLMGates billing.
 
 ## Troubleshooting
 
