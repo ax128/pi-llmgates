@@ -55,10 +55,19 @@ export default function (pi: ExtensionAPI): void {
 		return;
 	}
 
+	function reregisterCoreProvider(changed: LLMGatesProvider): void {
+		try {
+			pi.registerProvider(changed);
+		} catch {
+			// ExtensionAPI may be invalidated after reload.
+		}
+	}
+
 	const provider: LLMGatesProvider = createLLMGatesProvider({
 		agentDir,
 		providerId: identity.providerId,
 		providerName: identity.providerName,
+		onModelsChanged: reregisterCoreProvider,
 	});
 
 	// Native Provider overload (pi 0.81+)
@@ -70,20 +79,10 @@ export default function (pi: ExtensionAPI): void {
 		const reason = typeof (event as { reason?: string })?.reason === "string" ? (event as { reason: string }).reason : "start";
 		provider.beginSession(reason);
 		// Fire-and-forget background refresh; do not block session availability.
-		void provider
-			.startBackgroundRefresh()
-			.then(() => {
-				try {
-					if (provider.getInternalState().modelCount > 0) {
-						pi.registerProvider(provider);
-					}
-				} catch {
-					// ExtensionAPI may be invalidated after reload.
-				}
-			})
-			.catch(() => {
-				// errors retained previous models
-			});
+		// Re-register (including empty catalogs) happens via onModelsChanged after a real commit.
+		void provider.startBackgroundRefresh().catch(() => {
+			// errors retained previous models
+		});
 	});
 
 	pi.on("session_shutdown", async () => {

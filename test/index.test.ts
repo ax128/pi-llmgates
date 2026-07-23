@@ -14,5 +14,7 @@ describe("extension entrypoints", () => {
 		expect(pkg.pi?.extensions).not.toContain("./extensions/balance.ts");
 		expect(pkg.pi?.extensions).not.toContain("./extensions/compat/index.ts");
 		expect(entrypoint).toMatch(/registerCompatGateways/);
+		expect(entrypoint).toMatch(/onModelsChanged/);
+		expect(entrypoint).not.toMatch(/modelCount > 0/);
 	});
 });

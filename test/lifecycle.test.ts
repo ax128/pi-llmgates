@@ -280,4 +280,113 @@ describe("lifecycle", () => {
 			await server.close();
 		}
 	});
+
+	it("defers session_start background refresh until store is injected", async () => {
+		let hits = 0;
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				onRequest: () => {
+					hits += 1;
+				},
+				body: JSON.stringify([{ id: "fresh", name: "Fresh" }]),
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			provider.beginSession("startup");
+			await provider.startBackgroundRefresh({ force: true });
+			expect(hits).toBe(0);
+			expect(provider.getInternalState().wantsBackgroundRefresh).toBe(true);
+
+			const store = createMemoryStore();
+			await provider.refreshModels!({
+				store,
+				allowNetwork: false,
+				credential: {
+					type: "api_key",
+					key: "k",
+					env: {
+						LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+						LLMGATES_RESOLVED_SOURCE: "env",
+					},
+				},
+			});
+			// deferred background task is fire-and-forget from refreshModels
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			for (let i = 0; i < 40 && hits === 0; i++) {
+				await new Promise((resolve) => setTimeout(resolve, 25));
+			}
+			expect(hits).toBe(1);
+			expect(provider.getModels().some((m) => m.id === "fresh")).toBe(true);
+			expect(provider.getInternalState().wantsBackgroundRefresh).toBe(false);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("notifies onModelsChanged for an empty successful background catalog", async () => {
+		const server = await startLoopbackServer([
+			{ path: "/v1/models?client_version=pi", body: "[]" },
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			let notified = 0;
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+				onModelsChanged: () => {
+					notified += 1;
+				},
+			});
+			const store = createMemoryStore({
+				models: [
+					{
+						id: "old",
+						name: "Old",
+						provider: "llmgates",
+						api: "openai-responses",
+						baseUrl: `${server.baseUrl}/v1`,
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 1,
+						maxTokens: 1,
+					},
+				],
+				checkedAt: 1,
+			});
+			await provider.refreshModels!({
+				store,
+				allowNetwork: false,
+				credential: {
+					type: "api_key",
+					key: "k",
+					env: {
+						LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+						LLMGATES_RESOLVED_SOURCE: "env",
+					},
+				},
+			});
+			expect(provider.getModels()).toHaveLength(1);
+			provider.beginSession("startup");
+			await provider.startBackgroundRefresh({ force: true });
+			expect(provider.getModels()).toHaveLength(0);
+			expect(notified).toBe(1);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
 });

@@ -10,13 +10,13 @@ import {
 	fsyncSync,
 	mkdirSync,
 	openSync,
-	readFileSync,
 	renameSync,
 	unlinkSync,
-	writeFileSync,
 	writeSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import * as lockfile from "proper-lockfile";
 import {
 	CONFIG_FILE_NAME,
 	loadValidatedConfigFile,
@@ -113,69 +113,66 @@ export const CREDENTIAL_TTL_MS = 100 * 365 * 24 * 60 * 60 * 1000;
 export type { LLMGatesConfigFile };
 
 const CONFIG_FILE_MODE = 0o600;
+const CONFIG_DIR_MODE = 0o700;
+const LOCK_OPTIONS: lockfile.LockOptions = {
+	realpath: false,
+	stale: 30_000,
+	retries: {
+		retries: 10,
+		factor: 2,
+		minTimeout: 100,
+		maxTimeout: 10_000,
+		randomize: true,
+	},
+};
 
 export function loadConfigFile(agentDir: string): LLMGatesConfigFile {
 	return loadValidatedConfigFile(agentDir);
 }
 
-export function saveConfigFilePreservingSecrets(
-	agentDir: string,
-	patch: { baseUrl?: string; providerId?: string; providerName?: string },
-): void {
-	const configPath = join(agentDir, CONFIG_FILE_NAME);
-	mkdirSync(dirname(configPath), { recursive: true });
-
-	let existing: LLMGatesConfigFile = {};
-	try {
-		existing = loadValidatedConfigFile(agentDir);
-	} catch (error) {
-		const err = error as NodeJS.ErrnoException;
-		if (err.code !== "ENOENT") {
-			// If file exists but is invalid, fail closed rather than overwrite.
-			throw error;
-		}
+function ensureAgentDir(agentDir: string): void {
+	const created = mkdirSync(agentDir, { recursive: true, mode: CONFIG_DIR_MODE });
+	if (created !== undefined) {
+		chmodSync(agentDir, CONFIG_DIR_MODE);
 	}
+}
 
-	const next: LLMGatesConfigFile = {
-		...existing,
-	};
-
-	if (patch.baseUrl !== undefined) {
-		next.baseUrl = patch.baseUrl;
-	}
-	if (patch.providerId !== undefined) {
-		next.providerId = patch.providerId;
-	}
-	if (patch.providerName !== undefined) {
-		next.providerName = patch.providerName;
-	}
-
-	// Never accept apiKey from patch. Preserve existing ambient file key only.
-	if (typeof existing.apiKey === "string" && existing.apiKey.length > 0) {
-		next.apiKey = existing.apiKey;
-	} else {
-		delete next.apiKey;
-	}
-
-	const payload = `${JSON.stringify(next, null, 2)}\n`;
-	const tempPath = join(
-		dirname(configPath),
-		`.${CONFIG_FILE_NAME}.${process.pid}.${Date.now()}.tmp`,
-	);
-
+function createFileIfMissing(path: string, initialContent: string): void {
 	let fd: number | undefined;
 	try {
-		fd = openSync(tempPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, CONFIG_FILE_MODE);
-		writeSync(fd, payload);
+		fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, CONFIG_FILE_MODE);
+		writeSync(fd, initialContent);
 		fsyncSync(fd);
 		closeSync(fd);
 		fd = undefined;
-		renameSync(tempPath, configPath);
-		chmodSync(configPath, CONFIG_FILE_MODE);
+		chmodSync(path, CONFIG_FILE_MODE);
+	} catch (error) {
+		if (fd !== undefined) {
+			try {
+				closeSync(fd);
+			} catch {
+				// ignore
+			}
+		}
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+			throw error;
+		}
+	}
+}
 
-		// Best-effort parent directory fsync for durability on supporting platforms.
+function atomicReplaceConfig(path: string, value: unknown): void {
+	const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+	let fd: number | undefined;
+	try {
+		fd = openSync(tempPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, CONFIG_FILE_MODE);
+		writeSync(fd, `${JSON.stringify(value, null, 2)}\n`);
+		fsyncSync(fd);
+		closeSync(fd);
+		fd = undefined;
+		renameSync(tempPath, path);
+		chmodSync(path, CONFIG_FILE_MODE);
 		try {
-			const dirFd = openSync(dirname(configPath), constants.O_RDONLY);
+			const dirFd = openSync(dirname(path), constants.O_RDONLY);
 			try {
 				fsyncSync(dirFd);
 			} finally {
@@ -192,11 +189,6 @@ export function saveConfigFilePreservingSecrets(
 				// ignore
 			}
 		}
-		try {
-			unlinkSync(tempPath);
-		} catch {
-			// ignore
-		}
 		throw error;
 	} finally {
 		try {
@@ -207,25 +199,93 @@ export function saveConfigFilePreservingSecrets(
 	}
 }
 
+async function withConfigLock<T>(agentDir: string, fn: (configPath: string) => Promise<T> | T): Promise<T> {
+	const configPath = join(agentDir, CONFIG_FILE_NAME);
+	ensureAgentDir(agentDir);
+	const release = await lockfile.lock(configPath, LOCK_OPTIONS);
+	try {
+		createFileIfMissing(configPath, "{}\n");
+		return await fn(configPath);
+	} finally {
+		await release();
+	}
+}
+
+function mergeConfigPreservingSecrets(
+	existing: LLMGatesConfigFile,
+	patch: { baseUrl?: string; providerId?: string; providerName?: string; apiKey?: string },
+	options?: { writeApiKey?: boolean },
+): LLMGatesConfigFile {
+	const next: LLMGatesConfigFile = { ...existing };
+
+	if (patch.baseUrl !== undefined) {
+		next.baseUrl = patch.baseUrl;
+	}
+	if (patch.providerId !== undefined) {
+		next.providerId = patch.providerId;
+	}
+	if (patch.providerName !== undefined) {
+		next.providerName = patch.providerName;
+	}
+
+	if (options?.writeApiKey && typeof patch.apiKey === "string") {
+		next.apiKey = patch.apiKey;
+	} else if (typeof existing.apiKey === "string" && existing.apiKey.length > 0) {
+		// Never accept apiKey from login patch. Preserve existing ambient file key only.
+		next.apiKey = existing.apiKey;
+	} else {
+		delete next.apiKey;
+	}
+
+	return next;
+}
+
+export async function saveConfigFilePreservingSecrets(
+	agentDir: string,
+	patch: { baseUrl?: string; providerId?: string; providerName?: string },
+): Promise<void> {
+	await withConfigLock(agentDir, () => {
+		let existing: LLMGatesConfigFile = {};
+		try {
+			existing = loadValidatedConfigFile(agentDir);
+		} catch (error) {
+			const err = error as NodeJS.ErrnoException;
+			if (err.code !== "ENOENT") {
+				// If file exists but is invalid, fail closed rather than overwrite.
+				throw error;
+			}
+		}
+		const next = mergeConfigPreservingSecrets(existing, patch);
+		atomicReplaceConfig(join(agentDir, CONFIG_FILE_NAME), next);
+	});
+}
+
 /** @deprecated Prefer saveConfigFilePreservingSecrets for login paths. */
-export function saveConfigFile(
+export async function saveConfigFile(
 	agentDir: string,
 	config: LLMGatesConfigFile,
 	options?: { omitApiKey?: boolean },
-): void {
-	const patch = {
-		baseUrl: config.baseUrl,
-		providerId: config.providerId,
-		providerName: config.providerName,
-	};
-	saveConfigFilePreservingSecrets(agentDir, patch);
-	if (!options?.omitApiKey && typeof config.apiKey === "string") {
-		// Ambient non-interactive setup may still need to write apiKey.
-		const current = loadConfigFile(agentDir);
-		const next = { ...current, apiKey: config.apiKey };
-		writeFileSync(join(agentDir, CONFIG_FILE_NAME), `${JSON.stringify(next, null, 2)}\n`, {
-			mode: CONFIG_FILE_MODE,
-		});
-		chmodSync(join(agentDir, CONFIG_FILE_NAME), CONFIG_FILE_MODE);
-	}
+): Promise<void> {
+	await withConfigLock(agentDir, () => {
+		let existing: LLMGatesConfigFile = {};
+		try {
+			existing = loadValidatedConfigFile(agentDir);
+		} catch (error) {
+			const err = error as NodeJS.ErrnoException;
+			if (err.code !== "ENOENT") {
+				throw error;
+			}
+		}
+		const next = mergeConfigPreservingSecrets(
+			existing,
+			{
+				baseUrl: config.baseUrl,
+				providerId: config.providerId,
+				providerName: config.providerName,
+				apiKey: config.apiKey,
+			},
+			{ writeApiKey: !options?.omitApiKey && typeof config.apiKey === "string" },
+		);
+		atomicReplaceConfig(join(agentDir, CONFIG_FILE_NAME), next);
+	});
 }

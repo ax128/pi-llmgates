@@ -78,6 +78,8 @@ export interface LLMGatesProviderOptions {
 	providerName: string;
 	now?: () => number;
 	fetchImpl?: typeof fetch;
+	/** Called after in-memory models are published (including empty catalogs). */
+	onModelsChanged?: (provider: LLMGatesProvider) => void;
 }
 
 interface PendingCatalog {
@@ -98,6 +100,7 @@ export interface LLMGatesProvider extends Provider {
 		modelCount: number;
 		hasPending: boolean;
 		hasStore: boolean;
+		wantsBackgroundRefresh: boolean;
 	};
 }
 
@@ -184,6 +187,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	const now = options.now ?? (() => Date.now());
 	const fetchImpl = options.fetchImpl ?? fetch;
 
+	let provider!: LLMGatesProvider;
 	let models: Model<Api>[] = [];
 	let generation = 0;
 	let nextRequestId = 1;
@@ -194,6 +198,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	let lastCheckedAt: number | undefined;
 	let sessionController: AbortController | null = null;
 	let shutDown = false;
+	let wantBackgroundRefresh = false;
 	let commitChain: Promise<void> = Promise.resolve();
 	const activeTasks = new Set<Promise<unknown>>();
 	const activeControllers = new Set<AbortController>();
@@ -221,8 +226,18 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		pending = null;
 	}
 
-	function setModels(next: Model<Api>[]): void {
+	function setModels(next: Model<Api>[], notify = false): void {
 		models = next.slice();
+		if (notify) {
+			options.onModelsChanged?.(provider);
+		}
+	}
+
+	function scheduleDeferredBackgroundRefresh(): void {
+		if (!wantBackgroundRefresh || shutDown || isOfflineMode()) {
+			return;
+		}
+		void track(runBackgroundRefresh());
 	}
 
 	function schedulePricingSync(gatewayModels: readonly GatewayModel[]): void {
@@ -373,12 +388,12 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				if (shutDown) return;
 				try {
 					await context.store.write({ models: candidate, checkedAt: now() });
-					setModels(candidate);
+					setModels(candidate, true);
 					lastConnection = pendingConnection;
 					lastCheckedAt = now();
 				} catch (error) {
 					// Login exception: keep old disk cache, publish in-memory models.
-					setModels(candidate);
+					setModels(candidate, true);
 					lastConnection = pendingConnection;
 					if (!warnedLoginStoreFailure) {
 						warnedLoginStoreFailure = true;
@@ -390,13 +405,17 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 					}
 				}
 			});
+			wantBackgroundRefresh = false;
 			return;
 		}
 
 		if (!context.allowNetwork || !connection) {
+			// session_start may have requested a background refresh before the store existed.
+			scheduleDeferredBackgroundRefresh();
 			return;
 		}
 		if (isOfflineMode()) {
+			wantBackgroundRefresh = false;
 			return;
 		}
 		if (context.signal?.aborted) {
@@ -409,6 +428,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			now() - lastCheckedAt < CATALOG_BACKGROUND_REFRESH_MS &&
 			models.length > 0;
 		if (fresh) {
+			wantBackgroundRefresh = false;
 			return;
 		}
 
@@ -428,9 +448,10 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			}
 			try {
 				await context.store.write({ models: fetched, checkedAt: now() });
-				setModels(fetched);
+				setModels(fetched, true);
 				lastConnection = requestConnection;
 				lastCheckedAt = now();
+				wantBackgroundRefresh = false;
 			} catch (error) {
 				// Normal refresh: retain previous models and cache.
 				throw error instanceof Error ? error : new Error(String(error));
@@ -495,7 +516,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			try {
 				const mapped = await fetchCatalog(connection, interaction.signal);
 				try {
-					saveConfigFilePreservingSecrets(agentDir, {
+					await saveConfigFilePreservingSecrets(agentDir, {
 						baseUrl: connection.inferenceBaseUrl,
 						providerId,
 						providerName,
@@ -613,7 +634,56 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		return streams;
 	}
 
-	const provider: LLMGatesProvider = {
+	async function runBackgroundRefresh(opts?: { force?: boolean }): Promise<void> {
+		if (shutDown || isOfflineMode() || !wantBackgroundRefresh) {
+			return;
+		}
+		const store = scopedStore;
+		const connection =
+			lastConnection ?? connectionFromAmbientEnv() ?? connectionFromConfigFile(agentDir);
+		if (!store || !connection) {
+			// Keep wantBackgroundRefresh until refreshModels injects store/connection.
+			return;
+		}
+		if (
+			!opts?.force &&
+			typeof lastCheckedAt === "number" &&
+			now() - lastCheckedAt < CATALOG_BACKGROUND_REFRESH_MS &&
+			models.length > 0
+		) {
+			wantBackgroundRefresh = false;
+			return;
+		}
+
+		const controller = sessionController ?? new AbortController();
+		const requestConnection = connection;
+		const requestId = nextRequestId++;
+		latestRequestId = requestId;
+		const gen = generation;
+		wantBackgroundRefresh = false;
+
+		try {
+			const fetched = await fetchCatalog(requestConnection, controller.signal);
+			await withCommit(async () => {
+				if (shutDown || gen !== generation) return;
+				if (requestId !== latestRequestId) return;
+				if (controller.signal.aborted) return;
+				if (!connectionStillMatches(requestConnection)) return;
+				await store.write({ models: fetched, checkedAt: now() });
+				if (shutDown || gen !== generation) return;
+				setModels(fetched, true);
+				lastConnection = requestConnection;
+				lastCheckedAt = now();
+			});
+		} catch (error) {
+			if (error instanceof DOMException && error.name === "AbortError") {
+				return;
+			}
+			// retain previous models; allow a later session_start to retry
+		}
+	}
+
+	provider = {
 		id: providerId,
 		name: providerName,
 		baseUrl: ambientAtStart?.inferenceBaseUrl,
@@ -644,53 +714,13 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			if (shutDown || isOfflineMode()) {
 				return;
 			}
-			const store = scopedStore;
-			const connection =
-				lastConnection ?? connectionFromAmbientEnv() ?? connectionFromConfigFile(agentDir);
-			if (!store || !connection) {
-				return;
-			}
-			if (
-				!opts?.force &&
-				typeof lastCheckedAt === "number" &&
-				now() - lastCheckedAt < CATALOG_BACKGROUND_REFRESH_MS &&
-				models.length > 0
-			) {
-				return;
-			}
-
-			const controller = sessionController ?? new AbortController();
-			const requestConnection = connection;
-			const requestId = nextRequestId++;
-			latestRequestId = requestId;
-			const gen = generation;
-
-			const task = (async () => {
-				try {
-					const fetched = await fetchCatalog(requestConnection, controller.signal);
-					await withCommit(async () => {
-						if (shutDown || gen !== generation) return;
-						if (requestId !== latestRequestId) return;
-						if (controller.signal.aborted) return;
-						if (!connectionStillMatches(requestConnection)) return;
-						await store.write({ models: fetched, checkedAt: now() });
-						if (shutDown || gen !== generation) return;
-						setModels(fetched);
-						lastConnection = requestConnection;
-						lastCheckedAt = now();
-					});
-				} catch (error) {
-					if (error instanceof DOMException && error.name === "AbortError") {
-						return;
-					}
-					// retain previous models
-				}
-			})();
-			await track(task);
+			wantBackgroundRefresh = true;
+			await track(runBackgroundRefresh(opts));
 		},
 		async shutdown(): Promise<void> {
 			shutDown = true;
 			generation += 1;
+			wantBackgroundRefresh = false;
 			clearPending();
 			for (const controller of activeControllers) {
 				controller.abort();
@@ -709,6 +739,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				modelCount: models.length,
 				hasPending: Boolean(pending),
 				hasStore: Boolean(scopedStore),
+				wantsBackgroundRefresh: wantBackgroundRefresh,
 			};
 		},
 	};

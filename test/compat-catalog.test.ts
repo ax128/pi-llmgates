@@ -98,6 +98,22 @@ describe("mapCompatModelsPayload", () => {
 		]);
 	});
 
+	it("prefers display_name then name over bare id", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{ id: "m1", display_name: " Fancy M1 ", name: "ignored" },
+				{ id: "m2", name: " Named M2 " },
+				{ id: "m3" },
+			],
+			OPTIONS,
+		);
+		expect(models.map(({ id, name }) => ({ id, name }))).toEqual([
+			{ id: "m1", name: "Fancy M1" },
+			{ id: "m2", name: "Named M2" },
+			{ id: "m3", name: "m3" },
+		]);
+	});
+
 	it("uses only true known upstream vendors in catalog refs and never the instance ID", () => {
 		const { catalogRefs } = mapCompatModelsPayload(
 			[

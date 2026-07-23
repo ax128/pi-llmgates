@@ -143,9 +143,13 @@ export function mapCompatModelsPayload(
 			? upstream.provider_id.trim().toLowerCase()
 			: undefined;
 
+		const displayName =
+			(typeof upstream.display_name === "string" && upstream.display_name.trim()) ||
+			(typeof upstream.name === "string" && upstream.name.trim()) ||
+			id;
 		const model: Model<Api> = {
 			id,
-			name: id,
+			name: displayName,
 			provider: options.providerId,
 			baseUrl: options.inferenceBaseUrl,
 			api: "openai-completions",
