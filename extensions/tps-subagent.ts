@@ -108,13 +108,23 @@ function parseSingleSubagentResult(
 	result: Record<string, unknown>,
 	index: number,
 	toolCallId: string,
+	fallbackRunId?: unknown,
 ): SubagentUsageRecord | null {
 	const usage = result.usage;
 	if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
 		return null;
 	}
 	const modelLabel = normalizeSubagentModelLabel(result.model, result.agent);
-	return usageCountersToRecord(`tool:${toolCallId}:${index}`, modelLabel, usage as SubagentUsageCounters);
+	const sourceKey = resolveSubagentSourceKey(
+		{
+			runId: result.runId ?? fallbackRunId,
+			agent: result.agent,
+			childIndex: result.childIndex ?? result.index,
+		},
+		toolCallId,
+		index,
+	);
+	return usageCountersToRecord(sourceKey, modelLabel, usage as SubagentUsageCounters);
 }
 
 /** Extract rollup usage from pi `subagent` / Cursor `Task` tool results. */
@@ -132,7 +142,8 @@ export function extractSubagentUsageFromToolExecution(
 	const root = result as Record<string, unknown>;
 	const details = root.details;
 	if (details && typeof details === "object" && !Array.isArray(details)) {
-		const results = (details as Record<string, unknown>).results;
+		const detailsObj = details as Record<string, unknown>;
+		const results = detailsObj.results;
 		if (Array.isArray(results)) {
 			const out: SubagentUsageRecord[] = [];
 			for (let i = 0; i < results.length; i++) {
@@ -140,7 +151,12 @@ export function extractSubagentUsageFromToolExecution(
 				if (!item || typeof item !== "object" || Array.isArray(item)) {
 					continue;
 				}
-				const record = parseSingleSubagentResult(item as Record<string, unknown>, i, toolCallId);
+				const record = parseSingleSubagentResult(
+					item as Record<string, unknown>,
+					i,
+					toolCallId,
+					detailsObj.runId ?? root.runId,
+				);
 				if (record) {
 					out.push(record);
 				}
@@ -153,11 +169,16 @@ export function extractSubagentUsageFromToolExecution(
 	const directUsage = root.usage;
 	if (directUsage && typeof directUsage === "object" && !Array.isArray(directUsage)) {
 		const modelLabel = normalizeSubagentModelLabel(root.model, root.agent);
-		const record = usageCountersToRecord(
-			`tool:${toolCallId}:0`,
-			modelLabel,
-			directUsage as SubagentUsageCounters,
+		const sourceKey = resolveSubagentSourceKey(
+			{
+				runId: root.runId,
+				agent: root.agent,
+				childIndex: root.childIndex,
+			},
+			toolCallId,
+			0,
 		);
+		const record = usageCountersToRecord(sourceKey, modelLabel, directUsage as SubagentUsageCounters);
 		return record ? [record] : [];
 	}
 	return [];
@@ -168,7 +189,49 @@ export function metaFileSourceKey(fileName: string): string | null {
 	if (!match) {
 		return null;
 	}
-	return `meta:${match[1]}:${match[2]}:${match[3]}`;
+	return subagentRunSourceKey(match[1], match[2], match[3]);
+}
+
+/** Stable dedup key shared by ponytail meta.json and tool results that expose run metadata. */
+export function subagentRunSourceKey(
+	runId: unknown,
+	agent: unknown,
+	childIndex: unknown,
+): string | null {
+	if (typeof runId !== "string") {
+		return null;
+	}
+	const normalizedRunId = runId.trim().toLowerCase();
+	if (!/^[0-9a-f]+$/.test(normalizedRunId)) {
+		return null;
+	}
+	if (typeof agent !== "string") {
+		return null;
+	}
+	const normalizedAgent = agent.trim().toLowerCase();
+	if (!normalizedAgent || !/^[a-z0-9_-]+$/.test(normalizedAgent)) {
+		return null;
+	}
+	let index: number;
+	if (typeof childIndex === "number" && Number.isFinite(childIndex)) {
+		index = Math.max(0, Math.floor(childIndex));
+	} else if (typeof childIndex === "string" && /^\d+$/.test(childIndex.trim())) {
+		index = Number.parseInt(childIndex.trim(), 10);
+	} else {
+		return null;
+	}
+	return `meta:${normalizedRunId}:${normalizedAgent}:${index}`;
+}
+
+export function resolveSubagentSourceKey(
+	fields: { runId?: unknown; agent?: unknown; childIndex?: unknown },
+	toolCallId: string,
+	index: number,
+): string {
+	return (
+		subagentRunSourceKey(fields.runId, fields.agent, fields.childIndex ?? index) ??
+		`tool:${toolCallId}:${index}`
+	);
 }
 
 /** Parse ponytail / `.pi-subagents` meta.json usage rollup. */

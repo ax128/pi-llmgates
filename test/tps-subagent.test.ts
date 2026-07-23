@@ -8,6 +8,7 @@ import {
 	metaFileSourceKey,
 	parsePiSubagentsMetaJson,
 	recordSubagentUsageRecords,
+	subagentRunSourceKey,
 } from "../extensions/tps-subagent.js";
 import { totalCostUsd, totalModelCalls } from "../extensions/tps-stats.js";
 
@@ -59,6 +60,59 @@ describe("tps subagent usage", () => {
 		);
 		expect(records).toHaveLength(1);
 		expect(records[0]?.modelLabel).toBe("subagent/reviewer");
+		expect(records[0]?.sourceKey).toBe("tool:call-2:0");
+	});
+
+	it("uses meta source key when ponytail run metadata is present in tool results", () => {
+		const records = extractSubagentUsageFromToolExecution(
+			"subagent",
+			{
+				details: {
+					runId: "FD315B42",
+					results: [
+						{
+							runId: "fd315b42",
+							agent: "worker",
+							childIndex: 0,
+							model: "llmgates/gpt-5.6-sol",
+							usage: {
+								turns: 3,
+								input: 1000,
+								output: 500,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: 0.012,
+							},
+						},
+					],
+				},
+			},
+			"call-3",
+		);
+		expect(records).toHaveLength(1);
+		expect(records[0]?.sourceKey).toBe("meta:fd315b42:worker:0");
+	});
+
+	it("dedupes ponytail meta and tool ingestion via shared run source key", () => {
+		const sourceKey = subagentRunSourceKey("fd315b42", "worker", 0);
+		expect(sourceKey).toBe("meta:fd315b42:worker:0");
+		const ingested = new Set<string>([sourceKey!]);
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-dedupe-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const metaPath = join(artifactsDir, "fd315b42_worker_0_meta.json");
+		writeFileSync(
+			metaPath,
+			JSON.stringify({
+				runId: "fd315b42",
+				agent: "worker",
+				model: "llmgates/gpt-5.6-sol",
+				usage: { turns: 3, input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0.012 },
+			}),
+		);
+		const sessionStartedAtMs = Date.now();
+		utimesSync(metaPath, sessionStartedAtMs / 1000 + 1, sessionStartedAtMs / 1000 + 1);
+		expect(collectPiSubagentsMetaUsage(artifactsDir, sessionStartedAtMs, ingested)).toHaveLength(0);
 	});
 
 	it("parses ponytail meta.json usage rollup", () => {

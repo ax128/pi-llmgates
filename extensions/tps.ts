@@ -158,7 +158,14 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function ingestSubagentRecords(records: readonly SubagentUsageRecord[]): void {
-		const fresh = records.filter((record) => !ingestedSubagentKeys.has(record.sourceKey));
+		const fresh: SubagentUsageRecord[] = [];
+		for (const record of records) {
+			if (ingestedSubagentKeys.has(record.sourceKey)) {
+				continue;
+			}
+			ingestedSubagentKeys.add(record.sourceKey);
+			fresh.push(record);
+		}
 		if (fresh.length === 0) {
 			return;
 		}
@@ -166,9 +173,6 @@ export default function (pi: ExtensionAPI) {
 		runUsageTask(() => {
 			if (!sessionActive) {
 				return;
-			}
-			for (const record of fresh) {
-				ingestedSubagentKeys.add(record.sourceKey);
 			}
 			recordSubagentUsageRecords(targetIsTurn ? turnStats : sessionStats, fresh);
 			scheduleStatusRefresh();
@@ -179,9 +183,14 @@ export default function (pi: ExtensionAPI) {
 		if (!sessionActive || !sessionArtifactsDir) {
 			return;
 		}
-		ingestSubagentRecords(
-			collectPiSubagentsMetaUsage(sessionArtifactsDir, sessionStartedAtMs, ingestedSubagentKeys),
-		);
+		const artifactsDir = sessionArtifactsDir;
+		const startedAtMs = sessionStartedAtMs;
+		runUsageTask(() => {
+			if (!sessionActive || sessionArtifactsDir !== artifactsDir) {
+				return;
+			}
+			ingestSubagentRecords(collectPiSubagentsMetaUsage(artifactsDir, startedAtMs, ingestedSubagentKeys));
+		});
 	}
 
 	function scheduleSubagentMetaScan(): void {
