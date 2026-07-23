@@ -336,6 +336,33 @@ export function toPiModel(model: GatewayModel): PiProviderModel | null {
 	};
 }
 
+/** Patch registered model costs after async pricing sync (mutates array in place). */
+export function applyGatewayModelCosts(
+	models: Model<Api>[],
+	gatewayModels: readonly GatewayModel[],
+	piProviderId: string,
+): void {
+	const vendorById = new Map<string, string>();
+	for (const gatewayModel of gatewayModels) {
+		const id = gatewayModelId(gatewayModel);
+		if (!id) {
+			continue;
+		}
+		const vendor = (gatewayModel.provider_id ?? "").trim().toLowerCase();
+		if (vendor) {
+			vendorById.set(id, vendor);
+		}
+	}
+
+	for (const model of models) {
+		if (model.provider !== piProviderId) {
+			continue;
+		}
+		const vendor = vendorById.get(model.id);
+		model.cost = resolveModelCostRates(model.id, vendor || undefined);
+	}
+}
+
 export class ModelsHttpError extends Error {
 	readonly status: number;
 	readonly statusText: string;

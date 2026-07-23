@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	applyGatewayModelCosts,
 	defaultInferenceEndpoint,
 	formatCreditsMessage,
 	inferReasoningEfforts,
@@ -347,5 +348,34 @@ describe("parseCreditsPayload strict", () => {
 		expect(parseCreditsPayload({ balance: 1 })).toMatchObject({ balance: 1 });
 		expect(() => parseCreditsPayload([])).toThrow(/balance/i);
 		expect(() => parseCreditsPayload(null)).toThrow(/balance/i);
+	});
+});
+
+describe("applyGatewayModelCosts", () => {
+	it("patches registered model costs using gateway provider_id", () => {
+		const models = providerModelsToStoredModels(
+			"llmgates",
+			[
+				{
+					id: "gpt-5.6-sol",
+					name: "GPT",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128000,
+					maxTokens: 8192,
+					api: "openai-responses",
+				},
+			],
+			"https://apicn.llmgates.com/v1",
+		);
+
+		applyGatewayModelCosts(
+			models,
+			[{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] }],
+			"llmgates",
+		);
+
+		expect(models[0]?.cost.output).toBe(30);
 	});
 });

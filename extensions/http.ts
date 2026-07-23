@@ -7,6 +7,8 @@ import { assertUrlTransportAllowed } from "./connection.js";
 export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 export const MODELS_REQUEST_TIMEOUT_MS = 15_000;
 export const BALANCE_REQUEST_TIMEOUT_MS = 30_000;
+/** LiteLLM retail pricing table — background sync only; does not block catalog listing. */
+export const LITELLM_PRICING_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 3;
 
 export class RequestTimeoutError extends Error {

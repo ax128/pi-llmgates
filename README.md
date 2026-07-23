@@ -113,7 +113,7 @@ pi
 4. Maps gateway catalog to pi models with per-model `api` (`responses` / `chat_completions` / `messages`)
 5. Skips image/video **generation** models (not suitable for pi coding agent)
 6. `/balance` — account wallet + subscription via `GET /v1/user/balance`
-7. TUI footer extension line: elapsed time, call count, estimated **cost**, and `/calls` for per-model breakdown (turn or session)
+7. TUI footer extension line: elapsed time, call count, estimated **cost**, and `/calls` for per-model breakdown (turn or session); settle notification also shows TPS (tok/s). Usage aggregation runs on a background task chain and never blocks the agent loop.
 
 ## Security
 
@@ -124,7 +124,9 @@ pi
   3. else `llmgates.json` `apiKey` + optional file `baseUrl` (default HTTPS if URL omitted)
   - Env key never borrows file URL; file key never borrows env URL; OAuth never borrows env/file URL.
 - Remote gateways must use **HTTPS**. HTTP is allowed only for loopback (`localhost`, `127.0.0.0/8`, `::1`, IPv4-mapped loopback). No insecure override env.
-- Network calls use a full-operation timeout, 5 MiB body limit, and same-origin manual redirects.
+- Network calls to your gateway (`/models`, `/balance`, inference) use a full-operation timeout, 5 MiB body limit, and same-origin manual redirects.
+- When `pricingAutoUpdate` is enabled, retail price sync fetches a fixed public JSON file from `raw.githubusercontent.com` (LiteLLM). This runs in the background, uses the same bounded HTTP client (30s timeout, 8 MiB cap), and never blocks catalog listing or inference. Disable with `"pricingAutoUpdate": false` or `LLMGATES_PRICING_AUTO_UPDATE=0`.
+- TPS / cost statistics preprocess assistant usage off the hot path (background queue). Malformed usage is skipped or zeroed; failures are ignored (`LLMGATES_DEBUG=1` logs details) and never interrupt inference or the agent loop.
 - Startup is cache-first; model refresh runs in the background after session start and does not block availability. Failed refreshes keep the previous catalog.
 - Login cache-write failure does not undo login: session uses the validated catalog and keeps the old disk cache.
 - Prefer `/login` or `LLMGATES_API_KEY` over storing keys in `llmgates.json`. Config writes use mode `0600` and atomic rename.
@@ -162,6 +164,7 @@ Optional `apiKey` in the file is supported but not written by `/login`:
 | `LLMGATES_API_KEY` | `apiKey` |
 | `LLMGATES_PROVIDER_ID` | `providerId` |
 | `LLMGATES_PROVIDER_NAME` | `providerName` |
+| `LLMGATES_PRICING_AUTO_UPDATE` | `pricingAutoUpdate` in `llmgates.json` (default: true) |
 
 Resolution (no cross-source borrowing):
 
@@ -204,7 +207,7 @@ Cost is estimated from **upstream retail API rates** (not LLMGates wallet billin
 
 Set `"pricingAutoUpdate": false` (or env `LLMGATES_PRICING_AUTO_UPDATE=0`) to manage prices manually only.
 
-**`llmgates-model-pricing.json`** — editable USD per **1M tokens** (`input`, `output`, `cacheRead`, `cacheWrite`). Keys: `modelId` or `provider/modelId` (e.g. `openai/gpt-4o`).
+**`llmgates-model-pricing.json`** — editable USD per **1M tokens** (`input`, `output`, `cacheRead`, `cacheWrite`). Keys: `modelId` or `provider/modelId` (e.g. `openai/gpt-5.6-sol`).
 
 ```json
 {
@@ -212,7 +215,7 @@ Set `"pricingAutoUpdate": false` (or env `LLMGATES_PRICING_AUTO_UPDATE=0`) to ma
   "updatedAt": 0,
   "lastAutoSyncAt": 0,
   "rates": {
-    "openai/gpt-4o": { "input": 2.5, "output": 10, "cacheRead": 1.25, "cacheWrite": 2.5 }
+    "openai/gpt-5.6-sol": { "input": 5, "output": 30, "cacheRead": 0.5, "cacheWrite": 6.25 }
   },
   "overrides": {
     "anthropic/claude-sonnet-4-6": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 }
@@ -220,7 +223,7 @@ Set `"pricingAutoUpdate": false` (or env `LLMGATES_PRICING_AUTO_UPDATE=0`) to ma
 }
 ```
 
-When `pricingAutoUpdate` is enabled, each `/models` refresh syncs [LiteLLM](https://github.com/BerriAI/litellm) retail prices for catalog models in the background (does not block model listing): missing models fetch immediately; otherwise refresh every 24h. Auto-sync writes to `rates` only — **`overrides` are never touched**. Use **`overrides`** for prices that must never be overwritten by auto-sync; `rates` entries for catalog models are refreshed from LiteLLM on each TTL cycle. Off-catalog entries in `rates` are preserved across refreshes. On every refresh the file is re-read from disk so hand edits apply without restart. Static rules in `extensions/model-pricing.ts` remain the offline fallback.
+When `pricingAutoUpdate` is enabled, each `/models` refresh syncs [LiteLLM](https://github.com/BerriAI/litellm) retail prices for catalog models in the background (does not block model listing): missing models fetch immediately; otherwise refresh every 24h. Sync failures are ignored — cached disk rates and static rules remain in effect (`LLMGATES_DEBUG=1` logs details). Auto-sync writes to `rates` only — **`overrides` are never touched**. Use **`overrides`** for prices that must never be overwritten by auto-sync; `rates` entries for catalog models are refreshed from LiteLLM on each TTL cycle. Off-catalog entries in `rates` are preserved across refreshes. On every refresh the file is re-read from disk so hand edits apply without restart. Static rules in `extensions/model-pricing.ts` remain the offline fallback. Registered model `cost` fields are patched in memory after a successful background sync (no extra catalog fetch).
 
 The TUI extension status and `/calls` show estimated cost aligned with pi’s `usage.cost`. Pi’s built-in footer may still append `(sub)` for OAuth auth — that is not LLMGates billing.
 

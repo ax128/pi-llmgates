@@ -58,7 +58,7 @@ export default function (pi: ExtensionAPI): void {
 			.startBackgroundRefresh()
 			.then(() => {
 				try {
-					if (provider.getInternalState().modelCount >= 0) {
+					if (provider.getInternalState().modelCount > 0) {
 						pi.registerProvider(provider);
 					}
 				} catch {

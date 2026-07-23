@@ -1,6 +1,9 @@
 /**
  * TUI elapsed timer + cost / usage summary after each agent turn.
  * Adapted from @router-for-me/pi-cliproxyapi-provider (MIT).
+ *
+ * Usage aggregation and settle notifications run on a background task chain so
+ * pi event handlers return immediately and never block the agent loop.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -13,10 +16,10 @@ import {
 	formatUsageScopeTitle,
 	formatUsageSummaryMessage,
 	mergeModelUsageStats,
-	recordAssistantUsage,
 	totalCostUsd,
 	totalModelCalls,
 	totalUsage,
+	tryRecordAssistantUsage,
 	type ModelUsageStats,
 } from "./tps-stats.js";
 
@@ -38,6 +41,13 @@ function createEmptyStats(): ModelUsageStats {
 	return new Map();
 }
 
+function logTpsIssue(message: string): void {
+	const debug = process.env.LLMGATES_DEBUG?.trim().toLowerCase();
+	if (debug === "1" || debug === "true" || debug === "yes") {
+		console.warn(`[pi-llmgates-provider] ${message}`);
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	let requestStartMs: number | null = null;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -45,6 +55,35 @@ export default function (pi: ExtensionAPI) {
 	let turnStats: ModelUsageStats = createEmptyStats();
 	let sessionStats: ModelUsageStats = createEmptyStats();
 	let lastSettledTurnStats: ModelUsageStats = createEmptyStats();
+	let usageTaskChain: Promise<void> = Promise.resolve();
+	let statusRefreshScheduled = false;
+	let sessionActive = false;
+
+	function runUsageTask(task: () => void | Promise<void>): void {
+		usageTaskChain = usageTaskChain
+			.then(async () => {
+				if (!sessionActive) {
+					return;
+				}
+				await task();
+			})
+			.catch((error) => {
+				logTpsIssue(
+					`TPS background processing failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			});
+	}
+
+	function safeUi(ctx: ExtensionContext | null | undefined, action: () => void): void {
+		if (!ctx || !isPrimaryUiSession(ctx)) {
+			return;
+		}
+		try {
+			action();
+		} catch (error) {
+			logTpsIssue(`TPS UI update failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
 
 	function clearRefreshTimer(): void {
 		if (refreshTimer === undefined) return;
@@ -66,22 +105,38 @@ export default function (pi: ExtensionAPI) {
 		totalSeconds: number,
 		stats: ModelUsageStats = activeTurnStats(),
 	): void {
-		if (!isPrimaryUiSession(ctx)) return;
-		ctx.ui.setStatus(
-			STATUS_KEY,
-			ctx.ui.theme.fg("dim", formatTpsStatusLine(totalSeconds, stats, totalCostUsd(sessionStats))),
-		);
+		safeUi(ctx, () => {
+			ctx.ui.setStatus(
+				STATUS_KEY,
+				ctx.ui.theme.fg("dim", formatTpsStatusLine(totalSeconds, stats, totalCostUsd(sessionStats))),
+			);
+		});
+	}
+
+	function scheduleStatusRefresh(): void {
+		if (statusRefreshScheduled || requestStartMs === null || !statusCtx) {
+			return;
+		}
+		statusRefreshScheduled = true;
+		queueMicrotask(() => {
+			statusRefreshScheduled = false;
+			if (requestStartMs === null || !statusCtx) {
+				return;
+			}
+			setElapsedStatus(statusCtx, getElapsedSeconds(), turnStats);
+		});
 	}
 
 	function refreshStatus(): void {
 		if (requestStartMs === null || !statusCtx) return;
-		setElapsedStatus(statusCtx, getElapsedSeconds(), turnStats);
+		scheduleStatusRefresh();
 	}
 
 	function clearStatus(ctx?: ExtensionContext): void {
 		const target = ctx ?? statusCtx;
-		if (!target || !isPrimaryUiSession(target)) return;
-		target.ui.setStatus(STATUS_KEY, undefined);
+		safeUi(target, () => {
+			target!.ui.setStatus(STATUS_KEY, undefined);
+		});
 	}
 
 	function resetTurnStats(): void {
@@ -90,17 +145,31 @@ export default function (pi: ExtensionAPI) {
 
 	async function showUsageBreakdown(ctx: ExtensionContext, stats: ModelUsageStats, scope: "turn" | "session"): Promise<void> {
 		if (totalModelCalls(stats) === 0) {
-			ctx.ui.notify(
-				scope === "session"
-					? "No model calls recorded in this session."
-					: "No model calls recorded in this turn.",
-				"info",
-			);
+			safeUi(ctx, () => {
+				ctx.ui.notify(
+					scope === "session"
+						? "No model calls recorded in this session."
+						: "No model calls recorded in this turn.",
+					"info",
+				);
+			});
 			return;
 		}
 
-		const options = formatUsageBreakdownOptions(stats);
-		await ctx.ui.select(formatUsageScopeTitle(scope, stats), options);
+		let options: string[];
+		let title: string;
+		try {
+			options = formatUsageBreakdownOptions(stats);
+			title = formatUsageScopeTitle(scope, stats);
+		} catch (error) {
+			logTpsIssue(`TPS breakdown formatting failed: ${error instanceof Error ? error.message : String(error)}`);
+			safeUi(ctx, () => {
+				ctx.ui.notify("Usage breakdown is temporarily unavailable.", "info");
+			});
+			return;
+		}
+
+		await ctx.ui.select(title, options);
 	}
 
 	async function showCallsMenu(ctx: ExtensionContext): Promise<void> {
@@ -118,9 +187,18 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function notifyUsageText(ctx: ExtensionContext): void {
-		const turnSummary = formatUsageSummaryMessage(activeTurnStats(), { scope: "turn" });
-		const sessionSummary = formatUsageSummaryMessage(sessionStats, { scope: "session" });
-		ctx.ui.notify(`${turnSummary}\n${sessionSummary}`, "info");
+		let message: string;
+		try {
+			const turnSummary = formatUsageSummaryMessage(activeTurnStats(), { scope: "turn" });
+			const sessionSummary = formatUsageSummaryMessage(sessionStats, { scope: "session" });
+			message = `${turnSummary}\n${sessionSummary}`;
+		} catch (error) {
+			logTpsIssue(`TPS summary formatting failed: ${error instanceof Error ? error.message : String(error)}`);
+			message = "Usage summary is temporarily unavailable.";
+		}
+		safeUi(ctx, () => {
+			ctx.ui.notify(message, "info");
+		});
 	}
 
 	pi.registerCommand("calls", {
@@ -130,11 +208,20 @@ export default function (pi: ExtensionAPI) {
 				notifyUsageText(ctx);
 				return;
 			}
-			await showCallsMenu(ctx);
+			try {
+				await showCallsMenu(ctx);
+			} catch (error) {
+				logTpsIssue(`/calls failed: ${error instanceof Error ? error.message : String(error)}`);
+				safeUi(ctx, () => {
+					ctx.ui.notify("Usage menu is temporarily unavailable.", "info");
+				});
+			}
 		},
 	});
 
 	pi.on("session_start", () => {
+		sessionActive = true;
+		usageTaskChain = Promise.resolve();
 		sessionStats = createEmptyStats();
 		lastSettledTurnStats = createEmptyStats();
 	});
@@ -144,8 +231,12 @@ export default function (pi: ExtensionAPI) {
 		if (!isAssistantMessage(event.message)) return;
 		if (requestStartMs === null) return;
 
-		recordAssistantUsage(turnStats, event.message);
-		refreshStatus();
+		const message = event.message;
+		runUsageTask(() => {
+			if (tryRecordAssistantUsage(turnStats, message)) {
+				scheduleStatusRefresh();
+			}
+		});
 	});
 
 	pi.on("before_agent_start", (_event, ctx) => {
@@ -159,7 +250,7 @@ export default function (pi: ExtensionAPI) {
 		requestStartMs = Date.now();
 		statusCtx = ctx;
 		resetTurnStats();
-		refreshStatus();
+		setElapsedStatus(ctx, 0, turnStats);
 
 		clearRefreshTimer();
 		refreshTimer = setInterval(() => refreshStatus(), REFRESH_INTERVAL_MS);
@@ -169,34 +260,47 @@ export default function (pi: ExtensionAPI) {
 		if (!isPrimaryUiSession(ctx)) return;
 		if (requestStartMs === null) return;
 
-		const elapsedMs = Date.now() - requestStartMs;
+		const startMs = requestStartMs;
+		const elapsedMs = Date.now() - startMs;
 		const elapsedSecondsExact = elapsedMs / 1000;
 		const elapsedSecondsFloor = Math.floor(elapsedSecondsExact);
-		const turnUsage = totalUsage(turnStats);
 
-		lastSettledTurnStats = cloneModelUsageStats(turnStats);
-		mergeModelUsageStats(sessionStats, turnStats);
 		requestStartMs = null;
 		clearRefreshTimer();
 
-		setElapsedStatus(ctx, elapsedSecondsFloor, lastSettledTurnStats);
-		statusCtx = ctx;
+		runUsageTask(() => {
+			lastSettledTurnStats = cloneModelUsageStats(turnStats);
+			mergeModelUsageStats(sessionStats, turnStats);
+			setElapsedStatus(ctx, elapsedSecondsFloor, lastSettledTurnStats);
+			statusCtx = ctx;
 
-		if (elapsedMs <= 0) return;
+			if (elapsedMs <= 0) {
+				return;
+			}
 
-		const tps = turnUsage.output > 0 ? (turnUsage.output / elapsedSecondsExact).toFixed(1) : "--";
-		const turnSummary = formatUsageSummaryMessage(lastSettledTurnStats, {
-			scope: "turn",
-			elapsedSeconds: elapsedSecondsExact,
+			let message: string;
+			try {
+				const turnUsage = totalUsage(lastSettledTurnStats);
+				const tps = turnUsage.output > 0 ? (turnUsage.output / elapsedSecondsExact).toFixed(1) : "--";
+				const turnSummary = formatUsageSummaryMessage(lastSettledTurnStats, {
+					scope: "turn",
+					elapsedSeconds: elapsedSecondsExact,
+				});
+				const sessionCost = formatCostUsd(totalCostUsd(sessionStats));
+				message = `TPS ${tps} tok/s · turn cost ${formatCostUsd(turnUsage.costUsd)} · session total ${sessionCost} · ${elapsedSecondsExact.toFixed(1)}s. ${turnSummary} Details: /calls`;
+			} catch (error) {
+				logTpsIssue(`TPS settle summary failed: ${error instanceof Error ? error.message : String(error)}`);
+				message = `Turn finished in ${elapsedSecondsExact.toFixed(1)}s. Details: /calls`;
+			}
+
+			safeUi(ctx, () => {
+				ctx.ui.notify(message, "info");
+			});
 		});
-		const sessionCost = formatCostUsd(totalCostUsd(sessionStats));
-		const message = `TPS ${tps} tok/s · turn cost ${formatCostUsd(turnUsage.costUsd)} · session total ${sessionCost} · ${elapsedSecondsExact.toFixed(1)}s. ${turnSummary} Details: /calls`;
-		ctx.ui.notify(message, "info");
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		if (statusCtx !== ctx && !isPrimaryUiSession(ctx)) return;
-
+		sessionActive = false;
 		clearRefreshTimer();
 		if (isPrimaryUiSession(ctx)) {
 			clearStatus(ctx);

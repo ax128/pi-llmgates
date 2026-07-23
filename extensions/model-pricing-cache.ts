@@ -19,6 +19,10 @@ import { join } from "node:path";
 import type { ModelCostRates } from "@earendil-works/pi-ai";
 import { gatewayModelId, isPiSelectableModel, type GatewayModel } from "./catalog.js";
 import { resolvePricingAutoUpdate } from "./connection.js";
+import {
+	LITELLM_PRICING_REQUEST_TIMEOUT_MS,
+	requestLimitedJson,
+} from "./http.js";
 
 const LLMGATES_PROVIDER_ID = "llmgates";
 
@@ -61,6 +65,14 @@ interface LiteLLMPriceEntry {
 }
 
 let memoryRates: Record<string, ModelCostRates> | undefined;
+let pricingSyncChain: Promise<void> = Promise.resolve();
+
+function logPricingSyncIssue(message: string): void {
+	const debug = process.env.LLMGATES_DEBUG?.trim().toLowerCase();
+	if (debug === "1" || debug === "true" || debug === "yes") {
+		console.warn(`[pi-llmgates-provider] ${message}`);
+	}
+}
 
 export function pricingCacheKey(modelId: string, providerId?: string): string {
 	const id = modelId.trim();
@@ -73,6 +85,11 @@ export function pricingCacheKey(modelId: string, providerId?: string): string {
 
 export function clearPricingCacheMemory(): void {
 	memoryRates = undefined;
+}
+
+/** @internal test helper — reset single-flight chain between tests. */
+export function resetPricingSyncChainForTests(): void {
+	pricingSyncChain = Promise.resolve();
 }
 
 export function mergePricingRates(file: ModelPricingFile): Record<string, ModelCostRates> {
@@ -220,7 +237,7 @@ function writeModelPricingFile(agentDir: string, file: ModelPricingFile): void {
 		try {
 			unlinkSync(tempPath);
 		} catch {
-			// ignore
+			// ignore if already renamed/removed
 		}
 	}
 }
@@ -348,6 +365,25 @@ export interface SyncModelPricingCacheOptions {
 	pricingAutoUpdate?: boolean;
 }
 
+export async function fetchLiteLLMPriceTable(options?: {
+	fetchImpl?: typeof fetch;
+	signal?: AbortSignal;
+}): Promise<Record<string, LiteLLMPriceEntry>> {
+	const payload = await requestLimitedJson({
+		url: LITELLM_PRICING_URL,
+		headers: { Accept: "application/json" },
+		signal: options?.signal,
+		timeoutMs: LITELLM_PRICING_REQUEST_TIMEOUT_MS,
+		maxBytes: LITELLM_PRICING_MAX_BYTES,
+		operation: "litellm-pricing",
+		fetchImpl: options?.fetchImpl,
+	});
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+		throw new Error("Invalid LiteLLM pricing payload");
+	}
+	return payload as Record<string, LiteLLMPriceEntry>;
+}
+
 export async function refreshModelPricing(
 	agentDir: string,
 	models: readonly GatewayModel[],
@@ -358,7 +394,14 @@ export async function refreshModelPricing(
 	if (!autoUpdate) {
 		return existing;
 	}
-	return syncModelPricingCache(agentDir, models, options, existing);
+
+	let result: ModelPricingFile | null = existing;
+	const task = pricingSyncChain.then(async () => {
+		result = await syncModelPricingCache(agentDir, models, options, existing);
+	});
+	pricingSyncChain = task.catch(() => undefined);
+	await task;
+	return result;
 }
 
 export async function syncModelPricingCache(
@@ -390,29 +433,15 @@ export async function syncModelPricingCache(
 	const refsToResolve = stale ? catalog : missing;
 	const loadTable =
 		options.loadLiteLLMTable ??
-		(async () => {
-			const fetchImpl = options.fetchImpl ?? fetch;
-			const response = await fetchImpl(LITELLM_PRICING_URL, {
-				headers: { Accept: "application/json" },
-			});
-			if (!response.ok) {
-				throw new Error(`LiteLLM pricing fetch failed: ${response.status} ${response.statusText}`);
-			}
-			const text = await response.text();
-			if (text.length > LITELLM_PRICING_MAX_BYTES) {
-				throw new Error("LiteLLM pricing response too large");
-			}
-			const parsed = JSON.parse(text) as Record<string, LiteLLMPriceEntry>;
-			if (!parsed || typeof parsed !== "object") {
-				throw new Error("Invalid LiteLLM pricing payload");
-			}
-			return parsed;
-		});
+		(async () => fetchLiteLLMPriceTable({ fetchImpl: options.fetchImpl }));
 
 	let table: Record<string, LiteLLMPriceEntry>;
 	try {
 		table = await loadTable();
-	} catch {
+	} catch (error) {
+		logPricingSyncIssue(
+			`LiteLLM pricing sync failed; using cached rates. ${error instanceof Error ? error.message : String(error)}`,
+		);
 		applyPricingCacheToResolver(existing);
 		return existing;
 	}
@@ -444,8 +473,12 @@ export async function syncModelPricingCache(
 
 	try {
 		writeModelPricingFile(agentDir, next);
-	} catch {
-		// Keep in-memory rates even if disk write fails.
+	} catch (error) {
+		logPricingSyncIssue(
+			`Failed to write ${MODEL_PRICING_CACHE_FILE}; using in-memory rates only. ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
 	}
 
 	applyPricingCacheToResolver(next);

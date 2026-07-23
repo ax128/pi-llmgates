@@ -58,27 +58,126 @@ export function parseModelLabel(label: string): { provider?: string; modelId: st
 	};
 }
 
-export function estimateUsageCostUsd(message: AssistantMessage): number {
-	const reported = message.usage.cost?.total;
-	if (typeof reported === "number" && Number.isFinite(reported) && reported > 0) {
-		return reported;
+/** Coerce usage counters to non-negative finite numbers. */
+export function normalizeTokenCount(value: unknown): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return 0;
+	}
+	return Math.max(0, value);
+}
+
+function normalizeUsageCost(value: unknown): { input: number; output: number; cacheRead: number; cacheWrite: number; total: number } {
+	const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return empty;
+	}
+	const raw = value as Record<string, unknown>;
+	return {
+		input: normalizeTokenCount(raw.input),
+		output: normalizeTokenCount(raw.output),
+		cacheRead: normalizeTokenCount(raw.cacheRead),
+		cacheWrite: normalizeTokenCount(raw.cacheWrite),
+		total: normalizeTokenCount(raw.total),
+	};
+}
+
+/**
+ * Validate and normalize assistant usage before stats aggregation.
+ * Returns null when the message cannot be attributed to a model call.
+ */
+export function preprocessAssistantMessage(message: unknown): AssistantMessage | null {
+	if (!message || typeof message !== "object" || Array.isArray(message)) {
+		return null;
+	}
+	const raw = message as Record<string, unknown>;
+	if (raw.role !== "assistant") {
+		return null;
 	}
 
-	const { provider, modelId } = parseModelLabel(assistantMessageLabel(message));
-	const usage: Usage = {
-		input: message.usage.input || 0,
-		output: message.usage.output || 0,
-		cacheRead: message.usage.cacheRead || 0,
-		cacheWrite: message.usage.cacheWrite || 0,
-		cacheWrite1h: message.usage.cacheWrite1h,
-		reasoning: message.usage.reasoning,
-		totalTokens: message.usage.totalTokens || 0,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-	};
-	const stubModel = {
-		cost: resolveModelCostRates(modelId, provider),
-	} as Model<Api>;
-	return calculateCost(stubModel, usage).total;
+	const model = typeof raw.model === "string" ? raw.model.trim() : "";
+	if (!model) {
+		return null;
+	}
+
+	const provider = typeof raw.provider === "string" ? raw.provider : undefined;
+	const usageRaw = raw.usage;
+	if (!usageRaw || typeof usageRaw !== "object" || Array.isArray(usageRaw)) {
+		return {
+			role: "assistant",
+			provider,
+			model,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		} as AssistantMessage;
+	}
+
+	const usageObj = usageRaw as Record<string, unknown>;
+	const cost = normalizeUsageCost(usageObj.cost);
+	const input = normalizeTokenCount(usageObj.input);
+	const output = normalizeTokenCount(usageObj.output);
+	const cacheRead = normalizeTokenCount(usageObj.cacheRead);
+	const cacheWrite = normalizeTokenCount(usageObj.cacheWrite);
+	const totalTokens = normalizeTokenCount(usageObj.totalTokens) || input + output + cacheRead + cacheWrite;
+
+	return {
+		role: "assistant",
+		provider,
+		model,
+		usage: {
+			input,
+			output,
+			cacheRead,
+			cacheWrite,
+			cacheWrite1h: normalizeTokenCount(usageObj.cacheWrite1h),
+			reasoning: normalizeTokenCount(usageObj.reasoning),
+			totalTokens,
+			cost,
+		},
+	} as AssistantMessage;
+}
+
+export function estimateUsageCostUsd(message: AssistantMessage): number {
+	return safeEstimateUsageCostUsd(message);
+}
+
+/** Never throws — returns 0 when pricing or usage data is invalid. */
+export function safeEstimateUsageCostUsd(message: AssistantMessage): number {
+	try {
+		const reported = message.usage?.cost?.total;
+		if (typeof reported === "number" && Number.isFinite(reported) && reported > 0) {
+			return reported;
+		}
+
+		const usage = message.usage;
+		if (!usage) {
+			return 0;
+		}
+
+		const { provider, modelId } = parseModelLabel(assistantMessageLabel(message));
+		const normalizedUsage: Usage = {
+			input: normalizeTokenCount(usage.input),
+			output: normalizeTokenCount(usage.output),
+			cacheRead: normalizeTokenCount(usage.cacheRead),
+			cacheWrite: normalizeTokenCount(usage.cacheWrite),
+			cacheWrite1h: usage.cacheWrite1h,
+			reasoning: usage.reasoning,
+			totalTokens: normalizeTokenCount(usage.totalTokens),
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const stubModel = {
+			cost: resolveModelCostRates(modelId, provider),
+		} as Model<Api>;
+		const total = calculateCost(stubModel, normalizedUsage).total;
+		return typeof total === "number" && Number.isFinite(total) && total > 0 ? total : 0;
+	} catch {
+		return 0;
+	}
 }
 
 export function formatCostUsd(value: number): string {
@@ -134,15 +233,33 @@ export function incrementModelCall(stats: ModelUsageStats, model: Model<Api> | u
 
 export function recordAssistantUsage(stats: ModelUsageStats, message: AssistantMessage): void {
 	const label = assistantMessageLabel(message);
+	const usage = message.usage;
 	const entry = stats.get(label) ?? emptyModelUsageEntry();
 	entry.calls += 1;
-	entry.input += message.usage.input || 0;
-	entry.output += message.usage.output || 0;
-	entry.cacheRead += message.usage.cacheRead || 0;
-	entry.cacheWrite += message.usage.cacheWrite || 0;
-	entry.totalTokens += message.usage.totalTokens || 0;
-	entry.costUsd += estimateUsageCostUsd(message);
+	entry.input += normalizeTokenCount(usage?.input);
+	entry.output += normalizeTokenCount(usage?.output);
+	entry.cacheRead += normalizeTokenCount(usage?.cacheRead);
+	entry.cacheWrite += normalizeTokenCount(usage?.cacheWrite);
+	entry.totalTokens += normalizeTokenCount(usage?.totalTokens);
+	entry.costUsd += safeEstimateUsageCostUsd(message);
 	stats.set(label, entry);
+}
+
+/**
+ * Preprocess, aggregate, and never throw — safe for background TPS workers.
+ * Returns false when the message is skipped.
+ */
+export function tryRecordAssistantUsage(stats: ModelUsageStats, message: unknown): boolean {
+	try {
+		const normalized = preprocessAssistantMessage(message);
+		if (!normalized) {
+			return false;
+		}
+		recordAssistantUsage(stats, normalized);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export function totalModelCalls(stats: ReadonlyMap<string, ModelUsageEntry>): number {

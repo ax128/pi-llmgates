@@ -23,6 +23,7 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import {
+	applyGatewayModelCosts,
 	isOfflineMode,
 	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
@@ -214,6 +215,26 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		models = next.slice();
 	}
 
+	function schedulePricingSync(gatewayModels: readonly GatewayModel[]): void {
+		void track(
+			refreshModelPricing(agentDir, gatewayModels, { fetchImpl, now })
+				.then(() => {
+					if (shutDown || models.length === 0) {
+						return;
+					}
+					applyGatewayModelCosts(models, gatewayModels, providerId);
+				})
+				.catch((error) => {
+					if (error instanceof DOMException && error.name === "AbortError") {
+						return;
+					}
+					logWarn(
+						`Background pricing sync failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}),
+		);
+	}
+
 	function restoreFromStoreEntry(
 		entry: { models: readonly Model<Api>[]; checkedAt?: number } | undefined,
 		connection: CanonicalConnection | null,
@@ -267,7 +288,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			fetchImpl,
 		});
 		const gatewayModels = parseGatewayModelsPayload(payload);
-		void track(refreshModelPricing(agentDir, gatewayModels, { fetchImpl, now }));
+		schedulePricingSync(gatewayModels);
 		return mapGatewayPayload(providerId, connection.inferenceBaseUrl, gatewayModels);
 	}
 

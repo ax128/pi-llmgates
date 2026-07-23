@@ -1,13 +1,10 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { resolvePricingAutoUpdate } from "../extensions/connection.js";
 import {
 	MODEL_PRICING_CACHE_TTL_MS,
 	applyPricingCacheToResolver,
 	catalogRefsFromGatewayModels,
 	clearPricingCacheMemory,
+	fetchLiteLLMPriceTable,
 	litellmLookupCandidates,
 	lookupLiteLLMRates,
 	mergePricingRates,
@@ -15,8 +12,13 @@ import {
 	readModelPricingFile,
 	refreshModelPricing,
 	reloadModelPricingFromDisk,
+	resetPricingSyncChainForTests,
 	syncModelPricingCache,
 } from "../extensions/model-pricing-cache.js";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resolvePricingAutoUpdate } from "../extensions/connection.js";
 import { resolveModelCostRates } from "../extensions/model-pricing.js";
 
 const MOCK_LITELLM: Record<string, { input_cost_per_token: number; output_cost_per_token: number }> = {
@@ -30,11 +32,12 @@ const MOCK_LITELLM: Record<string, { input_cost_per_token: number; output_cost_p
 describe("model-pricing-cache", () => {
 	beforeEach(() => {
 		clearPricingCacheMemory();
+		resetPricingSyncChainForTests();
 	});
 
 	it("builds stable cache keys", () => {
-		expect(pricingCacheKey("gpt-4o", "openai")).toBe("openai/gpt-4o");
-		expect(pricingCacheKey("gpt-4o", "llmgates")).toBe("gpt-4o");
+		expect(pricingCacheKey("gpt-5.6-sol", "openai")).toBe("openai/gpt-5.6-sol");
+		expect(pricingCacheKey("gpt-5.6-sol", "llmgates")).toBe("gpt-5.6-sol");
 	});
 
 	it("resolves LiteLLM lookup candidates per vendor", () => {
@@ -163,7 +166,7 @@ describe("model-pricing-cache", () => {
 				{
 					updatedAt: 1,
 					lastAutoSyncAt: 1,
-					rates: { "openai/gpt-4o": { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 } },
+					rates: { "openai/gpt-5.6-sol": { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 } },
 				},
 				null,
 				2,
@@ -171,7 +174,7 @@ describe("model-pricing-cache", () => {
 		);
 
 		await refreshModelPricing(agentDir, [], { pricingAutoUpdate: false });
-		expect(resolveModelCostRates("gpt-4o", "openai").input).toBe(1);
+		expect(resolveModelCostRates("gpt-5.6-sol", "openai").input).toBe(1);
 	});
 
 	it("skips network sync when pricingAutoUpdate is disabled", async () => {
@@ -214,9 +217,9 @@ describe("model-pricing-cache", () => {
 		expect(
 			catalogRefsFromGatewayModels([
 				{ id: "gpt-image-2", provider_id: "openai", capability_tags: ["image_generation"] },
-				{ id: "gpt-4o", provider_id: "openai", capability_tags: ["chat"] },
+				{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] },
 			]),
-		).toEqual([{ id: "gpt-4o", providerId: "openai" }]);
+		).toEqual([{ id: "gpt-5.6-sol", providerId: "openai" }]);
 	});
 
 	it("mergePricingRates applies overrides last", () => {
@@ -234,5 +237,80 @@ describe("model-pricing-cache", () => {
 			input: 1.25,
 			output: 2.5,
 		});
+	});
+
+	it("fetchLiteLLMPriceTable parses table via bounded client", async () => {
+		const table = await fetchLiteLLMPriceTable({
+			fetchImpl: async () =>
+				new Response(JSON.stringify(MOCK_LITELLM), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+		});
+		expect(table["gpt-5.6-sol"]).toBeDefined();
+	});
+
+	it("fetchLiteLLMPriceTable rejects invalid payload", async () => {
+		await expect(
+			fetchLiteLLMPriceTable({
+				fetchImpl: async () =>
+					new Response("[]", {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					}),
+			}),
+		).rejects.toThrow(/Invalid LiteLLM/i);
+	});
+
+	it("serializes concurrent refreshModelPricing network fetches", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "pricing-serial-"));
+		const models = [{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] }];
+		let inFlight = 0;
+		let maxInFlight = 0;
+
+		const loadLiteLLMTable = async () => {
+			inFlight += 1;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			inFlight -= 1;
+			return MOCK_LITELLM;
+		};
+
+		await Promise.all([
+			refreshModelPricing(agentDir, models, { now: () => 0, loadLiteLLMTable }),
+			refreshModelPricing(agentDir, models, { now: () => 0, loadLiteLLMTable }),
+		]);
+
+		expect(maxInFlight).toBe(1);
+	});
+
+	it("keeps cached rates when LiteLLM fetch fails", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "pricing-fail-"));
+		writeFileSync(
+			join(agentDir, "llmgates-model-pricing.json"),
+			JSON.stringify(
+				{
+					updatedAt: 0,
+					rates: {
+						"openai/gpt-5.6-sol": { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 },
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		await refreshModelPricing(
+			agentDir,
+			[{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] }],
+			{
+				now: () => MODEL_PRICING_CACHE_TTL_MS + 1,
+				loadLiteLLMTable: async () => {
+					throw new Error("network down");
+				},
+			},
+		);
+
+		expect(resolveModelCostRates("gpt-5.6-sol", "openai").input).toBe(1);
 	});
 });
