@@ -10,6 +10,11 @@ import { watch, type FSWatcher } from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+	isSubagentBridgeEnabled,
+	isSubagentToolAvailable,
+	registerSubagentUsageBridge,
+} from "./tps-subagent-bridge.js";
+import {
 	collectPiSubagentsMetaUsage,
 	extractSubagentUsageFromToolExecution,
 	recordSubagentUsageRecords,
@@ -72,6 +77,7 @@ export default function (pi: ExtensionAPI) {
 	let ingestedSubagentKeys = new Set<string>();
 	let subagentWatcher: FSWatcher | undefined;
 	let subagentMetaScanTimer: ReturnType<typeof setTimeout> | undefined;
+	let unregisterSubagentBridge: (() => void) | undefined;
 
 	function runUsageTask(task: () => void | Promise<void>): void {
 		usageTaskChain = usageTaskChain
@@ -314,8 +320,19 @@ export default function (pi: ExtensionAPI) {
 		lastSettledTurnStats = createEmptyStats();
 		sessionStartedAtMs = Date.now();
 		ingestedSubagentKeys = new Set();
-		if (isPrimaryUiSession(ctx)) {
+		unregisterSubagentBridge?.();
+		unregisterSubagentBridge = undefined;
+		if (
+			isPrimaryUiSession(ctx) &&
+			isSubagentBridgeEnabled() &&
+			isSubagentToolAvailable(() => pi.getAllTools())
+		) {
 			startSubagentWatcher(ctx.cwd);
+			unregisterSubagentBridge = registerSubagentUsageBridge(pi.events, {
+				sessionId: ctx.sessionManager.getSessionId(),
+				onRecords: ingestSubagentRecords,
+				onForegroundComplete: scheduleSubagentMetaScan,
+			});
 		}
 	});
 
@@ -404,6 +421,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		unregisterSubagentBridge?.();
+		unregisterSubagentBridge = undefined;
 		sessionActive = false;
 		clearRefreshTimer();
 		stopSubagentWatcher();

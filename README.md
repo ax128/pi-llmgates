@@ -138,7 +138,7 @@ pi
 4. 将网关 catalog 映射为 pi 模型，按模型设置 `api`（`responses` / `chat_completions` / `messages`）
 5. 跳过 image / video **生成** 类模型（不适合 pi coding agent）
 6. `/balance` — 通过 `GET /v1/user/balance` 查询钱包与订阅
-7. TUI 扩展状态行：耗时、调用次数（含 subagent / Task 汇总）、估算**费用**，以及 `/calls` 查看 per-model 明细；结算通知还显示 TPS（tok/s）。父会话 assistant 用量在 `message_end` 时统计；pi `subagent` / Cursor `Task` 工具结果与 `.pi-subagents/artifacts/*_meta.json` 汇总计入同一计数器。用量聚合在后台任务链中执行，不阻塞 agent 循环。
+7. TUI 扩展状态行：耗时、调用次数（含 subagent / Task 汇总）、估算**费用**，以及 `/calls` 查看 per-model 明细；结算通知还显示 TPS（tok/s）。父会话 assistant 用量在 `message_end` 时统计；同步 pi `subagent` / Cursor `Task` 工具结果与 `.pi-subagents/artifacts/*_meta.json` 汇总计入同一计数器；async / background 子代理通过 `subagent:async-complete` 旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与 Cursor `Task` 仍统计）。用量聚合在后台任务链中执行，不阻塞 agent 循环。
 
 ## 配置
 
@@ -181,6 +181,7 @@ pi
 | `LLMGATES_PROVIDER_NAME` | 覆盖 `providerName` |
 | `LLMGATES_PRICING_AUTO_UPDATE` | 覆盖 `pricingAutoUpdate`（默认 `true`；`0` / `false` 关闭） |
 | `LLMGATES_DEBUG` | 设为 `1` / `true` / `yes` 时输出调试日志 |
+| `LLMGATES_TPS_SUBAGENT` | 默认启用；设为 `0` / `false` / `no` 时关闭子代理 async 旁路与 meta 扫描 |
 | `PI_OFFLINE` | 设为 `1` / `true` / `yes` 时跳过网络 catalog 刷新 |
 
 ## 模型映射
