@@ -16,6 +16,7 @@
 
 | 文档 | 状态 |
 | --- | --- |
+| [subagent-usage-tps-design.md](./superpowers/specs/2026-07-24-subagent-usage-tps-design.md) | **当前有效** — TPS 子代理全路径用量采集（含 async 旁路） |
 | [native-provider-security-hardening-design.md](./superpowers/specs/2026-07-22-native-provider-security-hardening-design.md) | **当前有效** — native Provider、认证边界、HTTP 客户端、缓存与测试验收 |
 | [provider-security-and-nonblocking-design.md](./superpowers/specs/2026-07-22-provider-security-and-nonblocking-design.md) | 已 supersede — 见上 |
 
@@ -23,6 +24,7 @@
 
 | 文档 | 说明 |
 | --- | --- |
+| [subagent-usage-tps-plan.md](./superpowers/plans/2026-07-24-subagent-usage-tps-plan.md) | TPS 子代理用量采集：Task 1–9 一口气实施 |
 | [native-provider-security-hardening-plan.md](./superpowers/plans/2026-07-22-native-provider-security-hardening-plan.md) | 对应当前有效规格的 Task 分解与验收清单 |
 | [provider-security-and-nonblocking-plan.md](./superpowers/plans/2026-07-22-provider-security-and-nonblocking-plan.md) | 已 supersede — 见上 |
 
@@ -35,3 +37,5 @@
 | `extensions/connection.ts` | 连接解析、凭证优先级、`llmgates.json` |
 | `extensions/compat/` | 2API 多网关兼容层（`/login llmgates-2api`、`/2api`） |
 | `extensions/tps.ts` | TUI 统计与 `/calls` 命令 |
+| `extensions/tps-subagent.ts` | 子代理用量解析（tool / meta / async event） |
+| `extensions/tps-subagent-bridge.ts` | pi-subagents 事件桥接（async/foreground-complete） |
