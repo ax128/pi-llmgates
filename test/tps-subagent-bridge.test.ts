@@ -157,6 +157,23 @@ describe("tps-subagent-bridge", () => {
 		expect(recordsCalls).toBe(0);
 	});
 
+	it("ignores foreground-complete without matching sessionId", () => {
+		const bus = createMemoryEventBus();
+		let foregroundCalls = 0;
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1",
+			onRecords: () => {},
+			onForegroundComplete: () => {
+				foregroundCalls += 1;
+			},
+		});
+
+		bus.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, { runId: UUID_RUN });
+		bus.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, { sessionId: "other", runId: UUID_RUN });
+		expect(foregroundCalls).toBe(0);
+		unregister();
+	});
+
 	it("enabled:false register is a no-op", () => {
 		const bus = createMemoryEventBus();
 		let called = 0;

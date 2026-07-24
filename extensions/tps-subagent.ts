@@ -403,6 +403,20 @@ function parseSingleSubagentResult(
 	return recordFromPartial(result, sourceKey);
 }
 
+/** Async/background launches complete via event; skip tool-time aggregate to avoid §13.10-style double count. */
+function looksLikeAsyncOrBackgroundLaunch(details: Record<string, unknown>): boolean {
+	if (details.async === true || details.background === true || details.detached === true) {
+		return true;
+	}
+	if (typeof details.asyncDir === "string" && details.asyncDir.trim()) {
+		return true;
+	}
+	if (typeof details.execution === "string" && /async|background/i.test(details.execution)) {
+		return true;
+	}
+	return false;
+}
+
 /** Extract rollup usage from pi `subagent` / Cursor `Task` tool results. */
 export function extractSubagentUsageFromToolExecution(
 	toolName: string,
@@ -435,8 +449,13 @@ export function extractSubagentUsageFromToolExecution(
 				return out;
 			}
 		}
-		// Async start / empty results: use totalChildUsage aggregate when present.
-		if (isPlainObject(details.totalChildUsage) && countersHaveSignal(details.totalChildUsage as SubagentUsageCounters)) {
+		// Sync empty results: use totalChildUsage aggregate when present.
+		// Skip for async/background — per-child arrives later via async-complete (different sourceKey).
+		if (
+			!looksLikeAsyncOrBackgroundLaunch(details) &&
+			isPlainObject(details.totalChildUsage) &&
+			countersHaveSignal(details.totalChildUsage as SubagentUsageCounters)
+		) {
 			const modeOrAgent =
 				typeof details.mode === "string" && details.mode.trim()
 					? details.mode.trim()

@@ -1,6 +1,6 @@
 # TPS 子代理用量全路径采集设计
 
-**状态：** 当前有效（待实施）  
+**状态：** 当前有效（已实施）  
 **日期：** 2026-07-24  
 **关联模块：** `extensions/tps.ts`、`extensions/tps-subagent.ts`  
 **外部依赖：** pi-subagents（可选；未安装时零开销降级）

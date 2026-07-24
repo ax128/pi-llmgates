@@ -214,11 +214,12 @@ export default function (pi: ExtensionAPI) {
 			clearTimeout(subagentMetaScanTimer);
 			subagentMetaScanTimer = undefined;
 		}
-		if (subagentWatcher === undefined) {
-			return;
+		if (subagentWatcher !== undefined) {
+			subagentWatcher.close();
+			subagentWatcher = undefined;
 		}
-		subagentWatcher.close();
-		subagentWatcher = undefined;
+		// Clear so tool_execution_end / debounced scans cannot use a stale dir after teardown.
+		sessionArtifactsDir = null;
 	}
 
 	function startSubagentWatcher(cwd: string): void {
@@ -322,6 +323,8 @@ export default function (pi: ExtensionAPI) {
 		ingestedSubagentKeys = new Set();
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
+		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
+		stopSubagentWatcher();
 		if (
 			isPrimaryUiSession(ctx) &&
 			isSubagentBridgeEnabled() &&
@@ -426,7 +429,7 @@ export default function (pi: ExtensionAPI) {
 		sessionActive = false;
 		clearRefreshTimer();
 		stopSubagentWatcher();
-		sessionArtifactsDir = null;
+		ingestedSubagentKeys = new Set();
 		if (isPrimaryUiSession(ctx)) {
 			clearStatus(ctx);
 		}

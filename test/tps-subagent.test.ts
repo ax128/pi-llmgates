@@ -274,6 +274,83 @@ describe("tps subagent usage", () => {
 		expect(records[0]?.modelLabel).toBe("subagent/parallel");
 	});
 
+	it("skips totalChildUsage aggregate on async/background launch to avoid double-count", () => {
+		const asyncLaunch = extractSubagentUsageFromToolExecution(
+			"subagent",
+			{
+				details: {
+					runId: UUID_RUN,
+					mode: "parallel",
+					async: true,
+					asyncDir: "/tmp/async-run",
+					results: [],
+					totalChildUsage: {
+						turns: 5,
+						input: 100,
+						output: 50,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: 0.01,
+					},
+				},
+			},
+			"call-async-start",
+		);
+		expect(asyncLaunch).toHaveLength(0);
+
+		const backgroundLaunch = extractSubagentUsageFromToolExecution(
+			"subagent",
+			{
+				details: {
+					runId: UUID_RUN,
+					background: true,
+					results: [],
+					totalChildUsage: {
+						turns: 2,
+						input: 9,
+						output: 9,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: 0.001,
+					},
+				},
+			},
+			"call-bg-start",
+		);
+		expect(backgroundLaunch).toHaveLength(0);
+	});
+
+	it("uses loop index for async children even when result.index disagrees (§13.3)", () => {
+		const records = extractSubagentUsageFromAsyncComplete(
+			{
+				sessionId: "sess-1",
+				runId: UUID_RUN,
+				results: [
+					{
+						agent: "reviewer",
+						index: 99,
+						modelAttempts: [
+							{ model: "m", usage: { turns: 1, input: 10, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 } },
+						],
+					},
+					{
+						agent: "reviewer",
+						index: 0,
+						modelAttempts: [
+							{ model: "m", usage: { turns: 1, input: 20, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0 } },
+						],
+					},
+				],
+			},
+			"sess-1",
+		);
+		expect(records).toHaveLength(2);
+		expect(records[0]?.sourceKey).toBe(`meta:${UUID_NORM}:reviewer:0`);
+		expect(records[1]?.sourceKey).toBe(`meta:${UUID_NORM}:reviewer:1`);
+		expect(records[0]?.input).toBe(10);
+		expect(records[1]?.input).toBe(20);
+	});
+
 	it("parses meta.json via modelAttempts fallback", () => {
 		const record = parsePiSubagentsMetaJson(
 			{

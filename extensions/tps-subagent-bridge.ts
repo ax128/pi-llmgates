@@ -51,13 +51,12 @@ export function registerSubagentUsageBridge(
 	};
 
 	const onForegroundComplete = (data: unknown): void => {
-		if (!options.onForegroundComplete) {
+		if (!options.onForegroundComplete || !options.sessionId) {
 			return;
 		}
-		if (isPlainObject(data) && typeof data.sessionId === "string" && options.sessionId) {
-			if (data.sessionId !== options.sessionId) {
-				return;
-			}
+		// Match async-complete: require sessionId equality (missing/mismatched → no-op).
+		if (!isPlainObject(data) || typeof data.sessionId !== "string" || data.sessionId !== options.sessionId) {
+			return;
 		}
 		options.onForegroundComplete();
 	};
