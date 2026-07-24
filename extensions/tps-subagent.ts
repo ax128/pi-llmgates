@@ -573,26 +573,105 @@ export function extractSubagentUsageFromAsyncStatus(
 		return null;
 	}
 	const steps = status.steps;
-	if (Array.isArray(steps) && steps.length > 0) {
-		const step = steps[childIndex];
-		if (!isPlainObject(step)) {
-			return null;
-		}
-		const agent = typeof step.agent === "string" ? step.agent : "unknown";
-		const sourceKey =
-			subagentRunSourceKey(runId, agent, childIndex) ??
-			asyncRunSourceKey(basename(asyncDir), agent, childIndex);
-		if (!sourceKey) {
-			return null;
-		}
-		return recordFromPartial(step, sourceKey, agent);
+	// Per-child only — never return run totals here (avoids N× fan-out in async-complete loops).
+	if (!Array.isArray(steps) || steps.length === 0) {
+		return null;
 	}
-	// §13.10: run-level totals only when steps are missing/empty.
+	const step = steps[childIndex];
+	if (!isPlainObject(step)) {
+		return null;
+	}
+	const agent = typeof step.agent === "string" ? step.agent : "unknown";
+	const sourceKey =
+		subagentRunSourceKey(runId, agent, childIndex) ??
+		asyncRunSourceKey(basename(asyncDir), agent, childIndex);
+	if (!sourceKey) {
+		return null;
+	}
+	return recordFromPartial(step, sourceKey, agent);
+}
+
+/** Run-level totals from status.json when steps are missing/empty (§13.10). */
+export function extractSubagentRunAggregateFromAsyncStatus(
+	asyncDir: string,
+	runId: string,
+): SubagentUsageRecord | null {
+	const status = readJsonFile(join(asyncDir, "status.json"));
+	if (!isPlainObject(status)) {
+		return null;
+	}
+	const steps = status.steps;
+	if (Array.isArray(steps) && steps.length > 0) {
+		return null;
+	}
 	const sourceKey = subagentRunAggregateSourceKey(runId);
 	if (!sourceKey) {
 		return null;
 	}
 	return recordFromPartial(status, sourceKey, typeof status.mode === "string" ? status.mode : "aggregate");
+}
+
+export type SubagentIngestState = {
+	keys: Set<string>;
+	aggregateRunIds: Set<string>;
+	perChildRunIds: Set<string>;
+};
+
+export function createSubagentIngestState(): SubagentIngestState {
+	return {
+		keys: new Set(),
+		aggregateRunIds: new Set(),
+		perChildRunIds: new Set(),
+	};
+}
+
+/** Classify meta:{runId} vs meta:{runId}:{agent}:{index} for cross-granularity dedupe. */
+export function parseMetaSourceKeyGranularity(
+	sourceKey: string,
+): { runId: string; kind: "aggregate" | "child" } | null {
+	if (/^meta:[0-9a-f]+$/.test(sourceKey)) {
+		return { runId: sourceKey.slice("meta:".length), kind: "aggregate" };
+	}
+	const child = /^meta:([0-9a-f]+):/.exec(sourceKey);
+	if (child) {
+		return { runId: child[1], kind: "child" };
+	}
+	return null;
+}
+
+/**
+ * Dedup by sourceKey, and suppress meta run-aggregate ↔ per-child pairs for the same runId
+ * (Set alone cannot catch different sourceKeys that double-count the same run).
+ */
+export function selectFreshSubagentRecords(
+	state: SubagentIngestState,
+	records: readonly SubagentUsageRecord[],
+): SubagentUsageRecord[] {
+	const fresh: SubagentUsageRecord[] = [];
+	for (const record of records) {
+		if (state.keys.has(record.sourceKey)) {
+			continue;
+		}
+		const meta = parseMetaSourceKeyGranularity(record.sourceKey);
+		if (meta) {
+			if (meta.kind === "aggregate" && state.perChildRunIds.has(meta.runId)) {
+				continue;
+			}
+			if (meta.kind === "child" && state.aggregateRunIds.has(meta.runId)) {
+				continue;
+			}
+		}
+		state.keys.add(record.sourceKey);
+		if (meta) {
+			if (meta.kind === "aggregate") {
+				state.aggregateRunIds.add(meta.runId);
+			} else {
+				state.perChildRunIds.add(meta.runId);
+			}
+		}
+		fresh.push(record);
+	}
+	return fresh;
 }
 
 /** Last-resort: sum assistant usage lines from a child session.jsonl. */
@@ -730,22 +809,28 @@ export function extractSubagentUsageFromAsyncComplete(
 		return out;
 	}
 
-	if (results.length > 0) {
-		return out;
-	}
-
+	// No per-child usage: emit at most one run aggregate (event totals, else status).
+	// Applies even when results[] are non-empty stubs lacking tokens.
 	const aggregateKey = runId ? subagentRunAggregateSourceKey(runId) : null;
-	if (!aggregateKey) {
-		return [];
+	if (aggregateKey) {
+		const aggregatePartial: Record<string, unknown> = {
+			totalCost: data.totalCost,
+			totalTokens: data.totalTokens,
+			tokens: data.totalTokens,
+			turnCount: data.turnCount,
+			mode: data.mode,
+			agent: typeof data.mode === "string" ? data.mode : "aggregate",
+		};
+		const aggregate = recordFromPartial(aggregatePartial, aggregateKey, aggregatePartial.agent);
+		if (aggregate) {
+			return [aggregate];
+		}
 	}
-	const aggregatePartial: Record<string, unknown> = {
-		totalCost: data.totalCost,
-		totalTokens: data.totalTokens,
-		tokens: data.totalTokens,
-		turnCount: data.turnCount,
-		mode: data.mode,
-		agent: typeof data.mode === "string" ? data.mode : "aggregate",
-	};
-	const aggregate = recordFromPartial(aggregatePartial, aggregateKey, aggregatePartial.agent);
-	return aggregate ? [aggregate] : [];
+	if (asyncDir && runId) {
+		const fromStatusAgg = extractSubagentRunAggregateFromAsyncStatus(asyncDir, runId);
+		if (fromStatusAgg) {
+			return [fromStatusAgg];
+		}
+	}
+	return [];
 }

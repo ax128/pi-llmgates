@@ -16,9 +16,11 @@ import {
 } from "./tps-subagent-bridge.js";
 import {
 	collectPiSubagentsMetaUsage,
+	createSubagentIngestState,
 	extractSubagentUsageFromToolExecution,
 	recordSubagentUsageRecords,
 	resolvePiSubagentsArtifactsDir,
+	selectFreshSubagentRecords,
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
 import {
@@ -74,7 +76,7 @@ export default function (pi: ExtensionAPI) {
 	let sessionActive = false;
 	let sessionStartedAtMs = 0;
 	let sessionArtifactsDir: string | null = null;
-	let ingestedSubagentKeys = new Set<string>();
+	let subagentIngestState = createSubagentIngestState();
 	let subagentWatcher: FSWatcher | undefined;
 	let subagentMetaScanTimer: ReturnType<typeof setTimeout> | undefined;
 	let unregisterSubagentBridge: (() => void) | undefined;
@@ -164,14 +166,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function ingestSubagentRecords(records: readonly SubagentUsageRecord[]): void {
-		const fresh: SubagentUsageRecord[] = [];
-		for (const record of records) {
-			if (ingestedSubagentKeys.has(record.sourceKey)) {
-				continue;
-			}
-			ingestedSubagentKeys.add(record.sourceKey);
-			fresh.push(record);
-		}
+		const fresh = selectFreshSubagentRecords(subagentIngestState, records);
 		if (fresh.length === 0) {
 			return;
 		}
@@ -195,7 +190,9 @@ export default function (pi: ExtensionAPI) {
 			if (!sessionActive || sessionArtifactsDir !== artifactsDir) {
 				return;
 			}
-			ingestSubagentRecords(collectPiSubagentsMetaUsage(artifactsDir, startedAtMs, ingestedSubagentKeys));
+			ingestSubagentRecords(
+				collectPiSubagentsMetaUsage(artifactsDir, startedAtMs, subagentIngestState.keys),
+			);
 		});
 	}
 
@@ -320,7 +317,7 @@ export default function (pi: ExtensionAPI) {
 		sessionStats = createEmptyStats();
 		lastSettledTurnStats = createEmptyStats();
 		sessionStartedAtMs = Date.now();
-		ingestedSubagentKeys = new Set();
+		subagentIngestState = createSubagentIngestState();
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
 		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
@@ -429,7 +426,7 @@ export default function (pi: ExtensionAPI) {
 		sessionActive = false;
 		clearRefreshTimer();
 		stopSubagentWatcher();
-		ingestedSubagentKeys = new Set();
+		subagentIngestState = createSubagentIngestState();
 		if (isPrimaryUiSession(ctx)) {
 			clearStatus(ctx);
 		}

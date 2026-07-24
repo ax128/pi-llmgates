@@ -2,10 +2,12 @@ import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
+	import {
 	SUBAGENT_TOOL_NAMES,
 	asyncRunSourceKey,
 	collectPiSubagentsMetaUsage,
+	createSubagentIngestState,
+	extractSubagentRunAggregateFromAsyncStatus,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromAsyncStatus,
 	extractSubagentUsageFromSessionFile,
@@ -15,6 +17,7 @@ import {
 	normalizeUsageFromPartial,
 	parsePiSubagentsMetaJson,
 	recordSubagentUsageRecords,
+	selectFreshSubagentRecords,
 	sessionFileSourceKey,
 	subagentRunSourceKey,
 } from "../extensions/tps-subagent.js";
@@ -649,5 +652,84 @@ describe("tps subagent usage", () => {
 		expect(SUBAGENT_TOOL_NAMES.has("subagent_wait")).toBe(false);
 		expect(SUBAGENT_TOOL_NAMES.has("subagent_supervisor")).toBe(false);
 		expect(SUBAGENT_TOOL_NAMES.has("intercom")).toBe(false);
+	});
+
+	it("does not fan out status run totals onto each child when steps are missing", () => {
+		const root = mkdtempSync(join(tmpdir(), "status-fanout-"));
+		const asyncDir = join(root, "async-run");
+		mkdirSync(asyncDir, { recursive: true });
+		writeFileSync(
+			join(asyncDir, "status.json"),
+			JSON.stringify({
+				totalTokens: { input: 100, output: 50 },
+				totalCost: { inputTokens: 100, outputTokens: 50, costUsd: 1 },
+			}),
+		);
+
+		expect(extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0)).toBeNull();
+		const aggregate = extractSubagentRunAggregateFromAsyncStatus(asyncDir, UUID_RUN);
+		expect(aggregate?.sourceKey).toBe(`meta:${UUID_NORM}`);
+		expect(aggregate?.input).toBe(100);
+
+		const records = extractSubagentUsageFromAsyncComplete(
+			{
+				sessionId: "s",
+				runId: UUID_RUN,
+				asyncDir,
+				results: [{ agent: "a" }, { agent: "b" }, { agent: "c" }, { agent: "d" }],
+			},
+			"s",
+		);
+		expect(records).toHaveLength(1);
+		expect(records[0]?.sourceKey).toBe(`meta:${UUID_NORM}`);
+		expect(records.reduce((sum, r) => sum + r.input, 0)).toBe(100);
+	});
+
+	it("emits one event run aggregate when stub children lack tokens and status has no steps", () => {
+		const records = extractSubagentUsageFromAsyncComplete(
+			{
+				sessionId: "s",
+				runId: UUID_RUN,
+				mode: "parallel",
+				totalTokens: { input: 40, output: 10 },
+				totalCost: { inputTokens: 40, outputTokens: 10, costUsd: 0.02 },
+				results: [{ agent: "a" }, { agent: "b" }],
+			},
+			"s",
+		);
+		expect(records).toHaveLength(1);
+		expect(records[0]?.sourceKey).toBe(`meta:${UUID_NORM}`);
+		expect(records[0]?.input).toBe(40);
+	});
+
+	it("selectFreshSubagentRecords blocks aggregate vs per-child cross-granularity double count", () => {
+		const state = createSubagentIngestState();
+		const aggregate = {
+			sourceKey: `meta:${UUID_NORM}`,
+			modelLabel: "subagent/parallel",
+			calls: 4,
+			input: 100,
+			output: 50,
+			cacheRead: 0,
+			cacheWrite: 0,
+			costUsd: 0.01,
+		};
+		const child = {
+			sourceKey: `meta:${UUID_NORM}:reviewer:0`,
+			modelLabel: "llmgates/gpt-5.6-sol",
+			calls: 1,
+			input: 25,
+			output: 10,
+			cacheRead: 0,
+			cacheWrite: 0,
+			costUsd: 0.002,
+		};
+
+		expect(selectFreshSubagentRecords(state, [aggregate])).toEqual([aggregate]);
+		expect(selectFreshSubagentRecords(state, [child])).toEqual([]);
+
+		const state2 = createSubagentIngestState();
+		expect(selectFreshSubagentRecords(state2, [child])).toEqual([child]);
+		expect(selectFreshSubagentRecords(state2, [aggregate])).toEqual([]);
 	});
 });

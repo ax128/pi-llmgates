@@ -161,10 +161,12 @@ interface SubagentUsageRecord {
 | 仅 asyncDir basename | `async:{dirBasename}:{agent}:{index}` |
 | session.jsonl 兜底 | `session:{absolutePath}` |
 
-**规则：** 全局 `ingestedSubagentKeys: Set<string>`，同 key 只 ingest 一次。  
+**规则：** 全局 ingest 状态（`keys` + `aggregateRunIds` / `perChildRunIds`），同 key 只 ingest 一次。  
 **优先：** tool/meta 路径通常先于 event 或兜底到达；同 key 后到者丢弃。
 
-**跨粒度防重复（重要）：** 同一 `runId` 的 **per-child**（`meta:{runId}:{agent}:{index}`）与 **run 级 aggregate**（`meta:{runId}`）是**不同** sourceKey，`Set` dedup 拦不住二者叠加。解析器须遵守：**同一来源 payload 内 per-child 存在时不得再产出 run 级 aggregate**（见 §13.10）。
+**跨粒度防重复（重要）：** 同一 `runId` 的 **per-child**（`meta:{runId}:{agent}:{index}`）与 **run 级 aggregate**（`meta:{runId}`）是**不同** sourceKey，`Set` dedup 拦不住二者叠加。须遵守：
+1. **同一来源 payload 内** per-child 存在时不得再产出 run 级 aggregate（见 §13.10）；
+2. **跨源 ingest**（如 sync `totalChildUsage` aggregate 与后续 meta per-child）彼此互斥——已 ingest 其一则丢弃另一粒度。
 
 ---
 
@@ -216,8 +218,8 @@ interface SubagentUsageRecord {
 **解析：**
 1. 对每个 `results[i]` 按 §5.2 归一化（优先 `modelAttempts[].usage` 求和）。
 2. **§13.10 防重复：** per-child 记录存在时**不得**再产出 run 级 aggregate（二者 sourceKey 不同，Set 拦不住叠加）。
-3. 仅当 `results` 为空且 run 级 `totalTokens/totalCost` 有值时，合成一条 aggregate（sourceKey `meta:{runId}`）。
-4. 某 child 仍缺 token 时，按 `asyncDir` 读 `status.json`（§6.5）或 `sessionFile`（§6.6）兜底。
+3. 某 child 仍缺 token 时，按 `asyncDir` 读 `status.json` **per-step**（§6.5）或 `sessionFile`（§6.6）兜底；**不得**把 status run 级 totals 写入每个 child。
+4. 若最终没有任何 per-child 记录：最多合成 **一条** run aggregate——优先 event 的 `totalTokens/totalCost`，否则 `status.json` 在 `steps` 空/缺失时的 run 级 totals（sourceKey `meta:{runId}`）。`results` 为缺 token 的 stub 时同样适用（避免 N× 扇出）。
 
 ### 6.3 subagent:foreground-complete
 
