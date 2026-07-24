@@ -121,7 +121,12 @@ npm run check
 npm publish --access public
 ```
 
-若账号启用 2FA 且 token 不能绕过：追加 `--otp=<6位验证码>`。
+若账号启用 2FA：
+
+- **自动化推荐**：在 npm → Access Tokens 创建 **Granular Access Token**，权限含该包的 publish，并开启 *Bypass 2FA / automation*（若账号策略允许），写入 `.env` 的 `NPM_TOKEN`
+- **经典 token**：多数情况下 **不能** 无交互 publish，需追加 `--otp=<认证器 6 位>`，或按 CLI 提示完成浏览器登录
+- Agent 遇到 `EOTP`：向用户索取当前 OTP 后执行  
+  `set -a && source .env && set +a && npm publish --access public --ignore-scripts --otp=<OTP>`
 
 验证：
 
