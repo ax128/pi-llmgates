@@ -3,18 +3,7 @@
  * Not LLMGates wallet billing — upstream retail reference only.
  */
 
-import {
-	chmodSync,
-	closeSync,
-	constants,
-	fsyncSync,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	renameSync,
-	unlinkSync,
-	writeSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelCostRates } from "@earendil-works/pi-ai";
 import { gatewayModelId, isPiSelectableModel, type GatewayModel } from "./catalog.js";
@@ -23,6 +12,7 @@ import {
 	LITELLM_PRICING_REQUEST_TIMEOUT_MS,
 	requestLimitedJson,
 } from "./http.js";
+import { atomicWriteJson, SECRET_FILE_MODE } from "./util.js";
 
 export const MODEL_PRICING_CACHE_FILE = "llmgates-model-pricing.json";
 export const MODEL_PRICING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -30,7 +20,7 @@ export const LITELLM_PRICING_URL =
 	"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 export const LITELLM_PRICING_MAX_BYTES = 8 * 1024 * 1024;
 
-const CACHE_FILE_MODE = 0o600;
+
 
 export interface CatalogModelRef {
 	id: string;
@@ -245,44 +235,8 @@ export function readModelPricingFile(agentDir: string): ModelPricingFile | null 
 	return file;
 }
 
-/** @deprecated alias */
-
 function writeModelPricingFile(agentDir: string, file: ModelPricingFile): void {
-	const path = join(agentDir, MODEL_PRICING_CACHE_FILE);
-	mkdirSync(agentDir, { recursive: true });
-	const payload = `${JSON.stringify(file, null, 2)}\n`;
-	const tempPath = join(agentDir, `.${MODEL_PRICING_CACHE_FILE}.${process.pid}.${Date.now()}.tmp`);
-
-	let fd: number | undefined;
-	try {
-		fd = openSync(tempPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, CACHE_FILE_MODE);
-		writeSync(fd, payload);
-		fsyncSync(fd);
-		closeSync(fd);
-		fd = undefined;
-		renameSync(tempPath, path);
-		chmodSync(path, CACHE_FILE_MODE);
-	} catch (error) {
-		if (fd !== undefined) {
-			try {
-				closeSync(fd);
-			} catch {
-				// ignore
-			}
-		}
-		try {
-			unlinkSync(tempPath);
-		} catch {
-			// ignore
-		}
-		throw error;
-	} finally {
-		try {
-			unlinkSync(tempPath);
-		} catch {
-			// ignore if already renamed/removed
-		}
-	}
+	atomicWriteJson(join(agentDir, MODEL_PRICING_CACHE_FILE), file, { fileMode: SECRET_FILE_MODE });
 }
 
 export function reloadModelPricingFromDisk(agentDir: string): ModelPricingFile | null {
@@ -391,7 +345,7 @@ export function lookupLiteLLMContextWindow(
 function hasCachedRate(file: ModelPricingFile, ref: CatalogModelRef): boolean {
 	const keys = memoryLookupKeys(ref.id, ref.providerId);
 	if (keys.some((key) => Boolean(file.overrides?.[key]))) return true;
-	return keys.length === 1 ? keys[0]! in file.rates : keys[0]! in file.rates;
+	return keys[0]! in file.rates;
 }
 
 function hasCachedContextWindow(file: ModelPricingFile, ref: CatalogModelRef): boolean {

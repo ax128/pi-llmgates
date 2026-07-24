@@ -3,6 +3,7 @@ import {
 	extractSubagentUsageFromAsyncComplete,
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
+import { isPlainObject } from "./util.js";
 
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete";
@@ -75,6 +76,4 @@ export function registerSubagentUsageBridge(
 	};
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
-}
+

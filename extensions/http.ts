@@ -3,6 +3,7 @@
  */
 
 import { assertUrlTransportAllowed } from "./connection.js";
+import { abortError } from "./util.js";
 
 export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 export const MODELS_REQUEST_TIMEOUT_MS = 15_000;
@@ -44,10 +45,6 @@ export class ResponseLimitError extends Error {
 
 export function isUnauthorizedStatus(error: unknown): boolean {
 	return error instanceof HttpStatusError && (error.status === 401 || error.status === 403);
-}
-
-function abortError(message = "The operation was aborted."): DOMException {
-	return new DOMException(message, "AbortError");
 }
 
 function originOf(url: string): string {

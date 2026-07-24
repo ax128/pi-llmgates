@@ -6,14 +6,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-	CLIENT_VERSION,
 	DEFAULT_BASE_URL,
 	DEFAULT_PROVIDER_ID,
 	DEFAULT_PROVIDER_NAME,
 	firstNonEmpty,
 	normalizeGatewayBaseUrl,
+	resolveCreditsUrl,
 	resolveEndpoints,
 } from "./catalog.js";
+import { isPlainObject } from "./util.js";
 
 export type ConnectionSource = "oauth" | "env" | "file";
 
@@ -89,10 +90,6 @@ export const BUILTIN_PROVIDER_IDS = new Set<string>([
 export interface OAuthRefreshMetaV1 {
 	version: 1;
 	baseUrl: string;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isIPv4Loopback(ip: string): boolean {
@@ -199,7 +196,7 @@ export function normalizeAndValidateBaseUrl(input: string | undefined): UrlValid
 
 	try {
 		const endpoints = resolveEndpoints(allowed.url.toString());
-		const balanceUrl = `${endpoints.inferenceBaseUrl.replace(/\/+$/, "")}/user/balance`;
+		const balanceUrl = resolveCreditsUrl(endpoints.inferenceBaseUrl);
 		return {
 			ok: true,
 			baseUrlInput: allowed.url.toString(),
@@ -471,9 +468,4 @@ export function resolveCanonicalConnection(agentDir: string, providerId: string)
 	}
 
 	return connectionFromConfigFile(agentDir);
-}
-
-/** Models URL helper kept for callers that only have inference base. */
-export function modelsUrlFromInferenceBase(inferenceBaseUrl: string): string {
-	return `${inferenceBaseUrl.replace(/\/+$/, "")}/models?client_version=${encodeURIComponent(CLIENT_VERSION)}`;
 }

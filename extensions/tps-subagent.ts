@@ -5,6 +5,7 @@ import {
 	normalizeTokenCount,
 	type ModelUsageStats,
 } from "./tps-stats.js";
+import { isPlainObject } from "./util.js";
 
 export const PI_SUBAGENTS_DIR = ".pi-subagents";
 export const PI_SUBAGENTS_ARTIFACTS_DIR = join(PI_SUBAGENTS_DIR, "artifacts");
@@ -51,10 +52,6 @@ function normalizeCalls(value: unknown): number {
 		return 0;
 	}
 	return Math.max(0, Math.floor(value));
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function countersHaveSignal(usage: SubagentUsageCounters): boolean {
