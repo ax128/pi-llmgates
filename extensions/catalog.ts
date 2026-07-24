@@ -5,6 +5,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import packageJson from "../package.json" with { type: "json" };
 import { resolveModelCostRates } from "./model-pricing.js";
+import { isPlainObject } from "./util.js";
 
 export type ThinkingLevelMap = Partial<
 	Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra", string | null>
@@ -373,10 +374,6 @@ export function formatCreditsMessage(snapshot: CreditsSnapshot): string {
 	return parts.join(" · ");
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 export function parseGatewayModelsPayload(payload: unknown): GatewayModel[] {
 	let list: unknown;
 	if (Array.isArray(payload)) {
@@ -397,35 +394,20 @@ export function parseGatewayModelsPayload(payload: unknown): GatewayModel[] {
 	return list as GatewayModel[];
 }
 
-function optionalFiniteNumber(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function optionalString(value: unknown): string | undefined {
-	return typeof value === "string" ? value : undefined;
-}
-
-function optionalBoolean(value: unknown): boolean | undefined {
-	return typeof value === "boolean" ? value : undefined;
-}
-
 export function parseCreditsPayload(payload: unknown): CreditsSnapshot {
 	if (!isPlainObject(payload)) {
 		throw new Error("Invalid balance payload: expected object");
 	}
 
 	const snapshot: CreditsSnapshot = {};
-	const isActive = optionalBoolean(payload.is_active);
-	if (isActive !== undefined) {
-		snapshot.is_active = isActive;
+	if (typeof payload.is_active === "boolean") {
+		snapshot.is_active = payload.is_active;
 	}
-	const unit = optionalString(payload.unit);
-	if (unit !== undefined) {
-		snapshot.unit = unit;
+	if (typeof payload.unit === "string") {
+		snapshot.unit = payload.unit;
 	}
-	const balance = optionalFiniteNumber(payload.balance);
-	if (balance !== undefined) {
-		snapshot.balance = balance;
+	if (typeof payload.balance === "number" && Number.isFinite(payload.balance)) {
+		snapshot.balance = payload.balance;
 	}
 	for (const key of [
 		"remaining_usd",
@@ -459,19 +441,5 @@ export function providerModelsToStoredModels(
 		...model,
 		provider: providerId,
 		baseUrl: inferenceBaseUrl,
-	}));
-}
-
-export function storedModelsToProviderModels(models: readonly Model<Api>[]): PiProviderModel[] {
-	return models.map(({ id, name, api, reasoning, thinkingLevelMap, input, cost, contextWindow, maxTokens }) => ({
-		id,
-		name,
-		api: api as PiApiType,
-		reasoning,
-		thinkingLevelMap,
-		input,
-		cost,
-		contextWindow,
-		maxTokens,
 	}));
 }

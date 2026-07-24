@@ -13,7 +13,6 @@ import {
 	resolveCreditsUrl,
 	resolveEndpoints,
 	resolveInferenceEndpoint,
-	storedModelsToProviderModels,
 	toPiApiType,
 	toPiModel,
 } from "../extensions/catalog.js";
@@ -279,17 +278,6 @@ describe("model catalog store roundtrip", () => {
 
 		expect(models[0]?.provider).toBe("llmgates");
 		expect(models[0]?.baseUrl).toBe("https://apicn.llmgates.com/v1");
-
-		expect(storedModelsToProviderModels(models)[0]).toEqual({
-			id: "gpt-test",
-			name: "GPT Test",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 8192,
-			api: "openai-responses",
-		});
 	});
 });
 

@@ -1,18 +1,6 @@
-import { randomUUID } from "node:crypto";
-import {
-	chmodSync,
-	closeSync,
-	constants,
-	fsyncSync,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	renameSync,
-	unlinkSync,
-	writeSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import type { OAuthCredential } from "@earendil-works/pi-ai";
 import * as lockfile from "proper-lockfile";
 import {
@@ -24,21 +12,17 @@ import {
 	type CompatInstance,
 	type CompatScheme,
 } from "./types.js";
+import {
+	atomicWriteJson,
+	createFileIfMissingMode,
+	ensureDirMode,
+	isPlainObject,
+	LOCK_OPTIONS,
+	SECRET_DIR_MODE,
+	SECRET_FILE_MODE,
+} from "../util.js";
 
 const AUTH_FILE_NAME = "auth.json";
-const FILE_MODE = 0o600;
-const DIRECTORY_MODE = 0o700;
-const LOCK_OPTIONS: lockfile.LockOptions = {
-	realpath: false,
-	stale: 30_000,
-	retries: {
-		retries: 10,
-		factor: 2,
-		minTimeout: 100,
-		maxTimeout: 10_000,
-		randomize: true,
-	},
-};
 
 export interface CompatConfigFile {
 	instances: CompatInstance[];
@@ -50,89 +34,15 @@ export interface CompatRefreshMetaV1 {
 	scheme: CompatScheme;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function isCompatScheme(value: unknown): value is CompatScheme {
 	return typeof value === "string" && (COMPAT_SCHEMES as readonly string[]).includes(value);
 }
 
-function ensureAgentDir(agentDir: string): void {
-	const created = mkdirSync(agentDir, { recursive: true, mode: DIRECTORY_MODE });
-	if (created !== undefined) {
-		chmodSync(agentDir, DIRECTORY_MODE);
-	}
-}
-
-function createFileIfMissing(path: string, initialContent: string): void {
-	let fd: number | undefined;
-	try {
-		fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, FILE_MODE);
-		writeSync(fd, initialContent);
-		fsyncSync(fd);
-		closeSync(fd);
-		fd = undefined;
-		chmodSync(path, FILE_MODE);
-	} catch (error) {
-		if (fd !== undefined) {
-			try {
-				closeSync(fd);
-			} catch {
-				// Ignore cleanup failure and preserve the original error.
-			}
-		}
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-			throw error;
-		}
-	}
-}
-
-function atomicReplace(path: string, value: unknown): void {
-	const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
-	let fd: number | undefined;
-	try {
-		fd = openSync(tempPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, FILE_MODE);
-		writeSync(fd, `${JSON.stringify(value, null, 2)}\n`);
-		fsyncSync(fd);
-		closeSync(fd);
-		fd = undefined;
-		renameSync(tempPath, path);
-		chmodSync(path, FILE_MODE);
-
-		try {
-			const dirFd = openSync(dirname(path), constants.O_RDONLY);
-			try {
-				fsyncSync(dirFd);
-			} finally {
-				closeSync(dirFd);
-			}
-		} catch {
-			// Directory fsync is not supported on every platform.
-		}
-	} catch (error) {
-		if (fd !== undefined) {
-			try {
-				closeSync(fd);
-			} catch {
-				// Ignore cleanup failure and preserve the original error.
-			}
-		}
-		throw error;
-	} finally {
-		try {
-			unlinkSync(tempPath);
-		} catch {
-			// The temp file was renamed or never created.
-		}
-	}
-}
-
 async function withLock<T>(path: string, initialContent: string, fn: () => Promise<T> | T): Promise<T> {
-	ensureAgentDir(dirname(path));
+	ensureDirMode(dirname(path), SECRET_DIR_MODE);
 	const release = await lockfile.lock(path, LOCK_OPTIONS);
 	try {
-		createFileIfMissing(path, initialContent);
+		createFileIfMissingMode(path, initialContent, SECRET_FILE_MODE);
 		return await fn();
 	} finally {
 		await release();
@@ -228,7 +138,10 @@ export async function addInstance(agentDir: string, instance: CompatInstance): P
 		if (config.instances.some((item) => item.id.toLowerCase() === nextInstance.id.toLowerCase())) {
 			throw new Error(`Instance ID "${nextInstance.id}" already exists`);
 		}
-		atomicReplace(path, { instances: [...config.instances, nextInstance] });
+		atomicWriteJson(path, { instances: [...config.instances, nextInstance] }, {
+			fileMode: SECRET_FILE_MODE,
+			dirMode: SECRET_DIR_MODE,
+		});
 		return { ...nextInstance };
 	});
 }
@@ -244,7 +157,7 @@ export async function updateInstance(agentDir: string, instance: CompatInstance)
 		}
 		const instances = [...config.instances];
 		instances[index] = nextInstance;
-		atomicReplace(path, { instances });
+		atomicWriteJson(path, { instances }, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
 		return { ...nextInstance };
 	});
 }
@@ -258,7 +171,7 @@ export async function removeInstance(agentDir: string, id: string): Promise<bool
 		if (instances.length === config.instances.length) {
 			return false;
 		}
-		atomicReplace(path, { instances });
+		atomicWriteJson(path, { instances }, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
 		return true;
 	});
 }
@@ -354,7 +267,7 @@ export async function writeProviderOAuthCredential(
 		if (findAuthKey(auth, id) !== undefined) {
 			throw new Error(`Auth entry for instance ID "${id}" already exists`);
 		}
-		atomicReplace(path, { ...auth, [id]: stored });
+		atomicWriteJson(path, { ...auth, [id]: stored }, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
 	});
 }
 
@@ -368,7 +281,7 @@ export async function deleteProviderAuthEntry(agentDir: string, providerId: stri
 			return false;
 		}
 		delete auth[storedKey];
-		atomicReplace(path, auth);
+		atomicWriteJson(path, auth, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
 		return true;
 	});
 }
@@ -387,7 +300,7 @@ export async function deleteProviderAuthEntryIfEqual(
 			return false;
 		}
 		delete auth[storedKey];
-		atomicReplace(path, auth);
+		atomicWriteJson(path, auth, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
 		return true;
 	});
 }

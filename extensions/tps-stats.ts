@@ -135,10 +135,6 @@ export function preprocessAssistantMessage(message: unknown): AssistantMessage |
 	} as AssistantMessage;
 }
 
-export function estimateUsageCostUsd(message: AssistantMessage): number {
-	return safeEstimateUsageCostUsd(message);
-}
-
 /** Never throws — returns 0 when pricing or usage data is invalid. */
 export function safeEstimateUsageCostUsd(message: AssistantMessage): number {
 	try {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { resolveModelCostRates } from "../extensions/model-pricing.js";
 import {
-	estimateUsageCostUsd,
+	safeEstimateUsageCostUsd,
 	formatCostUsd,
 	formatModelUsageLine,
 	formatTpsStatusLine,
@@ -100,7 +100,7 @@ describe("tps stats cost", () => {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 		} as AssistantMessage;
-		expect(estimateUsageCostUsd(message)).toBeCloseTo(1, 5);
+		expect(safeEstimateUsageCostUsd(message)).toBeCloseTo(1, 5);
 	});
 
 	it("counts calls when assistant usage is recorded", () => {
@@ -192,6 +192,6 @@ describe("tps stats preprocessing", () => {
 			usage: { input: 10, output: 0, totalTokens: 10, cost: { total: Number.NaN } },
 		});
 		expect(normalized).not.toBeNull();
-		expect(estimateUsageCostUsd(normalized!)).toBeGreaterThanOrEqual(0);
+		expect(safeEstimateUsageCostUsd(normalized!)).toBeGreaterThanOrEqual(0);
 	});
 });

@@ -2,7 +2,7 @@
  * Native LLMGates Provider: literal keys, validated login, scoped cache, lifecycle.
  */
 
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type {
 	Api,
 	ApiStreamOptions,
@@ -58,14 +58,16 @@ import {
 } from "./http.js";
 import { CREDENTIAL_TTL_MS, saveConfigFilePreservingSecrets } from "./lib.js";
 import {
+	CATALOG_BACKGROUND_REFRESH_MS,
+	keysEqual,
+	MAX_LOGIN_ATTEMPTS,
+	PENDING_TTL_MS,
+} from "./util.js";
+import {
 	formatLoginValidationFailure,
 	LLMGATES_LOGIN_UI,
 	translateLoginError,
 } from "./login-ui.js";
-
-const MAX_LOGIN_ATTEMPTS = 5;
-const PENDING_TTL_MS = 5 * 60 * 1000;
-const CATALOG_BACKGROUND_REFRESH_MS = 5 * 60 * 1000;
 
 const API_STREAMS: Record<string, ProviderStreams> = {
 	"openai-responses": openAIResponsesApi(),
@@ -107,16 +109,6 @@ export interface LLMGatesProvider extends Provider {
 
 function logWarn(message: string): void {
 	console.warn(`[pi-llmgates-provider] ${message}`);
-}
-
-function digestKey(apiKey: string): Buffer {
-	return createHash("sha256").update(apiKey).digest();
-}
-
-function keysEqual(a: string, b: string): boolean {
-	const da = digestKey(a);
-	const db = digestKey(b);
-	return da.length === db.length && timingSafeEqual(da, db);
 }
 
 function isModelStructValid(model: unknown, providerId: string, inferenceBaseUrl?: string): model is Model<Api> {
