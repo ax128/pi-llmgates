@@ -7,6 +7,8 @@
 | 文档 | 说明 |
 | --- | --- |
 | [README](../README.md) | 安装、登录、配置、命令、安全与故障排查 |
+| [npm-package.md](./npm-package.md) | **Agent / 维护者**：npm 安装、更新、升版本、发布与 `.env` 密钥 |
+| [AGENTS.md](../AGENTS.md) | 项目级 Agent 入口（指向 npm 手册与约定） |
 
 ## 设计与实现（内部）
 

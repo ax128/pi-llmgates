@@ -29,7 +29,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run test",
-    "prepublishOnly": "npm run check"
+    "prepublishOnly": "npm run check",
+    "publish:npm": "bash ./scripts/publish-npm.sh"
   },
   "pi": {
     "extensions": [

@@ -282,13 +282,11 @@ pi install .
 
 ## 发布（维护者）
 
-```bash
-# 1) 将 package.json / package-lock.json / README 中的版本升到下一版（如 0.1.9）
-npm run check
-npm pack --dry-run
-npm publish --access public
+完整步骤（含 `.env` 中的 `NPM_TOKEN`、升版本、tag）见 **[docs/npm-package.md](docs/npm-package.md)** 与 [AGENTS.md](AGENTS.md)。
 
-# 2) 打 tag，供 git 安装固定版本
+```bash
+# 本地配置 NPM_TOKEN 后：
+./scripts/publish-npm.sh
 VERSION=$(node -p "require('./package.json').version")
 git tag "v$VERSION" && git push origin "v$VERSION"
 ```
