@@ -282,13 +282,15 @@ pi install .
 
 ## 发布（维护者）
 
-完整步骤（含 `.env` 中的 `NPM_TOKEN`、升版本、tag）见 **[docs/npm-package.md](docs/npm-package.md)** 与 [AGENTS.md](AGENTS.md)。
+Agent / 维护者完整流程（**要认证链接 → 等用户回复 → 发布 → 给安装命令**）见：
+
+- [docs/npm-package.md](docs/npm-package.md)（开头「Agent 标准发布对话」）
+- [AGENTS.md](AGENTS.md)
 
 ```bash
-# 本地配置 NPM_TOKEN 后：
-./scripts/publish-npm.sh
-VERSION=$(node -p "require('./package.json').version")
-git tag "v$VERSION" && git push origin "v$VERSION"
+set -a && source .env && set +a
+node ./scripts/npm-publish-auth-link.mjs   # 把链接发给操作者
+./scripts/publish-npm.sh --otp=<验证码>   # 对方回复后再执行
 ```
 
 ## 相关文档

@@ -8,6 +8,76 @@
 
 ---
 
+## Agent 标准发布对话（下次照此执行）
+
+用户说「发布 / publish」时，**严格按下面顺序**，不要跳步、不要在对话里粘贴 `.env` 或 token。
+
+### A. 准备（Agent 自己做）
+
+1. 确认或升版本：`package.json`、`package-lock.json`、README 中的 `@x.y.z` / `@vX.Y.Z`
+2. `npm run check` 通过
+3. commit + `git push origin HEAD`
+4. 打 tag（可先本地）：`VERSION=$(node -p "require('./package.json').version")` → `git tag "v$VERSION"`
+
+### B. 要认证链接（Agent → 用户）
+
+```bash
+set -a && source .env && set +a
+node ./scripts/npm-publish-auth-link.mjs
+```
+
+脚本会打印一行：
+
+`https://www.npmjs.com/login/<uuid>`
+
+**立刻把该完整链接发给用户**，并说明：
+
+- 请在浏览器打开并完成 npm 安全密钥 / 2FA
+- 完成后把 **OTP / 验证码** 回复给我（或回复「已验证」）
+- 链接有时效，尽快操作
+
+> 说明：`npm publish` 报错里的 URL 常被打成 `***`，必须用本脚本从 `npm-notice` 头取出真实链接。
+
+### C. 用户回复之后（Agent 继续）
+
+用户回复验证码（可能是 6 位 TOTP，或更长的安全密钥会话码）后：
+
+```bash
+set -a && source .env && set +a
+VERSION=$(node -p "require('./package.json').version")
+npm publish --access public --ignore-scripts --otp="<用户回复的验证码>"
+npm view @llmgates_api/pi-llmgates-provider version   # 须等于 $VERSION
+git push origin "v$VERSION"                          # 若尚未推送 tag
+```
+
+若用户只说「已验证」且未给码：再跑一次 `npm-publish-auth-link.mjs` 拿新链接，或请用户发当前 OTP。
+
+### D. 发布成功后（Agent → 用户）
+
+**必须**回复安装示例（把 `VERSION` 换成真实版本，如 `0.1.9`）：
+
+```bash
+# 最新版
+pi install npm:@llmgates_api/pi-llmgates-provider
+
+# 固定本版
+pi install npm:@llmgates_api/pi-llmgates-provider@VERSION
+
+# 仅当前项目
+pi install -l npm:@llmgates_api/pi-llmgates-provider@VERSION
+
+# git tag
+pi install git:github.com/ax128/pi-llmgates@vVERSION
+```
+
+并提醒：安装后 `/reload` 或重启 pi，再 `/login LLMGates`。
+
+### 对话节奏（一句话）
+
+`升版本 → check → 推代码/tag → 跑 auth-link 脚本 → 把链接给用户 → 等回复 → publish --otp → 给出安装命令`
+
+---
+
 ## 0. 密钥与安全（必读）
 
 | 项 | 规则 |
@@ -16,10 +86,8 @@
 | 模板 | `.env.example`（可提交；无真实密钥） |
 | 忽略规则 | `.gitignore` 已忽略 `.env` / `.env.*`（保留 `.env.example`） |
 | `.npmrc` | 使用 `${NPM_TOKEN}` 占位，**不写死 token** |
-| 文档 / 提交 | **禁止**把真实 token 写进 README、commit、PR、日志 |
+| 文档 / 提交 | **禁止**把真实 token / OTP 写进 README、commit、PR |
 | 泄露处理 | 若 token 曾出现在聊天或日志：到 npm 网站撤销并换新，更新 `.env` |
-
-加载环境变量（之后所有 npm 发布命令都要先做）：
 
 ```bash
 set -a
@@ -51,8 +119,6 @@ pi install git:github.com/ax128/pi-llmgates@v0.1.9
 
 安装后：`/reload` 或重启 pi，再 `/login LLMGates`。
 
-用 npm 直接查看 registry：
-
 ```bash
 npm view @llmgates_api/pi-llmgates-provider version
 npm view @llmgates_api/pi-llmgates-provider versions --json
@@ -63,79 +129,48 @@ npm view @llmgates_api/pi-llmgates-provider versions --json
 ## 2. 更新（用户侧）
 
 ```bash
-# 升到 registry latest
 pi install npm:@llmgates_api/pi-llmgates-provider
-
-# 或指定新版本
 pi install npm:@llmgates_api/pi-llmgates-provider@0.1.9
 ```
 
-然后 `/reload`。若行为异常，核对 peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <0.82.0`。
+然后 `/reload`。peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <0.82.0`。
 
 ---
 
-## 3. 发布新版本（维护者 / Agent）
+## 3. 发布细节（维护者）
 
-### 3.1 前置检查
+### 3.1 前置
 
 ```bash
-git status                 # 应干净，或仅有你准备发布的改动
-npm whoami                 # 需能解析为有权发布的账号（依赖 NPM_TOKEN）
-npm run check              # typecheck + vitest，必须通过
-npm pack --dry-run         # 确认 tarball 只含 extensions / README / LICENSE
+git status
+set -a && source .env && set +a && npm whoami
+npm run check
+npm pack --dry-run
 ```
 
-当前 `latest` 已存在时，**禁止**不改版本直接 `npm publish`（会 403/冲突）。
+已存在的版本号**禁止**重复 publish。
 
-### 3.2 升版本（与文档同步）
+### 3.2 升版本
 
-同步修改这些位置的版本号（示例：`0.1.8` → `0.1.9`）：
+同步：
 
 1. `package.json` → `"version"`
 2. `package-lock.json` → 根 `version` 与 `packages[""].version`
-3. `README.md` → 安装示例中的 `@x.y.z` 与 `@vX.Y.Z`
+3. `README.md` → 安装示例中的版本
 
-不要改历史 npm 版本对应关系；只升**下一个** semver。
+### 3.3 脚本
 
-建议 commit message：
-
-```text
-chore: release v0.1.9
-
-<一句话说明本版用户可见变化>
-```
-
-### 3.3 发布到 npm
-
-推荐脚本（会先 `check`）：
+| 脚本 | 用途 |
+| --- | --- |
+| `node ./scripts/npm-publish-auth-link.mjs` | 取出浏览器认证链接（给用户） |
+| `./scripts/publish-npm.sh` | check + publish（可跟 `--otp=...`） |
+| `./scripts/publish-npm.sh --otp=...` | 用户回复验证码后一键发布 |
 
 ```bash
-./scripts/publish-npm.sh
+./scripts/publish-npm.sh --otp="<用户验证码>"
 ```
 
-等价手工步骤：
-
-```bash
-set -a && source .env && set +a
-npm run check
-npm publish --access public
-```
-
-若账号启用 2FA：
-
-- **自动化推荐**：在 npm → Access Tokens 创建 **Granular Access Token**，权限含该包的 publish，并开启 *Bypass 2FA / automation*（若账号策略允许），写入 `.env` 的 `NPM_TOKEN`
-- **经典 token**：多数情况下 **不能** 无交互 publish，需追加 `--otp=<认证器 6 位>`，或按 CLI 提示完成浏览器登录
-- Agent 遇到 `EOTP`：向用户索取当前 OTP 后执行  
-  `set -a && source .env && set +a && npm publish --access public --ignore-scripts --otp=<OTP>`
-
-验证：
-
-```bash
-npm view @llmgates_api/pi-llmgates-provider version
-# 应等于 package.json 的 version
-```
-
-### 3.4 Git tag（供 git 安装钉版本）
+### 3.4 Git tag
 
 ```bash
 VERSION=$(node -p "require('./package.json').version")
@@ -144,24 +179,22 @@ git tag "v$VERSION" 2>/dev/null || true
 git push origin "v$VERSION"
 ```
 
-用户侧：`pi install git:github.com/ax128/pi-llmgates@v$VERSION`。
-
-### 3.5 发布后自检清单
+### 3.5 自检
 
 - [ ] `npm view ... version` == `package.json`
-- [ ] `pi install npm:@llmgates_api/pi-llmgates-provider@<version>` 可装
-- [ ] 远程存在 `v<version>` tag
-- [ ] `.env` 未进入 git（`git check-ignore -v .env`）
+- [ ] tag `v<version>` 已推远程
+- [ ] `.env` 未被 git 跟踪
+- [ ] 已向用户发出 §D 安装命令
 
 ---
 
-## 4. 包元数据约定（改 package.json 时）
+## 4. 包元数据约定
 
 | 字段 | 要求 |
 | --- | --- |
 | `name` | `@llmgates_api/pi-llmgates-provider` |
 | `publishConfig.access` | `public` |
-| `files` | `extensions`, `README.md`, `LICENSE`（不要打进 `test/`、`docs/`） |
+| `files` | `extensions`, `README.md`, `LICENSE` |
 | `pi.extensions` | `./extensions/index.ts`, `./extensions/tps.ts` |
 | `prepublishOnly` | `npm run check` |
 | `engines.node` | `>=22.19.0` |
@@ -172,10 +205,10 @@ git push origin "v$VERSION"
 
 | 用户意图 | 动作 |
 | --- | --- |
-| 安装 / 试用 | §1；勿动版本、勿 publish |
-| 更新到新版 | §2 |
-| 发布 | 确认改动已合并 → §3.2 升版本 → §3.3 publish → §3.4 tag |
-| 只要文档 | 指向本文件 + README「发布（维护者）」 |
-| 遇到 EOTP | 向用户要 OTP，或改用支持 publish 的 granular token 写入 `.env` |
+| 安装 / 试用 | §1；勿 publish |
+| 更新 | §2 |
+| **发布** | **顶部「Agent 标准发布对话」A→B→C→D** |
+| EOTP / 要链接 | 跑 `npm-publish-auth-link.mjs`，把链接给用户，等回复 |
+| 用户回了验证码 | `npm publish --ignore-scripts --otp=...`，再给安装命令 |
 
-**不要**：把 `.env` 内容贴进回复；不要 `git add .env`；不要用 `--force` 覆盖已发布版本。
+**不要**：把 `.env` / OTP 写进仓库；不要 `git add .env`；不要覆盖已发布版本。
