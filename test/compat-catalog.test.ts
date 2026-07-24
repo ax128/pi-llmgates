@@ -258,6 +258,8 @@ describe("mapCompatModelsPayload", () => {
 		expect(isMoonshotKimiCompatModel("kimi-k2.6")).toBe(true);
 		expect(isMoonshotKimiCompatModel("vendor/kimi-k3")).toBe(true);
 		expect(isMoonshotKimiCompatModel("k3")).toBe(true);
+		expect(isMoonshotKimiCompatModel("kimi3")).toBe(true);
+		expect(isMoonshotKimiK3Model("kimi3")).toBe(true);
 		expect(isMoonshotKimiCompatModel("gpt-4o", "openai")).toBe(false);
 	});
 
@@ -268,6 +270,11 @@ describe("mapCompatModelsPayload", () => {
 			deferredToolsMode: "kimi",
 		});
 		expect(moonshotKimiOpenAICompat("k3")).toMatchObject({
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: true,
+			deferredToolsMode: "kimi",
+		});
+		expect(moonshotKimiOpenAICompat("kimi3")).toMatchObject({
 			supportsDeveloperRole: false,
 			supportsReasoningEffort: true,
 			deferredToolsMode: "kimi",

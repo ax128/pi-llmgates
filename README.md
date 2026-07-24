@@ -47,7 +47,7 @@ pi
 
 ```bash
 pi install npm:@llmgates_api/pi-llmgates-provider          # 最新版
-pi install npm:@llmgates_api/pi-llmgates-provider@0.1.9   # 指定版本
+pi install npm:@llmgates_api/pi-llmgates-provider@0.1.10   # 指定版本
 pi install -l npm:@llmgates_api/pi-llmgates-provider      # 仅当前项目（否则装到 ~/.pi/agent/）
 ```
 
@@ -55,7 +55,7 @@ pi install -l npm:@llmgates_api/pi-llmgates-provider      # 仅当前项目（�
 
 ```bash
 pi install git:github.com/ax128/pi-llmgates               # 跟踪 main
-pi install git:github.com/ax128/pi-llmgates@v0.1.9        # 固定 tag（发布后可用）
+pi install git:github.com/ax128/pi-llmgates@v0.1.10        # 固定 tag（发布后可用）
 pi install git:git@github.com:ax128/pi-llmgates.git       # SSH
 pi install -l git:github.com/ax128/pi-llmgates            # 仅当前项目
 ```
@@ -263,6 +263,7 @@ Pi 内置 footer 在 OAuth 登录时可能仍显示 `(sub)`，该标记与 LLMGa
 | 安装后扩展未加载 | `/reload` 或重启 pi |
 | 安装后无模型 | `/login LLMGates`；检查 LLMGates 侧 key 的 `allowed_models` |
 | 启动时 `401` / `403` | 重新 `/login` 或更新 `LLMGATES_API_KEY` |
+| Kimi / `tokenization failed` | 升级本扩展后 `/reload`；Kimi 不接受 `developer` role，扩展会注入 compat。也可新建会话再试（中途从其他模型切到 K3 不稳定） |
 | 看不到 image / video 模型 | 预期行为 — 生成类模型按 `capability_tags` 过滤 |
 | 列表出现意外生成模型 | 网关 catalog 须用 `image_generation`、`video_*` 等 tag 标记；未标记的模型会保留 |
 | 费用与账单不一致 | TUI 费用为上游零售价估算；账户消费看 `/balance` |

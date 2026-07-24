@@ -174,6 +174,54 @@ describe("native oauth login", () => {
 		}
 	});
 
+	it("injects Moonshot/Kimi compat for gateway-routed kimi-k3 (avoids developer-role tokenization failed)", async () => {
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				body: JSON.stringify([
+					{
+						id: "kimi-k3",
+						name: "Kimi K3",
+						provider_id: "moonshotai",
+						supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }, { effort: "max" }],
+					},
+					{ id: "gpt-4o", name: "GPT-4o", provider_id: "openai" },
+				]),
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const interaction = scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]);
+			const cred = await provider.auth.oauth!.login(interaction);
+			const store = createMemoryStore();
+			await provider.refreshModels!({
+				credential: cred,
+				store,
+				allowNetwork: true,
+			});
+
+			const kimi = provider.getModels().find((m) => m.id === "kimi-k3");
+			const gpt = provider.getModels().find((m) => m.id === "gpt-4o");
+			expect(kimi?.compat).toMatchObject({
+				supportsDeveloperRole: false,
+				supportsReasoningEffort: true,
+				thinkingFormat: "openai",
+				requiresReasoningContentOnAssistantMessages: true,
+				deferredToolsMode: "kimi",
+			});
+			expect(kimi?.thinkingLevelMap).toMatchObject({ low: "low", high: "high", max: "max" });
+			expect(gpt?.compat).toBeUndefined();
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
 	it("login store write failure still publishes in-memory models", async () => {
 		const server = await startLoopbackServer([
 			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", name: "M1" }]) },

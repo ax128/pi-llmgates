@@ -46,7 +46,13 @@ function bareCompatModelId(modelId: string): string {
 
 export function isMoonshotKimiK3Model(modelId: string): boolean {
 	const bareId = bareCompatModelId(modelId);
-	return bareId === "k3" || bareId === "kimi-k3" || bareId.startsWith("kimi-k3-") || bareId.startsWith("k3-");
+	return (
+		bareId === "k3" ||
+		bareId === "kimi3" ||
+		bareId === "kimi-k3" ||
+		bareId.startsWith("kimi-k3-") ||
+		bareId.startsWith("k3-")
+	);
 }
 
 /** Moonshot/Kimi models routed via CPA, Sub2API, or NewAPI lose pi-ai URL-based compat detection. */
@@ -90,8 +96,8 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
 }
 
 /** Patch compat metadata onto gateway-routed Kimi models (including cached catalog entries). */
-export function applyMoonshotKimiCompatModel<T extends Model<Api>>(model: T): T {
-	if (!isMoonshotKimiCompatModel(model.id)) {
+export function applyMoonshotKimiCompatModel<T extends Model<Api>>(model: T, vendor?: string): T {
+	if (!isMoonshotKimiCompatModel(model.id, vendor)) {
 		return model;
 	}
 
@@ -160,7 +166,7 @@ export function mapCompatModelsPayload(
 			maxTokens,
 			thinkingLevelMap: buildThinkingLevelMap(efforts),
 		};
-		models.push(applyMoonshotKimiCompatModel(model));
+		models.push(applyMoonshotKimiCompatModel(model, vendor));
 		catalogRefs.push(
 			vendor && KNOWN_UPSTREAM_VENDOR_IDS.has(vendor)
 				? { id, providerId: vendor }

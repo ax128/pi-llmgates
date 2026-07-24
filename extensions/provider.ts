@@ -36,6 +36,7 @@ import {
 	type GatewayModel,
 	type PiProviderModel,
 } from "./catalog.js";
+import { applyMoonshotKimiCompatModel } from "./compat/catalog.js";
 import {
 	applyPricingCacheToResolver,
 	readModelPricingFile,
@@ -141,6 +142,7 @@ function mapGatewayPayload(
 	gatewayModels: readonly GatewayModel[],
 ): Model<Api>[] {
 	const mapped: PiProviderModel[] = [];
+	const vendorById = new Map<string, string>();
 	const seen = new Set<string>();
 	for (const item of gatewayModels) {
 		const model = toPiModel(item);
@@ -148,8 +150,16 @@ function mapGatewayPayload(
 		if (seen.has(model.id)) continue;
 		seen.add(model.id);
 		mapped.push(model);
+		const vendor = (item.provider_id ?? "").trim().toLowerCase();
+		if (vendor) {
+			vendorById.set(model.id, vendor);
+		}
 	}
-	return providerModelsToStoredModels(providerId, mapped, inferenceBaseUrl);
+	// LLMGates baseUrl is not moonshot.*; without explicit compat, pi-ai sends
+	// developer role for reasoning models → Moonshot "tokenization failed".
+	return providerModelsToStoredModels(providerId, mapped, inferenceBaseUrl).map((model) =>
+		applyMoonshotKimiCompatModel(model, vendorById.get(model.id)),
+	);
 }
 
 function connectionFromCredential(credential: Credential | undefined): CanonicalConnection | null {
@@ -286,8 +296,14 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			if (bound.length === 0) {
 				return;
 			}
+			for (const model of bound) {
+				applyMoonshotKimiCompatModel(model);
+			}
 			setModels(bound as Model<Api>[]);
 		} else {
+			for (const model of valid) {
+				applyMoonshotKimiCompatModel(model);
+			}
 			setModels(valid as Model<Api>[]);
 		}
 		if (typeof entry.checkedAt === "number" && Number.isFinite(entry.checkedAt)) {
