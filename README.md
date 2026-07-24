@@ -47,7 +47,7 @@ pi
 
 ```bash
 pi install npm:@llmgates_api/pi-llmgates-provider          # 最新版
-pi install npm:@llmgates_api/pi-llmgates-provider@0.1.8   # 指定版本
+pi install npm:@llmgates_api/pi-llmgates-provider@0.1.9   # 指定版本
 pi install -l npm:@llmgates_api/pi-llmgates-provider      # 仅当前项目（否则装到 ~/.pi/agent/）
 ```
 
@@ -55,7 +55,7 @@ pi install -l npm:@llmgates_api/pi-llmgates-provider      # 仅当前项目（�
 
 ```bash
 pi install git:github.com/ax128/pi-llmgates               # 跟踪 main
-pi install git:github.com/ax128/pi-llmgates@v0.1.8        # 固定 tag（发布后可用）
+pi install git:github.com/ax128/pi-llmgates@v0.1.9        # 固定 tag（发布后可用）
 pi install git:git@github.com:ax128/pi-llmgates.git       # SSH
 pi install -l git:github.com/ax128/pi-llmgates            # 仅当前项目
 ```
@@ -283,10 +283,14 @@ pi install .
 ## 发布（维护者）
 
 ```bash
+# 1) 将 package.json / package-lock.json / README 中的版本升到下一版（如 0.1.9）
 npm run check
 npm pack --dry-run
 npm publish --access public
-git tag v0.1.8 && git push origin v0.1.8   # 可选：供 git 安装固定版本
+
+# 2) 打 tag，供 git 安装固定版本
+VERSION=$(node -p "require('./package.json').version")
+git tag "v$VERSION" && git push origin "v$VERSION"
 ```
 
 ## 相关文档
