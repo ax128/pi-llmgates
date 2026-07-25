@@ -1,6 +1,6 @@
 # @llmgates_api/pi-llmgates-provider
 
-Pi provider 扩展，对接 [LLMGates](https://llmgates.com) 网关：从 `GET /v1/models` 动态发现模型，注册到 pi，并按模型路由到对应的 OpenAI 兼容推理端点。
+Pi provider 扩展，对接 [LLMGates](https://llmgates.com) 网关：从 `GET /v1/models` 动态发现模型，注册到 pi，并按模型路由到对应的 OpenAI 兼容推理端点。另提供 **2API 兼容层**，可并行接入多个 [NewAPI](https://github.com/QuantumNous/new-api)、[Sub2API](https://github.com/Wei-Shaw/sub2api)、[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 实例。
 
 参考实现：[@router-for-me/pi-cliproxyapi-provider](https://pi.dev/packages/@router-for-me/pi-cliproxyapi-provider)
 
@@ -109,13 +109,75 @@ pi
 
 ## 多网关 2API 兼容层
 
-添加 NewAPI、Sub2API 或 CLIProxyAPI 实例：
+除 LLMGates 官方网关外，本扩展支持同时接入多个 **OpenAI 兼容 2API 网关**。每个实例有独立的 provider ID、base URL 和 API key，模型通过 `GET /v1/models` 发现后注册到 pi。
 
-```text
+### 支持的网关
+
+| 网关 | scheme | 典型用途 | 源码 |
+| --- | --- | --- | --- |
+| [NewAPI](https://github.com/QuantumNous/new-api) | `newapi` | 自托管 AI 模型聚合与渠道管理 | [QuantumNous/new-api](https://github.com/QuantumNous/new-api) |
+| [Sub2API](https://github.com/Wei-Shaw/sub2api) | `sub2api` | 订阅配额分发与多账号中转 | [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) |
+| [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA） | `cpa` | 本地 CLI 订阅代理，默认端口 `8317` | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) |
+
+同一 scheme 可添加多个实例（例如 `work-newapi` 与 `home-newapi`），不同 scheme 也可并存。所有 scheme 共用同一 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名切换协议。
+
+### 添加实例（通用流程）
+
+```bash
+pi
 /login llmgates-2api
 ```
 
-提示顺序：scheme → instance provider ID → display name（留空则使用 ID）→ base URL → API key。instance ID 须手动指定；base URL 和 API key 须显式输入。scheme 只提供标签和 URL 占位提示（占位不是默认值）。所有 scheme 共用同一 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名切换协议。
+交互提示顺序：**网关类型（scheme）** → **实例 Provider ID** → **显示名称**（留空则使用 ID）→ **Base URL** → **API Key**。
+
+| 字段 | 说明 |
+| --- | --- |
+| scheme | 仅用于标签与 URL 占位提示，占位符**不是**默认值 |
+| 实例 ID | 须手动指定，用于 `/login <id>`、`/model` 与 `/2api remove`；1–64 字符，字母/数字开头，可含 `.` `_` `-` |
+| Base URL | 须完整填写，通常以 `/v1` 结尾 |
+| API Key | 须显式输入；以 literal string 存入 `auth.json`，不展开 `!cmd`、`$ENV` 或 `${...}` |
+
+添加成功后执行 `/model` 选择该实例下的模型。Pi 0.81 模型选择器按 provider ID 区分同名模型，例如 `grok-4.5 [work-newapi]`。
+
+### 分网关简明教程
+
+#### NewAPI
+
+1. 按 [NewAPI 文档](https://docs.newapi.pro/zh/docs) 部署实例（Docker 或二进制均可）。
+2. 在 NewAPI 控制台创建 API Key，确认 `GET /v1/models` 可访问。
+3. 在 pi 中执行 `/login llmgates-2api`，依次选择：
+   - 网关类型：**NewAPI**
+   - 实例 ID：如 `work-newapi`
+   - 显示名称：如 `工作 NewAPI`（可留空）
+   - Base URL：如 `https://your-newapi-host/v1`
+   - API Key：控制台下发的密钥
+4. `/2api list` 确认实例，`/model` 选用模型。
+
+#### Sub2API
+
+1. 按 [Sub2API 仓库](https://github.com/Wei-Shaw/sub2api) 的 `deploy/` 说明部署（默认服务端口常为 `8080`）。
+2. 在 Sub2API 管理后台生成 API Key。
+3. 在 pi 中执行 `/login llmgates-2api`，依次选择：
+   - 网关类型：**Sub2API**
+   - 实例 ID：如 `team-sub2api`
+   - Base URL：如 `https://sub2api.example.com/v1`（本地可为 `http://127.0.0.1:8080/v1`）
+   - API Key：后台生成的密钥
+4. `/model` 选择模型开始对话。
+
+#### CLIProxyAPI（CPA）
+
+1. 按 [CLIProxyAPI README](https://github.com/router-for-me/CLIProxyAPI) 启动本地代理（默认监听 `http://127.0.0.1:8317`）。
+2. 完成 CLI OAuth 登录后，确认 `GET http://127.0.0.1:8317/v1/models` 返回模型列表。
+3. 在 pi 中执行 `/login llmgates-2api`，依次选择：
+   - 网关类型：**CLIProxyAPI**
+   - 实例 ID：如 `local-cpa`
+   - Base URL：`http://127.0.0.1:8317/v1`（loopback HTTP 允许）
+   - API Key：按 CPA 实例配置填写（须非空；若网关未启用 Bearer 鉴权，以实际部署为准）
+4. `/model` 选择 CPA 暴露的模型。
+
+参考实现：[@router-for-me/pi-cliproxyapi-provider](https://pi.dev/packages/@router-for-me/pi-cliproxyapi-provider)（专注 CPA；本扩展在其基础上统一支持 NewAPI / Sub2API / CPA 多实例）。
+
+### 管理命令
 
 | 命令 | 说明 |
 | --- | --- |
@@ -124,11 +186,16 @@ pi
 | `/2api help` | 显示用法与已知限制 |
 | `/login <id>` | 重新配置该实例的 base URL 和 API key |
 
-每个实例只提供模型发现和推理，不提供余额、钱包、订阅或账号功能；`/balance` 仅适用于 core `llmgates`。Pi 0.81 的模型选择器按 provider ID 区分同名模型，例如 `grok-4.5 [work-newapi]`。
+实例 registry 写入 `~/.pi/agent/llmgates-2api.json`，与 `auth.json` 均以 `0600` 权限写入，并使用跨进程文件锁、锁内重读和原子替换保护并发更新。
 
-**已知限制：** `/2api remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能列出已删除的 ID，执行 `/reload` 后才会消失。若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/2api remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
+### 与 LLMGates 的差异
 
-2api API key 以 literal string 存入 `~/.pi/agent/auth.json`，不会展开 `!cmd`、`$ENV` 或 `${...}`。`auth.json` 和 `llmgates-2api.json` 均以 `0600` 权限写入，并使用跨进程文件锁、锁内重读和原子替换保护并发更新。
+每个 2API 实例**仅**提供模型发现与推理，不提供余额、钱包、订阅或账号功能；`/balance` 仅适用于 core `llmgates`。
+
+### 已知限制
+
+- `/2api remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能列出已删除的 ID，执行 `/reload` 后才会消失。
+- 若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/2api remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
 
 ## 功能概览
 
