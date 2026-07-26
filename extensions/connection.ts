@@ -4,6 +4,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { BlockList } from "node:net";
 import { join } from "node:path";
 import {
 	DEFAULT_BASE_URL,
@@ -14,7 +15,7 @@ import {
 	resolveCreditsUrl,
 	resolveEndpoints,
 } from "./catalog.js";
-import { isPlainObject } from "./util.js";
+import { envFlag, isPlainObject } from "./util.js";
 
 export type ConnectionSource = "oauth" | "env" | "file";
 
@@ -92,17 +93,10 @@ export interface OAuthRefreshMetaV1 {
 	baseUrl: string;
 }
 
-function isIPv4Loopback(ip: string): boolean {
-	const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
-	if (!m) {
-		return false;
-	}
-	const parts = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
-	if (parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-		return false;
-	}
-	return parts[0] === 127;
-}
+// BlockList checks IPv4-mapped IPv6 (::ffff:127.0.0.1 and ::ffff:7f00:1) against the IPv4 rule.
+const LOOPBACK_RANGES = new BlockList();
+LOOPBACK_RANGES.addSubnet("127.0.0.0", 8, "ipv4");
+LOOPBACK_RANGES.addAddress("::1", "ipv6");
 
 /** Accept localhost, 127/8, ::1, and IPv4-mapped loopback. */
 export function isLoopbackHostname(hostname: string): boolean {
@@ -110,33 +104,12 @@ export function isLoopbackHostname(hostname: string): boolean {
 	if (host === "localhost") {
 		return true;
 	}
-	if (host === "::1") {
-		return true;
+	try {
+		return LOOPBACK_RANGES.check(host, host.includes(":") ? "ipv6" : "ipv4");
+	} catch {
+		// Not an IP literal (DNS name) — never loopback for transport policy.
+		return false;
 	}
-	if (isIPv4Loopback(host)) {
-		return true;
-	}
-
-	const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(host);
-	if (dotted) {
-		return isIPv4Loopback(dotted[1]!);
-	}
-
-	const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
-	if (hex) {
-		const hi = Number.parseInt(hex[1]!, 16);
-		const lo = Number.parseInt(hex[2]!, 16);
-		if (!Number.isFinite(hi) || !Number.isFinite(lo)) {
-			return false;
-		}
-		const a = (hi >> 8) & 0xff;
-		const b = hi & 0xff;
-		const c = (lo >> 8) & 0xff;
-		const d = lo & 0xff;
-		return isIPv4Loopback(`${a}.${b}.${c}.${d}`);
-	}
-
-	return false;
 }
 
 export function assertUrlTransportAllowed(input: string): { ok: true; url: URL } | { ok: false; error: string } {
@@ -364,12 +337,9 @@ export function resolveProviderIdentity(agentDir: string): ProviderIdentity {
 
 /** Env LLMGATES_PRICING_AUTO_UPDATE overrides llmgates.json. Default: true. */
 export function resolvePricingAutoUpdate(agentDir: string): boolean {
-	const env = process.env.LLMGATES_PRICING_AUTO_UPDATE?.trim().toLowerCase();
-	if (env === "0" || env === "false" || env === "no" || env === "off") {
-		return false;
-	}
-	if (env === "1" || env === "true" || env === "yes" || env === "on") {
-		return true;
+	const env = envFlag("LLMGATES_PRICING_AUTO_UPDATE");
+	if (env !== undefined) {
+		return env;
 	}
 	try {
 		const file = loadValidatedConfigFile(agentDir);

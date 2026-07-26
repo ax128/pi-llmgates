@@ -5,7 +5,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import packageJson from "../package.json" with { type: "json" };
 import { resolveModelCostRates } from "./model-pricing.js";
-import { isPlainObject } from "./util.js";
+import { envFlag, isPlainObject } from "./util.js";
 
 export type ThinkingLevelMap = Partial<
 	Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra", string | null>
@@ -20,7 +20,6 @@ export const CLIENT_VERSION = "pi";
 export const PACKAGE_VERSION = packageJson.version;
 export const USER_AGENT = `pi-llmgates-provider/${PACKAGE_VERSION}`;
 
-export const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 export const DEFAULT_MAX_TOKENS = 16384;
 export const DEFAULT_CONTEXT_WINDOW = 128000;
 
@@ -53,12 +52,6 @@ export interface GatewayModel {
 	supported_reasoning_levels?: Array<{ effort?: string } | string>;
 	service_tiers?: unknown[];
 	visibility?: string;
-}
-
-export interface GatewayModelsResponse {
-	object?: string;
-	data?: GatewayModel[];
-	models?: GatewayModel[];
 }
 
 export interface PiProviderModel {
@@ -428,8 +421,7 @@ export function parseCreditsPayload(payload: unknown): CreditsSnapshot {
 }
 
 export function isOfflineMode(): boolean {
-	const value = process.env.PI_OFFLINE?.trim().toLowerCase();
-	return value === "1" || value === "true" || value === "yes";
+	return envFlag("PI_OFFLINE") === true;
 }
 
 export function providerModelsToStoredModels(

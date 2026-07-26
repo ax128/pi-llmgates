@@ -39,6 +39,27 @@ export const LOCK_OPTIONS: lockfile.LockOptions = {
 	},
 };
 
+const ENV_TRUE = new Set(["1", "true", "yes", "on"]);
+const ENV_FALSE = new Set(["0", "false", "no", "off"]);
+
+/**
+ * Tri-state env switch shared by every LLMGATES / PI toggle.
+ * Returns undefined when unset or unrecognized so callers pick their own default.
+ */
+export function envFlag(name: string, env: NodeJS.ProcessEnv = process.env): boolean | undefined {
+	const raw = env[name]?.trim().toLowerCase();
+	if (!raw) {
+		return undefined;
+	}
+	if (ENV_TRUE.has(raw)) {
+		return true;
+	}
+	if (ENV_FALSE.has(raw)) {
+		return false;
+	}
+	return undefined;
+}
+
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
