@@ -1,4 +1,5 @@
 import { BUILTIN_PROVIDER_IDS, normalizeAndValidateBaseUrl } from "../connection.js";
+import { LLMGATES_COMPAT_CONFIG_FILE } from "../util.js";
 
 export const COMPAT_SCHEMES = ["newapi", "sub2api", "cpa"] as const;
 export type CompatScheme = (typeof COMPAT_SCHEMES)[number];
@@ -11,7 +12,7 @@ export interface CompatInstance {
 }
 
 export const BOOTSTRAP_PROVIDER_ID = "llmgates-2api";
-export const COMPAT_CONFIG_FILE = "llmgates-2api.json";
+export const COMPAT_CONFIG_FILE = LLMGATES_COMPAT_CONFIG_FILE;
 
 export const BASE_URL_PLACEHOLDER_FOR_SCHEME = {
 	newapi: "https://your-newapi-host/v1",

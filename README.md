@@ -91,7 +91,7 @@ pi
 
 - 模型立即注册可用
 - **API key** 存入 pi `auth.json`（OAuth 凭证）
-- **baseUrl**、`providerId`、`providerName` 写入 `~/.pi/agent/llmgates.json`（交互式登录不写 apiKey）
+- **baseUrl**、`providerId`、`providerName` 写入 `~/.pi/agent/llmgates/config.json`（交互式登录不写 apiKey）
 
 凭证校验失败最多重试 5 次（含非法 URL、网络/HTTP/JSON 错误），之后中止登录。远程 HTTP 会被拒绝，可在 5 次内改正为 HTTPS 或 loopback HTTP。
 
@@ -105,7 +105,7 @@ pi
 | `/calls` | 查看本轮或本会话的 per-model 用量与费用明细 |
 | `/reload` | 安装或更新插件后重载扩展 |
 
-重新配置：随时再跑 `/login LLMGates`。`/logout` 清除 `auth.json` 登录凭证后，env / `llmgates.json` 中的 ambient 配置才会重新生效。交互式登录**不会**写入新的 API Key，也**不会**删除文件中已有的 ambient `apiKey`。
+重新配置：随时再跑 `/login LLMGates`。`/logout` 清除 `auth.json` 登录凭证后，env / `llmgates/config.json` 中的 ambient 配置才会重新生效。交互式登录**不会**写入新的 API Key，也**不会**删除文件中已有的 ambient `apiKey`。
 
 ## 多网关 2API 兼容层
 
@@ -186,7 +186,7 @@ pi
 | `/2api help` | 显示用法与已知限制 |
 | `/login <id>` | 重新配置该实例的 base URL 和 API key |
 
-实例 registry 写入 `~/.pi/agent/llmgates-2api.json`，与 `auth.json` 均以 `0600` 权限写入，并使用跨进程文件锁、锁内重读和原子替换保护并发更新。
+实例 registry 写入 `~/.pi/agent/llmgates/2api.json`，与 `auth.json` 均以 `0600` 权限写入，并使用跨进程文件锁、锁内重读和原子替换保护并发更新。
 
 ### 与 LLMGates 的差异
 
@@ -211,7 +211,7 @@ pi
 
 ### 非交互式配置
 
-适用于 CI 或无头环境，推荐使用环境变量，或使用 `~/.pi/agent/llmgates.json`：
+适用于 CI 或无头环境，推荐使用环境变量，或使用 `~/.pi/agent/llmgates/config.json`：
 
 ```json
 {
@@ -242,8 +242,8 @@ pi
 
 | 变量 | 作用 |
 | --- | --- |
-| `LLMGATES_BASE_URL` | 覆盖 `llmgates.json` 的 `baseUrl` |
-| `LLMGATES_API_KEY` | 覆盖 `llmgates.json` 的 `apiKey` |
+| `LLMGATES_BASE_URL` | 覆盖 `llmgates/config.json` 的 `baseUrl` |
+| `LLMGATES_API_KEY` | 覆盖 `llmgates/config.json` 的 `apiKey` |
 | `LLMGATES_PROVIDER_ID` | 覆盖 `providerId`（勿与内置 provider 冲突） |
 | `LLMGATES_PROVIDER_NAME` | 覆盖 `providerName` |
 | `LLMGATES_PRICING_AUTO_UPDATE` | 覆盖 `pricingAutoUpdate`（默认 `true`；`0` / `false` 关闭） |
@@ -277,9 +277,9 @@ pi
 
 TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与 LLMGates 钱包扣费可能不同；账户实际消费请用 `/balance` 查询。
 
-配置文件位于 `~/.pi/agent/`：
+配置文件集中在 `~/.pi/agent/llmgates/`（旧版平铺在 `~/.pi/agent/` 下的 `llmgates.json`、`llmgates-2api.json`、`llmgates-model-pricing.json` 会在扩展加载时自动迁移）：
 
-**`llmgates.json`** — provider 配置与自动更新开关：
+**`llmgates/config.json`** — provider 配置与自动更新开关：
 
 ```json
 {
@@ -290,7 +290,7 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与 LLMGa
 
 设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
 
-**`llmgates-model-pricing.json`** — 可编辑的 USD / **100 万 token** 单价（`input`、`output`、`cacheRead`、`cacheWrite`）。键为 `modelId` 或 `provider/modelId`（如 `openai/gpt-5.6-sol`）：
+**`llmgates/pricing.json`** — 可编辑的 USD / **100 万 token** 单价（`input`、`output`、`cacheRead`、`cacheWrite`）。键为 `modelId` 或 `provider/modelId`（如 `openai/gpt-5.6-sol`）：
 
 ```json
 {
@@ -320,7 +320,7 @@ Pi 内置 footer 在 OAuth 登录时可能仍显示 `(sub)`，该标记与 LLMGa
 - TPS / 费用统计在后台队列预处理 assistant usage；畸形 usage 跳过或归零，失败不影响推理（`LLMGATES_DEBUG=1` 记录详情）。
 - 启动采用 cache-first；模型刷新在 session 启动后后台进行，失败保留旧 catalog。
 - 登录后 cache 写入失败不撤销登录：会话使用已验证目录，磁盘保留旧缓存。
-- 优先 `/login` 或 `LLMGATES_API_KEY`，避免在 `llmgates.json` 存 key。配置写入 mode `0600` 且原子替换。
+- 优先 `/login` 或 `LLMGATES_API_KEY`，避免在 `llmgates/config.json` 存 key。配置写入 mode `0600` 且原子替换。
 - **不支持 / 不安全：** 通过 `~/.pi/agent/models.json` overlay 配置本 provider 的 `apiKey`（pi 可能重新启用 config-value 语法）。请勿这样做。
 - **历史迁移：** `auth.json` 中若存在 `type: "api_key"` 凭证，注册 **fail-closed**。删除该条目或 `/logout` 后 `/reload`；扩展不会自动迁移或改写 `auth.json`。
 - 默认网关：`https://apihk.llmgates.com/v1`。

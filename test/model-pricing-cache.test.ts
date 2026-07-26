@@ -18,11 +18,17 @@ import {
 	resetPricingSyncChainForTests,
 	syncModelPricingCache,
 } from "../extensions/model-pricing-cache.js";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolvePricingAutoUpdate } from "../extensions/connection.js";
 import { resolveModelCostRates } from "../extensions/model-pricing.js";
+
+function tempAgentDir(prefix: string): string {
+	const agentDir = mkdtempSync(join(tmpdir(), prefix));
+	mkdirSync(join(agentDir, "llmgates"), { recursive: true, mode: 0o700 });
+	return agentDir;
+}
 
 const MOCK_LITELLM = {
 	"gpt-5.6-sol": { input_cost_per_token: 5e-6, output_cost_per_token: 30e-6, max_input_tokens: 272_000 },
@@ -87,7 +93,7 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("syncs exact bare rates and context for an unknown instance id", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-foreign-"));
+		const agentDir = tempAgentDir("pricing-foreign-");
 
 		const cache = await syncModelPricingCache(
 			agentDir,
@@ -137,9 +143,9 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("treats a bare override as covered for known vendors without creating a scoped rate", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-bare-override-"));
+		const agentDir = tempAgentDir("pricing-bare-override-");
 		const override = { input: 9, output: 10, cacheRead: 0.9, cacheWrite: 9 };
-		writeFileSync(join(agentDir, "llmgates-model-pricing.json"), JSON.stringify({
+		writeFileSync(join(agentDir, "llmgates/pricing.json"), JSON.stringify({
 			updatedAt: 1_000_000,
 			lastAutoSyncAt: 1_000_000,
 			rates: {},
@@ -166,8 +172,8 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("does not let a bare known-vendor rate/context block scoped incremental sync", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-bare-incremental-"));
-		writeFileSync(join(agentDir, "llmgates-model-pricing.json"), JSON.stringify({
+		const agentDir = tempAgentDir("pricing-bare-incremental-");
+		writeFileSync(join(agentDir, "llmgates/pricing.json"), JSON.stringify({
 			updatedAt: 1_000_000,
 			lastAutoSyncAt: 1_000_000,
 			rates: { shared: { input: 90, output: 91, cacheRead: 9, cacheWrite: 90 } },
@@ -197,7 +203,7 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("keeps incremental known-vendor caches isolated for duplicate model ids", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-vendor-isolation-"));
+		const agentDir = tempAgentDir("pricing-vendor-isolation-");
 		const openaiRates = { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 };
 		const mistralRates = { input: 3, output: 4, cacheRead: 0, cacheWrite: 3 };
 
@@ -250,7 +256,7 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("syncs missing catalog models without network when table is injected", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-cache-"));
+		const agentDir = tempAgentDir("pricing-cache-");
 		const models = [
 			{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] },
 			{ id: "claude-opus-4-8", provider_id: "anthropic", inference_endpoint: "messages" },
@@ -265,13 +271,13 @@ describe("model-pricing-cache", () => {
 		expect(cache?.rates["anthropic/claude-opus-4-8"]).toMatchObject({ input: 5, output: 25 });
 		expect(cache?.lastAutoSyncAt).toBe(1_000_000);
 		expect(readModelPricingFile(agentDir)?.lastAutoSyncAt).toBe(1_000_000);
-		expect(readFileSync(join(agentDir, "llmgates-model-pricing.json"), "utf8")).toContain("gpt-5.6-sol");
+		expect(readFileSync(join(agentDir, "llmgates/pricing.json"), "utf8")).toContain("gpt-5.6-sol");
 	});
 
 	it("fills missing context even when rates are fresh", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-context-"));
+		const agentDir = tempAgentDir("pricing-context-");
 		writeFileSync(
-			join(agentDir, "llmgates-model-pricing.json"),
+			join(agentDir, "llmgates/pricing.json"),
 			JSON.stringify({
 				updatedAt: 1_000_000,
 				lastAutoSyncAt: 1_000_000,
@@ -298,7 +304,7 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("skips fetch when cache is fresh and complete", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-cache-"));
+		const agentDir = tempAgentDir("pricing-cache-");
 		const models = [{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] }];
 		let fetchCount = 0;
 
@@ -322,7 +328,7 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("refreshes catalog model rates after TTL while preserving off-catalog entries", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-cache-"));
+		const agentDir = tempAgentDir("pricing-cache-");
 		const initial = [{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] }];
 		const later = [{ id: "gemini-2.5-flash", provider_id: "google", capability_tags: ["chat"] }];
 
@@ -342,9 +348,9 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("prefers overrides over synced rates", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-cache-"));
+		const agentDir = tempAgentDir("pricing-cache-");
 		writeFileSync(
-			join(agentDir, "llmgates-model-pricing.json"),
+			join(agentDir, "llmgates/pricing.json"),
 			JSON.stringify(
 				{
 					updatedAt: 1,
@@ -364,9 +370,9 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("does not overwrite overridden models during auto-sync", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-cache-"));
+		const agentDir = tempAgentDir("pricing-cache-");
 		writeFileSync(
-			join(agentDir, "llmgates-model-pricing.json"),
+			join(agentDir, "llmgates/pricing.json"),
 			JSON.stringify(
 				{
 					updatedAt: 0,
@@ -392,9 +398,9 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("reads old pricing files without context windows", () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-old-"));
+		const agentDir = tempAgentDir("pricing-old-");
 		writeFileSync(
-			join(agentDir, "llmgates-model-pricing.json"),
+			join(agentDir, "llmgates/pricing.json"),
 			JSON.stringify({
 				updatedAt: 1,
 				rates: { legacy: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 } },
@@ -407,9 +413,9 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("restores rates and context from disk without LiteLLM access", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-offline-"));
+		const agentDir = tempAgentDir("pricing-offline-");
 		writeFileSync(
-			join(agentDir, "llmgates-model-pricing.json"),
+			join(agentDir, "llmgates/pricing.json"),
 			JSON.stringify({
 				updatedAt: 1,
 				rates: { "vendorless-sentinel": EXACT_RATES },
@@ -434,9 +440,9 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("reloads user edits from disk on refresh", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-cache-"));
+		const agentDir = tempAgentDir("pricing-cache-");
 		writeFileSync(
-			join(agentDir, "llmgates-model-pricing.json"),
+			join(agentDir, "llmgates/pricing.json"),
 			JSON.stringify(
 				{
 					updatedAt: 1,
@@ -453,7 +459,7 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("skips network sync when pricingAutoUpdate is disabled", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-cache-"));
+		const agentDir = tempAgentDir("pricing-cache-");
 		let fetchCount = 0;
 
 		await refreshModelPricing(
@@ -471,9 +477,9 @@ describe("model-pricing-cache", () => {
 		expect(fetchCount).toBe(0);
 	});
 
-	it("reads pricingAutoUpdate from llmgates.json", () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-config-"));
-		writeFileSync(join(agentDir, "llmgates.json"), JSON.stringify({ pricingAutoUpdate: false }, null, 2));
+	it("reads pricingAutoUpdate from llmgates/config.json", () => {
+		const agentDir = tempAgentDir("pricing-config-");
+		writeFileSync(join(agentDir, "llmgates/config.json"), JSON.stringify({ pricingAutoUpdate: false }, null, 2));
 		expect(resolvePricingAutoUpdate(agentDir)).toBe(false);
 	});
 
@@ -538,7 +544,7 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("single-flights concurrent refreshModelPricing network fetches", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-serial-"));
+		const agentDir = tempAgentDir("pricing-serial-");
 		const models = [{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] }];
 		let fetchCount = 0;
 		let inFlight = 0;
@@ -563,7 +569,7 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("shares a failed concurrent refresh and allows a later retry", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-retry-"));
+		const agentDir = tempAgentDir("pricing-retry-");
 		const models = [{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] }];
 		let fetchCount = 0;
 		let shouldFail = true;
@@ -592,10 +598,10 @@ describe("model-pricing-cache", () => {
 
 	// The single-flight map only dedupes identical catalogs. Different catalogs under the
 	// same agentDir get different keys, so without the sync chain their read-modify-write
-	// of llmgates-model-pricing.json interleaves and the slower writer drops the other's
+	// of llmgates/pricing.json interleaves and the slower writer drops the other's
 	// rates. Guards the chain against being mistaken for redundant bookkeeping.
 	it("serializes different-catalog refreshes so neither loses the other's rates", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-serialize-"));
+		const agentDir = tempAgentDir("pricing-serialize-");
 		const openaiModels = [{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] }];
 		const anthropicModels = [{ id: "claude-opus-4-8", provider_id: "anthropic", capability_tags: ["chat"] }];
 
@@ -618,9 +624,9 @@ describe("model-pricing-cache", () => {
 	});
 
 	it("keeps cached rates when LiteLLM fetch fails", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "pricing-fail-"));
+		const agentDir = tempAgentDir("pricing-fail-");
 		writeFileSync(
-			join(agentDir, "llmgates-model-pricing.json"),
+			join(agentDir, "llmgates/pricing.json"),
 			JSON.stringify(
 				{
 					updatedAt: 0,

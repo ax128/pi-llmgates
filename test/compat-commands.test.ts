@@ -32,7 +32,7 @@ function credential(instance: CompatInstance, access: string) {
 }
 
 function seed(agentDir: string): void {
-	writeJson(join(agentDir, "llmgates-2api.json"), { instances: INSTANCES });
+	writeJson(join(agentDir, "llmgates/2api.json"), { instances: INSTANCES });
 	writeJson(join(agentDir, "auth.json"), {
 		"gateway-a": credential(INSTANCES[0]!, "target-secret"),
 		"gateway-b": credential(INSTANCES[1]!, "sibling-secret"),
@@ -162,7 +162,7 @@ describe("/2api management", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		const runtime = createPi();
 		try {
-			writeJson(join(agentDir, "llmgates-2api.json"), { instances: INSTANCES });
+			writeJson(join(agentDir, "llmgates/2api.json"), { instances: INSTANCES });
 			writeFileSync(join(agentDir, "auth.json"), `{ "access": "startup-sentinel-secret", broken`, { mode: 0o600 });
 			expect(() => registerCompatGateways(runtime.pi, agentDir)).toThrow(
 				"Compat initialization failed: auth.json is malformed or invalid",

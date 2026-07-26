@@ -26,7 +26,7 @@ describe("resolveCanonicalConnection", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			process.env.LLMGATES_API_KEY = "env-key";
-			writeJson(join(agentDir, "llmgates.json"), {
+			writeJson(join(agentDir, "llmgates/config.json"), {
 				apiKey: "file-key",
 				baseUrl: "https://file.example/v1",
 			});
@@ -51,7 +51,7 @@ describe("resolveCanonicalConnection", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			process.env.LLMGATES_API_KEY = "env-key";
-			writeJson(join(agentDir, "llmgates.json"), {
+			writeJson(join(agentDir, "llmgates/config.json"), {
 				apiKey: "file-key",
 				baseUrl: "https://file.example/v1",
 			});
@@ -68,7 +68,7 @@ describe("resolveCanonicalConnection", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			process.env.LLMGATES_BASE_URL = "https://env.example/v1";
-			writeJson(join(agentDir, "llmgates.json"), {
+			writeJson(join(agentDir, "llmgates/config.json"), {
 				apiKey: "file-key",
 				baseUrl: "https://file.example/v1",
 			});

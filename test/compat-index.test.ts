@@ -73,7 +73,7 @@ function seedStoredCompat(agentDir: string): void {
 		scheme: "newapi" as const,
 		baseUrl: "https://compat.example/v1",
 	};
-	writeJson(join(agentDir, "llmgates-2api.json"), { instances: [instance] });
+	writeJson(join(agentDir, "llmgates/2api.json"), { instances: [instance] });
 	writeJson(join(agentDir, "auth.json"), {
 		llmgates: { type: "api_key", key: "legacy-secret" },
 		[instance.id]: {
@@ -138,7 +138,7 @@ describe("extension compat/core isolation", () => {
 		const runtime = createPi();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			writeJson(join(agentDir, "llmgates-2api.json"), { instances: "not-an-array" });
+			writeJson(join(agentDir, "llmgates/2api.json"), { instances: "not-an-array" });
 			registerExtension(runtime.pi);
 
 			expect([...runtime.providers.keys()]).toEqual(["llmgates"]);
@@ -155,12 +155,12 @@ describe("extension compat/core isolation", () => {
 		const runtime = createPi();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			writeJson(join(agentDir, "llmgates.json"), { providerId: 42 });
+			writeJson(join(agentDir, "llmgates/config.json"), { providerId: 42 });
 			registerExtension(runtime.pi);
 
 			expect([...runtime.providers.keys()]).toEqual([BOOTSTRAP_PROVIDER_ID]);
 			expect([...runtime.commands.keys()]).toEqual(["2api"]);
-			expect(warn.mock.calls.flat().join(" ")).toMatch(/llmgates\.json.*providerId/i);
+			expect(warn.mock.calls.flat().join(" ")).toMatch(/llmgates\/config\.json.*providerId/i);
 		} finally {
 			cleanup();
 		}

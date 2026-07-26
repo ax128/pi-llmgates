@@ -8,7 +8,7 @@ import { registerBalanceCommand } from "./balance.js";
 import { registerCompatGateways } from "./compat/index.js";
 import { detectLegacyApiKeyCredential, resolveProviderIdentity } from "./connection.js";
 import { createLLMGatesProvider, type LLMGatesProvider } from "./provider.js";
-import { envFlag } from "./util.js";
+import { envFlag, migrateLegacyConfigFiles } from "./util.js";
 
 function logWarn(message: string): void {
 	console.warn(`[pi-llmgates-provider] ${message}`);
@@ -22,6 +22,12 @@ function logDebug(message: string): void {
 
 export default function (pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
+
+	try {
+		migrateLegacyConfigFiles(agentDir);
+	} catch (error) {
+		logWarn(`Legacy config migration failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
 
 	let identity: { providerId: string; providerName: string } | undefined;
 	let identityError: unknown;

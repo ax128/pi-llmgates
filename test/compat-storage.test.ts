@@ -60,7 +60,7 @@ describe("compat registry storage", () => {
 		["malformed entry", JSON.stringify({ instances: [{ ...first, scheme: "unknown" }] })],
 	])("fails closed on a %s and does not overwrite it", async (_label, raw) => {
 		const { agentDir, cleanup } = withTempAgentDir();
-		const path = join(agentDir, "llmgates-2api.json");
+		const path = join(agentDir, "llmgates/2api.json");
 		try {
 			writeFileSync(path, raw, { mode: 0o600 });
 			expect(() => loadCompatConfig(agentDir)).toThrow();
@@ -74,7 +74,7 @@ describe("compat registry storage", () => {
 	it("preserves sibling entries across add, update, and remove", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
-			writeJson(join(agentDir, "llmgates-2api.json"), { instances: [first] });
+			writeJson(join(agentDir, "llmgates/2api.json"), { instances: [first] });
 			await addInstance(agentDir, second);
 			await updateInstance(agentDir, { ...first, name: "Renamed" });
 			expect(listInstances(agentDir)).toEqual([{ ...first, name: "Renamed" }, second]);
@@ -99,7 +99,7 @@ describe("compat registry storage", () => {
 
 	it("writes only canonical non-secret fields and mode 0600", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
-		const path = join(agentDir, "llmgates-2api.json");
+		const path = join(agentDir, "llmgates/2api.json");
 		try {
 			await addInstance(agentDir, { ...first, apiKey: "never-store-me" } as CompatInstance);
 			const raw = readFileSync(path, "utf8");

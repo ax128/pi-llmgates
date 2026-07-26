@@ -3,14 +3,38 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadValidatedConfigFile } from "../extensions/connection.js";
 import { saveConfigFilePreservingSecrets } from "../extensions/lib.js";
+import { migrateLegacyConfigFiles } from "../extensions/util.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
+
+describe("migrateLegacyConfigFiles", () => {
+	it("moves legacy flat files into llmgates/ and keeps existing new files", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeFileSync(join(agentDir, "llmgates.json"), JSON.stringify({ baseUrl: "https://old.example/v1" }));
+			writeFileSync(join(agentDir, "llmgates-2api.json"), JSON.stringify({ instances: [] }));
+			// New-location file already present: legacy pricing file must NOT overwrite it.
+			writeFileSync(join(agentDir, "llmgates-model-pricing.json"), JSON.stringify({ updatedAt: 1, rates: {} }));
+			writeFileSync(join(agentDir, "llmgates/pricing.json"), JSON.stringify({ updatedAt: 2, rates: {} }));
+
+			migrateLegacyConfigFiles(agentDir);
+
+			expect(loadValidatedConfigFile(agentDir).baseUrl).toBe("https://old.example/v1");
+			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/2api.json"), "utf8"))).toEqual({ instances: [] });
+			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/pricing.json"), "utf8")).updatedAt).toBe(2);
+			expect(() => statSync(join(agentDir, "llmgates.json"))).toThrow();
+			expect(() => statSync(join(agentDir, "llmgates-2api.json"))).toThrow();
+		} finally {
+			cleanup();
+		}
+	});
+});
 
 describe("saveConfigFilePreservingSecrets", () => {
 	it("updates non-secret fields, keeps existing apiKey, mode 0600", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			writeFileSync(
-				join(agentDir, "llmgates.json"),
+				join(agentDir, "llmgates/config.json"),
 				JSON.stringify({ apiKey: "keep-me", baseUrl: "https://old.example/v1", extra: 1 }, null, 2),
 				{ mode: 0o600 },
 			);
@@ -19,11 +43,11 @@ describe("saveConfigFilePreservingSecrets", () => {
 				providerId: "llmgates",
 				providerName: "LLMGates",
 			});
-			const raw = JSON.parse(readFileSync(join(agentDir, "llmgates.json"), "utf8"));
+			const raw = JSON.parse(readFileSync(join(agentDir, "llmgates/config.json"), "utf8"));
 			expect(raw.apiKey).toBe("keep-me");
 			expect(raw.baseUrl).toContain("new.example");
 			expect(raw.extra).toBe(1);
-			expect(statSync(join(agentDir, "llmgates.json")).mode & 0o777).toBe(0o600);
+			expect(statSync(join(agentDir, "llmgates/config.json")).mode & 0o777).toBe(0o600);
 		} finally {
 			cleanup();
 		}
@@ -37,7 +61,7 @@ describe("saveConfigFilePreservingSecrets", () => {
 				// @ts-expect-error intentional misuse
 				apiKey: "should-not-persist",
 			});
-			const raw = JSON.parse(readFileSync(join(agentDir, "llmgates.json"), "utf8"));
+			const raw = JSON.parse(readFileSync(join(agentDir, "llmgates/config.json"), "utf8"));
 			expect(raw.apiKey).toBeUndefined();
 			expect(loadValidatedConfigFile(agentDir).baseUrl).toContain("new.example");
 		} finally {
@@ -49,7 +73,7 @@ describe("saveConfigFilePreservingSecrets", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			writeFileSync(
-				join(agentDir, "llmgates.json"),
+				join(agentDir, "llmgates/config.json"),
 				JSON.stringify({ apiKey: "keep-me", baseUrl: "https://old.example/v1" }, null, 2),
 				{ mode: 0o600 },
 			);
@@ -57,7 +81,7 @@ describe("saveConfigFilePreservingSecrets", () => {
 				saveConfigFilePreservingSecrets(agentDir, { providerId: "llmgates" }),
 				saveConfigFilePreservingSecrets(agentDir, { providerName: "LLMGates" }),
 			]);
-			const raw = JSON.parse(readFileSync(join(agentDir, "llmgates.json"), "utf8"));
+			const raw = JSON.parse(readFileSync(join(agentDir, "llmgates/config.json"), "utf8"));
 			expect(raw.apiKey).toBe("keep-me");
 			expect(raw.providerId).toBe("llmgates");
 			expect(raw.providerName).toBe("LLMGates");
