@@ -3,7 +3,7 @@ import {
 	extractSubagentUsageFromAsyncComplete,
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
-import { isPlainObject } from "./util.js";
+import { envFlag, isPlainObject } from "./util.js";
 
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete";
@@ -17,11 +17,7 @@ export interface SubagentUsageBridgeOptions {
 
 /** True unless LLMGATES_TPS_SUBAGENT is explicitly disabled (§7 / §13.2). */
 export function isSubagentBridgeEnabled(): boolean {
-	const raw = process.env.LLMGATES_TPS_SUBAGENT?.trim().toLowerCase();
-	if (!raw) {
-		return true;
-	}
-	return raw !== "0" && raw !== "false" && raw !== "no";
+	return envFlag("LLMGATES_TPS_SUBAGENT") !== false;
 }
 
 export function isSubagentToolAvailable(getAllTools: () => { name: string }[]): boolean {

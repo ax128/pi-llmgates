@@ -37,6 +37,7 @@ import {
 	tryRecordAssistantUsage,
 	type ModelUsageStats,
 } from "./tps-stats.js";
+import { envFlag } from "./util.js";
 
 const STATUS_KEY = "tps";
 const REFRESH_INTERVAL_MS = 1000;
@@ -58,8 +59,7 @@ function createEmptyStats(): ModelUsageStats {
 }
 
 function logTpsIssue(message: string): void {
-	const debug = process.env.LLMGATES_DEBUG?.trim().toLowerCase();
-	if (debug === "1" || debug === "true" || debug === "yes") {
+	if (envFlag("LLMGATES_DEBUG")) {
 		console.warn(`[pi-llmgates-provider] ${message}`);
 	}
 }

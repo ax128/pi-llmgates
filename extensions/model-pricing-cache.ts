@@ -12,7 +12,7 @@ import {
 	LITELLM_PRICING_REQUEST_TIMEOUT_MS,
 	requestLimitedJson,
 } from "./http.js";
-import { atomicWriteJson, SECRET_FILE_MODE } from "./util.js";
+import { atomicWriteJson, envFlag, SECRET_FILE_MODE } from "./util.js";
 
 export const MODEL_PRICING_CACHE_FILE = "llmgates-model-pricing.json";
 export const MODEL_PRICING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -79,8 +79,7 @@ let pricingSyncChain: Promise<void> = Promise.resolve();
 const activePricingSyncs = new Map<string, Promise<ModelPricingFile | null>>();
 
 function logPricingSyncIssue(message: string): void {
-	const debug = process.env.LLMGATES_DEBUG?.trim().toLowerCase();
-	if (debug === "1" || debug === "true" || debug === "yes") {
+	if (envFlag("LLMGATES_DEBUG")) {
 		console.warn(`[pi-llmgates-provider] ${message}`);
 	}
 }

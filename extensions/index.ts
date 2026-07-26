@@ -8,14 +8,14 @@ import { registerBalanceCommand } from "./balance.js";
 import { registerCompatGateways } from "./compat/index.js";
 import { detectLegacyApiKeyCredential, resolveProviderIdentity } from "./connection.js";
 import { createLLMGatesProvider, type LLMGatesProvider } from "./provider.js";
+import { envFlag } from "./util.js";
 
 function logWarn(message: string): void {
 	console.warn(`[pi-llmgates-provider] ${message}`);
 }
 
 function logDebug(message: string): void {
-	const value = process.env.LLMGATES_DEBUG?.trim().toLowerCase();
-	if (value === "1" || value === "true" || value === "yes") {
+	if (envFlag("LLMGATES_DEBUG")) {
 		console.info(`[pi-llmgates-provider] ${message}`);
 	}
 }

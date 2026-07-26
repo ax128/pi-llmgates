@@ -47,6 +47,11 @@ export function isUnauthorizedStatus(error: unknown): boolean {
 	return error instanceof HttpStatusError && (error.status === 401 || error.status === 403);
 }
 
+/** AbortSignal.timeout() rejects with TimeoutError; caller aborts reject with AbortError. */
+function isAbortLike(error: unknown): boolean {
+	return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+}
+
 function originOf(url: string): string {
 	const parsed = new URL(url);
 	return parsed.origin;
@@ -69,10 +74,9 @@ async function readLimitedBody(
 		controller: AbortController;
 		maxBytes: number;
 		operation: string;
-		timeoutPromise: Promise<never>;
 	},
-): Promise<Uint8Array> {
-	const { controller, maxBytes, operation, timeoutPromise } = options;
+): Promise<Buffer> {
+	const { controller, maxBytes, operation } = options;
 	const contentLength = response.headers.get("content-length");
 	if (contentLength) {
 		const declared = Number(contentLength);
@@ -83,7 +87,7 @@ async function readLimitedBody(
 	}
 
 	if (!response.body) {
-		return new Uint8Array();
+		return Buffer.alloc(0);
 	}
 
 	const reader = response.body.getReader();
@@ -91,12 +95,11 @@ async function readLimitedBody(
 	let total = 0;
 	try {
 		while (true) {
-			const readPromise = reader.read();
-			const result = await Promise.race([readPromise, timeoutPromise]);
-			if (result.done) {
+			// Rejects with the abort reason when the composed signal fires mid-body.
+			const { done, value } = await reader.read();
+			if (done) {
 				break;
 			}
-			const value = result.value;
 			total += value.byteLength;
 			if (total > maxBytes) {
 				controller.abort();
@@ -117,13 +120,7 @@ async function readLimitedBody(
 		}
 	}
 
-	const out = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) {
-		out.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return out;
+	return Buffer.concat(chunks);
 }
 
 export async function requestLimitedJson(options: {
@@ -153,28 +150,14 @@ export async function requestLimitedJson(options: {
 		throw new Error(initialValidation.error ?? "invalid request URL");
 	}
 
+	// controller aborts on size limit; timeout + caller abort compose natively.
 	const controller = new AbortController();
-	let timedOut = false;
-	const timer = setTimeout(() => {
-		timedOut = true;
-		controller.abort();
-	}, timeoutMs);
-
-	const onExternalAbort = (): void => {
-		controller.abort();
-	};
-	externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
-
-	const timeoutPromise = new Promise<never>((_, reject) => {
-		const rejectIfTimedOut = (): void => {
-			if (timedOut) {
-				reject(new RequestTimeoutError(operation, timeoutMs));
-			} else if (externalSignal?.aborted || controller.signal.aborted) {
-				reject(abortError());
-			}
-		};
-		controller.signal.addEventListener("abort", rejectIfTimedOut, { once: true });
-	});
+	const timeoutSignal = AbortSignal.timeout(timeoutMs);
+	const signal = AbortSignal.any(
+		externalSignal
+			? [controller.signal, timeoutSignal, externalSignal]
+			: [controller.signal, timeoutSignal],
+	);
 
 	let currentUrl = options.url;
 	let redirects = 0;
@@ -187,14 +170,12 @@ export async function requestLimitedJson(options: {
 				throw new Error(validated.error ?? "invalid request URL");
 			}
 
-			const fetchPromise = fetchImpl(currentUrl, {
+			response = await fetchImpl(currentUrl, {
 				method: "GET",
 				headers,
 				redirect: "manual",
-				signal: controller.signal,
+				signal,
 			});
-
-			response = await Promise.race([fetchPromise, timeoutPromise]);
 
 			if (response.status >= 300 && response.status < 400) {
 				const location = response.headers.get("location");
@@ -218,18 +199,13 @@ export async function requestLimitedJson(options: {
 				continue;
 			}
 
-			const body = await readLimitedBody(response, {
-				controller,
-				maxBytes,
-				operation,
-				timeoutPromise,
-			});
+			const body = await readLimitedBody(response, { controller, maxBytes, operation });
 
 			if (response.status < 200 || response.status >= 300) {
 				throw new HttpStatusError(operation, response.status, response.statusText);
 			}
 
-			const text = new TextDecoder().decode(body);
+			const text = body.toString("utf8");
 			if (!text.trim()) {
 				return null;
 			}
@@ -240,29 +216,12 @@ export async function requestLimitedJson(options: {
 			}
 		}
 	} catch (error) {
-		if (timedOut) {
-			throw new RequestTimeoutError(operation, timeoutMs);
-		}
-		if (error instanceof DOMException && error.name === "AbortError") {
-			if (externalSignal?.aborted) {
-				throw error;
-			}
-			// fetch abort without external signal during timeout race
-			if (controller.signal.aborted && !externalSignal?.aborted) {
-				throw new RequestTimeoutError(operation, timeoutMs);
-			}
-			throw error;
-		}
-		if (error instanceof Error && error.name === "AbortError") {
-			if (externalSignal?.aborted) {
-				throw error;
-			}
+		// Caller abort wins; otherwise an abort while the timeout is lit is a timeout.
+		if (isAbortLike(error) && timeoutSignal.aborted && !externalSignal?.aborted) {
 			throw new RequestTimeoutError(operation, timeoutMs);
 		}
 		throw error;
 	} finally {
-		clearTimeout(timer);
-		externalSignal?.removeEventListener("abort", onExternalAbort);
 		await cancelBody(response);
 	}
 }
