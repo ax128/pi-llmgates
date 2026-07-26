@@ -38,6 +38,11 @@ import {
 } from "./catalog.js";
 import { applyMoonshotKimiCompatModel } from "./compat/catalog.js";
 import {
+	applyModelOverridesToMemory,
+	readModelOverridesFile,
+	reloadModelOverridesFromDisk,
+} from "./model-overrides.js";
+import {
 	applyPricingCacheToResolver,
 	readModelPricingFile,
 	refreshModelPricing,
@@ -209,6 +214,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 
 	const ambientAtStart = connectionFromAmbientEnv() ?? connectionFromConfigFile(agentDir);
 	applyPricingCacheToResolver(readModelPricingFile(agentDir));
+	applyModelOverridesToMemory(readModelOverridesFile(agentDir));
 
 	function track<T>(promise: Promise<T>): Promise<T> {
 		activeTasks.add(promise);
@@ -308,6 +314,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		connection: CanonicalConnection,
 		signal: AbortSignal | undefined,
 	): Promise<Model<Api>[]> {
+		reloadModelOverridesFromDisk(agentDir);
 		const payload = await requestLimitedJson({
 			url: connection.modelsUrl,
 			headers: {

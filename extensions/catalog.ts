@@ -4,11 +4,13 @@
 
 import type { Api, Model } from "@earendil-works/pi-ai";
 import packageJson from "../package.json" with { type: "json" };
+import { lookupEndpointOverride } from "./model-overrides.js";
 import { resolveModelCostRates } from "./model-pricing.js";
 import { envFlag, isPlainObject } from "./util.js";
 
+// Matches pi-ai ModelThinkingLevel (off + minimal/low/medium/high/xhigh/max). No "ultra".
 export type ThinkingLevelMap = Partial<
-	Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra", string | null>
+	Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>
 >;
 
 export type PiApiType = "openai-responses" | "openai-completions" | "anthropic-messages";
@@ -23,10 +25,7 @@ export const USER_AGENT = `pi-llmgates-provider/${PACKAGE_VERSION}`;
 export const DEFAULT_MAX_TOKENS = 16384;
 export const DEFAULT_CONTEXT_WINDOW = 128000;
 
-const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
-
-/** Plugin fallback when gateway omits supported_reasoning_levels (off + 低/中/高). */
-export const DEFAULT_PI_REASONING_EFFORTS = ["none", "low", "medium", "high"] as const;
+const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 /** LLMGates tags for image/video generation — not selectable in pi coding agent. */
 const GENERATION_CAPABILITY_TAGS = new Set([
@@ -209,15 +208,84 @@ export function extractReasoningEfforts(model: GatewayModel): string[] {
 	return efforts;
 }
 
-export function inferReasoningEfforts(model: GatewayModel): string[] {
-	const explicit = extractReasoningEfforts(model);
-	if (explicit.length > 0) {
-		return explicit;
-	}
-	return [...DEFAULT_PI_REASONING_EFFORTS];
+/**
+ * Known reasoning-effort sets per model family (sourced from provider docs / pi-ai adapters):
+ * - Anthropic xhigh is native on Opus 4.7/4.8, Sonnet 5, Fable 5
+ *   (anthropic-messages.js `output_config: { effort: "xhigh" }`).
+ * - OpenAI reasoning_effort: minimal/low/medium/high.
+ * - Gemini / Grok / DeepSeek expose low/medium/high via OpenAI-compatible gateways.
+ *
+ * A match wins over gateway hints (gateways frequently under-report, leaving users
+ * stuck at 3 levels). No match → gateway levels → full coverage by api.
+ */
+export interface ModelThinkingRule {
+	label: string;
+	pattern: RegExp;
+	provider?: string;
+	efforts: readonly string[];
 }
 
-export function buildThinkingLevelMap(efforts: string[]): ThinkingLevelMap | undefined {
+export const MODEL_THINKING_RULES: readonly ModelThinkingRule[] = [
+	{ label: "Claude Opus 4.7+", provider: "anthropic", pattern: /^claude-opus-4-[7-9]/i, efforts: ["none", "low", "medium", "high", "xhigh"] },
+	{ label: "Claude Sonnet 5", provider: "anthropic", pattern: /^claude-sonnet-5/i, efforts: ["none", "low", "medium", "high", "xhigh"] },
+	{ label: "Claude Fable 5", provider: "anthropic", pattern: /^claude-fable-5/i, efforts: ["none", "low", "medium", "high", "xhigh"] },
+	{ label: "Claude (anthropic)", provider: "anthropic", pattern: /^claude-/i, efforts: ["none", "low", "medium", "high"] },
+	{ label: "OpenAI GPT/o-series", provider: "openai", pattern: /^(gpt-|o[134])/i, efforts: ["none", "minimal", "low", "medium", "high"] },
+	{ label: "Google Gemini", provider: "google", pattern: /^gemini-/i, efforts: ["none", "low", "medium", "high"] },
+	{ label: "xAI Grok", provider: "xai", pattern: /^grok-/i, efforts: ["none", "low", "medium", "high"] },
+	{ label: "DeepSeek", provider: "deepseek", pattern: /^deepseek-/i, efforts: ["none", "low", "medium", "high"] },
+];
+
+/** Resolve the effort set for a model: knowledge base → gateway → full coverage by api. */
+export function resolveThinkingLevels(
+	modelId: string,
+	vendor: string | undefined,
+	api: PiApiType | undefined,
+	gatewayEfforts: readonly string[] | undefined,
+): string[] {
+	const id = modelId.trim();
+	const v = vendor?.trim().toLowerCase();
+
+	if (v) {
+		for (const rule of MODEL_THINKING_RULES) {
+			if (rule.provider && rule.provider !== v) continue;
+			if (rule.pattern.test(id)) return [...rule.efforts];
+		}
+	}
+	for (const rule of MODEL_THINKING_RULES) {
+		if (rule.provider) continue;
+		if (rule.pattern.test(id)) return [...rule.efforts];
+	}
+
+	if (gatewayEfforts && gatewayEfforts.length > 0) {
+		return [...gatewayEfforts];
+	}
+
+	// Unknown model + no gateway hint: full coverage. Api-safe send values are
+	// applied in buildThinkingLevelMap (xhigh/max capped where the api rejects them).
+	if (api === "anthropic-messages") {
+		return ["none", "low", "medium", "high", "xhigh", "max"];
+	}
+	return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+}
+
+/**
+ * Map a pi thinking level to the effort string actually sent to the gateway.
+ * Anthropic natively accepts xhigh (budget tiers); OpenAI-style apis pass
+ * reasoning_effort through verbatim and reject unknown values, so xhigh/max
+ * cap at "high" (option A: keep the level selectable without 400s).
+ */
+function safeEffortValue(level: string, api?: PiApiType): string {
+	if (!api) {
+		return level;
+	}
+	if (api === "anthropic-messages") {
+		return level === "max" ? "xhigh" : level;
+	}
+	return level === "xhigh" || level === "max" ? "high" : level;
+}
+
+export function buildThinkingLevelMap(efforts: string[], api?: PiApiType): ThinkingLevelMap | undefined {
 	if (efforts.length === 0) {
 		return undefined;
 	}
@@ -230,7 +298,7 @@ export function buildThinkingLevelMap(efforts: string[]): ThinkingLevelMap | und
 			map.off = supported.has("none") ? "none" : null;
 			continue;
 		}
-		map[level] = supported.has(level) ? level : null;
+		map[level] = supported.has(level) ? safeEffortValue(level, api) : null;
 	}
 
 	return map;
@@ -276,8 +344,10 @@ export function toPiModel(model: GatewayModel): PiProviderModel | null {
 	}
 
 	const providerId = (model.provider_id ?? "").trim().toLowerCase();
-	const endpoint = resolveInferenceEndpoint(model);
-	const efforts = inferReasoningEfforts(model);
+	const gatewayEfforts = extractReasoningEfforts(model);
+	const endpoint = lookupEndpointOverride(id) ?? resolveInferenceEndpoint(model);
+	const api = toPiApiType(endpoint, providerId);
+	const efforts = resolveThinkingLevels(id, providerId || undefined, api, gatewayEfforts);
 	const hasReasoning = efforts.some((effort) => effort !== "none");
 
 	const contextWindow =
@@ -297,8 +367,8 @@ export function toPiModel(model: GatewayModel): PiProviderModel | null {
 		cost: resolveModelCostRates(id, providerId || undefined),
 		contextWindow,
 		maxTokens,
-		api: toPiApiType(endpoint, providerId),
-		thinkingLevelMap: buildThinkingLevelMap(efforts),
+		api,
+		thinkingLevelMap: buildThinkingLevelMap(efforts, api),
 	};
 }
 

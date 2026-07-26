@@ -4,9 +4,11 @@ import {
 	buildThinkingLevelMap,
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_MAX_TOKENS,
-	inferReasoningEfforts,
+	extractReasoningEfforts,
 	parseGatewayModelsPayload,
+	resolveThinkingLevels,
 	type GatewayModel,
+	type PiApiType,
 } from "../catalog.js";
 import {
 	KNOWN_UPSTREAM_VENDOR_IDS,
@@ -138,7 +140,6 @@ export function mapCompatModelsPayload(
 		}
 		seen.add(id);
 
-		const efforts = inferReasoningEfforts(upstream);
 		const explicitContext = positiveNumber(upstream.context_window) ?? positiveNumber(upstream.max_model_len);
 		const maxTokens =
 			positiveNumber(upstream.max_output_tokens) ??
@@ -149,6 +150,11 @@ export function mapCompatModelsPayload(
 			? upstream.provider_id.trim().toLowerCase()
 			: undefined;
 
+		// 2API gateways expose only OpenAI Chat Completions (single stream adapter).
+		// Per-model endpoint override is intentionally core-LLMGates-only.
+		const api: PiApiType = "openai-completions";
+		const efforts = resolveThinkingLevels(id, vendor, api, extractReasoningEfforts(upstream));
+
 		const displayName =
 			(typeof upstream.display_name === "string" && upstream.display_name.trim()) ||
 			(typeof upstream.name === "string" && upstream.name.trim()) ||
@@ -158,13 +164,13 @@ export function mapCompatModelsPayload(
 			name: displayName,
 			provider: options.providerId,
 			baseUrl: options.inferenceBaseUrl,
-			api: "openai-completions",
+			api,
 			reasoning: efforts.some((effort) => effort !== "none"),
 			input: buildInputModalities(upstream),
 			cost: resolveModelCostRates(id),
 			contextWindow: resolveCompatContextWindow(id, explicitContext),
 			maxTokens,
-			thinkingLevelMap: buildThinkingLevelMap(efforts),
+			thinkingLevelMap: buildThinkingLevelMap(efforts, api),
 		};
 		models.push(applyMoonshotKimiCompatModel(model, vendor));
 		catalogRefs.push(

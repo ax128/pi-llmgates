@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	applyGatewayModelCosts,
+	buildThinkingLevelMap,
 	defaultInferenceEndpoint,
 	formatCreditsMessage,
-	inferReasoningEfforts,
 	isOfflineMode,
 	isPiSelectableModel,
 	normalizeGatewayBaseUrl,
@@ -13,9 +13,14 @@ import {
 	resolveCreditsUrl,
 	resolveEndpoints,
 	resolveInferenceEndpoint,
+	resolveThinkingLevels,
 	toPiApiType,
 	toPiModel,
 } from "../extensions/catalog.js";
+import { clearModelOverridesMemory } from "../extensions/model-overrides.js";
+
+// Endpoint-override memory is module-global; keep tests hermetic across files.
+afterEach(() => clearModelOverridesMemory());
 
 describe("normalizeGatewayBaseUrl", () => {
 	it("trims and preserves explicit gateway hosts", () => {
@@ -83,6 +88,7 @@ describe("toPiApiType", () => {
 });
 
 describe("toPiModel", () => {
+	afterEach(() => clearModelOverridesMemory());
 	it("maps gateway model with vision and responses endpoint", () => {
 		const model = toPiModel({
 			id: "gpt-5.5",
@@ -117,17 +123,62 @@ describe("toPiModel", () => {
 		expect(model?.reasoning).toBe(true);
 	});
 
-	it("falls back to off + low/medium/high when gateway omits reasoning levels", () => {
-		const efforts = inferReasoningEfforts({
-			id: "claude-sonnet-4-6",
-			provider_id: "anthropic",
-			web_chat_endpoint: "messages",
-		});
-
-		expect(efforts).toEqual(["none", "low", "medium", "high"]);
+	it("fills known models from the thinking-level knowledge base", () => {
+		// claude-opus-4-7: anthropic native xhigh
+		expect(resolveThinkingLevels("claude-opus-4-7", "anthropic", "anthropic-messages", undefined)).toEqual([
+			"none",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+		]);
+		// openai gpt/o-series: minimal/low/medium/high
+		expect(resolveThinkingLevels("gpt-5.5", "openai", "openai-responses", undefined)).toEqual([
+			"none",
+			"minimal",
+			"low",
+			"medium",
+			"high",
+		]);
 	});
 
-	it("maps grok with empty gateway levels to plugin fallback thinking map", () => {
+	it("falls back to full coverage by api when model is unknown", () => {
+		expect(resolveThinkingLevels("acme-unknown-1", undefined, "anthropic-messages", undefined)).toEqual([
+			"none",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+		expect(resolveThinkingLevels("acme-unknown-1", undefined, "openai-responses", undefined)).toEqual([
+			"none",
+			"minimal",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+	});
+
+	it("uses gateway levels for unknown vendors when reported", () => {
+		expect(resolveThinkingLevels("acme-7", "acme", undefined, ["low", "high"])).toEqual(["low", "high"]);
+	});
+
+	it("caps xhigh/max send values per api in buildThinkingLevelMap", () => {
+		const full = ["none", "low", "medium", "high", "xhigh", "max"];
+		// OpenAI passes reasoning_effort through → cap at high (option A)
+		const oai = buildThinkingLevelMap(full, "openai-responses")!;
+		expect(oai.xhigh).toBe("high");
+		expect(oai.max).toBe("high");
+		// Anthropic natively accepts xhigh → keep, no native max → map to xhigh
+		const ant = buildThinkingLevelMap(full, "anthropic-messages")!;
+		expect(ant.xhigh).toBe("xhigh");
+		expect(ant.max).toBe("xhigh");
+	});
+
+	it("maps grok via the thinking knowledge base", () => {
 		const model = toPiModel({
 			id: "grok-4.5",
 			provider_id: "xai",
@@ -171,7 +222,8 @@ describe("toPiModel", () => {
 		expect(isPiSelectableModel({ id: "gpt-5.6-sol", capability_tags: [] })).toBe(true);
 	});
 
-	it("uses gateway reasoning levels when present", () => {
+	it("knowledge base wins over gateway for known vendors", () => {
+		// gpt-5.5 is OpenAI → KB minimal/low/medium/high, even though gateway reports fewer.
 		const model = toPiModel({
 			id: "gpt-5.5",
 			provider_id: "openai",
@@ -180,31 +232,29 @@ describe("toPiModel", () => {
 		});
 
 		expect(model?.reasoning).toBe(true);
-		expect(model?.thinkingLevelMap?.low).toBe("low");
 		expect(model?.thinkingLevelMap?.off).toBe("none");
-		expect(model?.thinkingLevelMap?.medium).toBeNull();
+		expect(model?.thinkingLevelMap?.minimal).toBe("minimal");
+		expect(model?.thinkingLevelMap?.low).toBe("low");
+		expect(model?.thinkingLevelMap?.medium).toBe("medium");
+		expect(model?.thinkingLevelMap?.high).toBe("high");
+		expect(model?.thinkingLevelMap?.xhigh).toBeNull();
 	});
 
-	it("prefers full gateway catalog over plugin fallback", () => {
+	it("respects gateway xhigh for unknown-vendor anthropic models", () => {
 		const model = toPiModel({
-			id: "gpt-5.6-sol",
-			provider_id: "openai",
-			web_chat_endpoint: "chat_completions",
+			id: "acme-reasoner",
+			provider_id: "acme",
+			web_chat_endpoint: "messages",
 			supported_reasoning_levels: [
 				{ effort: "none" },
-				{ effort: "minimal" },
 				{ effort: "low" },
 				{ effort: "medium" },
 				{ effort: "high" },
 				{ effort: "xhigh" },
-				{ effort: "max" },
-				{ effort: "ultra" },
 			],
 		});
 
-		expect(model?.thinkingLevelMap?.minimal).toBe("minimal");
 		expect(model?.thinkingLevelMap?.xhigh).toBe("xhigh");
-		expect(model?.thinkingLevelMap?.ultra).toBe("ultra");
 	});
 });
 

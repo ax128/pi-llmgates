@@ -273,6 +273,50 @@ pi
 
 同时存在时，`inference_endpoint` 优先于 `web_chat_endpoint`。
 
+### 思考等级（reasoning effort）
+
+pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展按「知识库 → 网关 → 按 api 全覆盖」三级解析：
+
+1. **知识库**：内置 `MODEL_THINKING_RULES` 覆盖主流模型族（Claude / GPT·o-series / Gemini / Grok / DeepSeek），已知模型直接填**确切**等级——例如 `claude-opus-4-7`、`claude-sonnet-5`、`claude-fable-5` 含原生 `xhigh`（Anthropic `output_config: { effort: "xhigh" }`）。命中后覆盖网关上报值（网关常少报，导致只看到 low/med/high）。
+2. **网关**：未命中知识库但网关上报了 `supported_reasoning_levels` 时，采用网关值。
+3. **全覆盖**：两者都没有时，按 `api` 安全给全档——`anthropic-messages` 给到 `xhigh`/`max`（预算制，原生安全）；`openai-*` 的 `xhigh`/`max` 发送值收敛为 `high`（OpenAI 透传 `reasoning_effort`，不认识的值会 400）。
+
+**用户级微调（pi 原生钩子）**：在 `~/.pi/agent/models.json` 用 `providers.llmgates.modelOverrides` 覆盖单个模型的思考等级（最顶层，合并语义，只覆盖你写的 key）：
+
+```jsonc
+{
+  "providers": {
+    "llmgates": {
+      "modelOverrides": {
+        "claude-opus-4-7": { "thinkingLevelMap": { "max": "xhigh" } },
+        "gpt-5.6-sol":      { "thinkingLevelMap": { "xhigh": null, "max": null } }
+      }
+    }
+  }
+}
+```
+
+`thinkingLevelMap` 的 key 为 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`，value 为 `string`（发送给网关的 effort）或 `null`（禁用该档）。这是 pi 自带的模型覆盖钩子，不涉及 apiKey。
+
+### 模型出口（endpoint / api）
+
+默认按上表自动解析。若需强制指定（例如把某个模型从 `responses` 改走 `messages`），在 `~/.pi/agent/llmgates/models.json` 配置：
+
+```jsonc
+{
+  "defaults": { "endpoint": "responses" },
+  "models": {
+    "gpt-5.6-sol":      { "endpoint": "chat_completions" },
+    "claude-sonnet-4-6": { "endpoint": "messages" }
+  }
+}
+```
+
+- 值接受别名：`responses` / `chat`·`chat_completions`·`completions` / `messages`·`anthropic`。
+- 优先级：**per-model > `defaults` > 网关 `inference_endpoint`/`web_chat_endpoint` > 按 id 启发式**。
+- 每次目录刷新重读，改完无需重启（下一次刷新即生效，最长 5 分钟）。
+- 仅 **core `llmgates`** provider 支持（它注册了 3 个 stream adapter）；**2API 兼容层**只走 OpenAI Chat Completions，不支持改出口。
+
 ## 定价与费用估算
 
 TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与 LLMGates 钱包扣费可能不同；账户实际消费请用 `/balance` 查询。
@@ -289,6 +333,8 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与 LLMGa
 ```
 
 设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
+
+**`llmgates/models.json`** — 每模型出口（endpoint / `api`）覆盖，纯手动、无网络同步。详见 [模型出口](#模型出口-endpoint--api)。
 
 **`llmgates/pricing.json`** — 可编辑的 USD / **100 万 token** 单价（`input`、`output`、`cacheRead`、`cacheWrite`）。键为 `modelId` 或 `provider/modelId`（如 `openai/gpt-5.6-sol`）：
 
