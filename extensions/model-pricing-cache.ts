@@ -12,9 +12,9 @@ import {
 	LITELLM_PRICING_REQUEST_TIMEOUT_MS,
 	requestLimitedJson,
 } from "./http.js";
-import { atomicWriteJson, envFlag, SECRET_FILE_MODE } from "./util.js";
+import { atomicWriteJson, envFlag, LLMGATES_PRICING_FILE, SECRET_FILE_MODE } from "./util.js";
 
-export const MODEL_PRICING_CACHE_FILE = "llmgates-model-pricing.json";
+export const MODEL_PRICING_CACHE_FILE = LLMGATES_PRICING_FILE;
 export const MODEL_PRICING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 export const LITELLM_PRICING_URL =
 	"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -27,7 +27,7 @@ export interface CatalogModelRef {
 	providerId?: string;
 }
 
-/** User-editable pricing file at ~/.pi/agent/llmgates-model-pricing.json */
+/** User-editable pricing file at ~/.pi/agent/llmgates/pricing.json */
 export interface ModelPricingFile {
 	/** Optional note for manual editors. */
 	_comment?: string;

@@ -19,7 +19,7 @@ const INSTANCES: CompatInstance[] = [
 ];
 
 function seedStartup(agentDir: string, instances = INSTANCES): void {
-	writeJson(join(agentDir, "llmgates-2api.json"), { instances });
+	writeJson(join(agentDir, "llmgates/2api.json"), { instances });
 	writeJson(join(agentDir, "auth.json"), Object.fromEntries(instances.map((instance) => [
 		instance.id,
 		{
@@ -149,7 +149,7 @@ describe("compat lifecycle", () => {
 		const pi = createPi();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			writeJson(join(agentDir, "llmgates-2api.json"), { instances: INSTANCES });
+			writeJson(join(agentDir, "llmgates/2api.json"), { instances: INSTANCES });
 			writeJson(join(agentDir, "auth.json"), {
 				"gateway-a": { type: "api_key", key: "wrong-type" },
 			});
@@ -192,7 +192,7 @@ describe("compat lifecycle", () => {
 		const pi = createPi();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			writeJson(join(agentDir, "llmgates-2api.json"), { instances: [INSTANCES[0]] });
+			writeJson(join(agentDir, "llmgates/2api.json"), { instances: [INSTANCES[0]] });
 			writeJson(join(agentDir, "auth.json"), auth);
 
 			const registration = registerCompatGateways(pi.pi, agentDir);
@@ -214,7 +214,7 @@ describe("compat lifecycle", () => {
 		const credentialBaseUrl = "https://reconfigured.example/v1";
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			writeJson(join(agentDir, "llmgates-2api.json"), { instances: [instance] });
+			writeJson(join(agentDir, "llmgates/2api.json"), { instances: [instance] });
 			const auth = {
 				type: "oauth" as const,
 				access: "gateway-a-key",
@@ -228,14 +228,14 @@ describe("compat lifecycle", () => {
 			expect(provider).toBeDefined();
 			expect(pi.registered.map((item) => item.id)).toEqual(["llmgates-2api", instance.id]);
 
-			writeJson(join(agentDir, "llmgates-2api.json"), { broken: true });
+			writeJson(join(agentDir, "llmgates/2api.json"), { broken: true });
 			await provider.refreshModels!({ credential: auth, store: createMemoryStore(), allowNetwork: false });
 			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/registry.*retry/i));
 
-			writeJson(join(agentDir, "llmgates-2api.json"), { instances: [instance] });
+			writeJson(join(agentDir, "llmgates/2api.json"), { instances: [instance] });
 			await provider.refreshModels!({ credential: auth, store: createMemoryStore(), allowNetwork: false });
 			expect(JSON.parse(await import("node:fs").then(({ readFileSync }) =>
-				readFileSync(join(agentDir, "llmgates-2api.json"), "utf8"))).instances[0].baseUrl).toBe(credentialBaseUrl);
+				readFileSync(join(agentDir, "llmgates/2api.json"), "utf8"))).instances[0].baseUrl).toBe(credentialBaseUrl);
 		} finally {
 			warn.mockRestore();
 			cleanup();

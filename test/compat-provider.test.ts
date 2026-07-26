@@ -297,7 +297,7 @@ describe("compat instance provider", () => {
 		}
 	});
 
-	it("does not use LLMGATES_API_KEY or llmgates.json as instance credentials", async () => {
+	it("does not use LLMGATES_API_KEY or llmgates/config.json as instance credentials", async () => {
 		let hits = 0;
 		const server = await startLoopbackServer([
 			{
@@ -310,7 +310,7 @@ describe("compat instance provider", () => {
 		try {
 			process.env.LLMGATES_API_KEY = "ambient-key";
 			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
-			writeFileSync(join(agentDir, "llmgates.json"), JSON.stringify({
+			writeFileSync(join(agentDir, "llmgates/config.json"), JSON.stringify({
 				apiKey: "file-key",
 				baseUrl: `${server.baseUrl}/v1`,
 			}));
@@ -331,7 +331,7 @@ describe("compat instance provider", () => {
 	it("restores persisted pricing and context into cached models while offline", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
-			writeFileSync(join(agentDir, "llmgates-model-pricing.json"), JSON.stringify({
+			writeFileSync(join(agentDir, "llmgates/pricing.json"), JSON.stringify({
 				updatedAt: 1,
 				rates: {
 					"offline-model": { input: 7, output: 8, cacheRead: 0.7, cacheWrite: 7 },
@@ -371,12 +371,12 @@ describe("compat instance provider", () => {
 		}
 	});
 
-	it("uses llmgates.json pricingAutoUpdate instead of overriding it from the provider", async () => {
+	it("uses llmgates/config.json pricingAutoUpdate instead of overriding it from the provider", async () => {
 		delete process.env.LLMGATES_PRICING_AUTO_UPDATE;
 		const { agentDir, cleanup } = withTempAgentDir();
 		let pricingCalls = 0;
 		try {
-			writeFileSync(join(agentDir, "llmgates.json"), JSON.stringify({ pricingAutoUpdate: false }));
+			writeFileSync(join(agentDir, "llmgates/config.json"), JSON.stringify({ pricingAutoUpdate: false }));
 			const provider = createCompatProvider({
 				agentDir,
 				instance: INSTANCE,

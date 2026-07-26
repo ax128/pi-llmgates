@@ -15,7 +15,7 @@ import {
 	resolveCreditsUrl,
 	resolveEndpoints,
 } from "./catalog.js";
-import { envFlag, isPlainObject } from "./util.js";
+import { envFlag, isPlainObject, LLMGATES_CONFIG_FILE } from "./util.js";
 
 export type ConnectionSource = "oauth" | "env" | "file";
 
@@ -43,7 +43,7 @@ export interface ProviderIdentity {
 }
 
 export const AUTH_FILE_NAME = "auth.json";
-export const CONFIG_FILE_NAME = "llmgates.json";
+export const CONFIG_FILE_NAME = LLMGATES_CONFIG_FILE;
 
 export const BUILTIN_PROVIDER_IDS = new Set<string>([
 	"amazon-bedrock",
@@ -325,7 +325,7 @@ export function resolveProviderIdentity(agentDir: string): ProviderIdentity {
 	}
 	if (BUILTIN_PROVIDER_IDS.has(providerId)) {
 		throw new Error(
-			`providerId "${providerId}" collides with a builtin provider; set LLMGATES_PROVIDER_ID or llmgates.json providerId to a unique id`,
+			`providerId "${providerId}" collides with a builtin provider; set LLMGATES_PROVIDER_ID or ${CONFIG_FILE_NAME} providerId to a unique id`,
 		);
 	}
 	if (!providerName) {
@@ -335,7 +335,7 @@ export function resolveProviderIdentity(agentDir: string): ProviderIdentity {
 	return { providerId, providerName };
 }
 
-/** Env LLMGATES_PRICING_AUTO_UPDATE overrides llmgates.json. Default: true. */
+/** Env LLMGATES_PRICING_AUTO_UPDATE overrides llmgates/config.json. Default: true. */
 export function resolvePricingAutoUpdate(agentDir: string): boolean {
 	const env = envFlag("LLMGATES_PRICING_AUTO_UPDATE");
 	if (env !== undefined) {

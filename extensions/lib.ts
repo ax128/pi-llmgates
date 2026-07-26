@@ -2,7 +2,7 @@
  * Config I/O helpers. Connection ownership lives in connection.ts; network in http.ts.
  */
 
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as lockfile from "proper-lockfile";
 import {
 	CONFIG_FILE_NAME,
@@ -24,7 +24,7 @@ export type { LLMGatesConfigFile };
 
 async function withConfigLock<T>(agentDir: string, fn: (configPath: string) => Promise<T> | T): Promise<T> {
 	const configPath = join(agentDir, CONFIG_FILE_NAME);
-	ensureDirMode(agentDir, SECRET_DIR_MODE);
+	ensureDirMode(dirname(configPath), SECRET_DIR_MODE);
 	const release = await lockfile.lock(configPath, LOCK_OPTIONS);
 	try {
 		createFileIfMissingMode(configPath, "{}\n", SECRET_FILE_MODE);

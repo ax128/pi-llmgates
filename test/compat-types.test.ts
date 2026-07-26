@@ -18,7 +18,7 @@ describe("compat constants", () => {
 			cpa: "http://127.0.0.1:8317/v1",
 		});
 		expect(BOOTSTRAP_PROVIDER_ID).toBe("llmgates-2api");
-		expect(COMPAT_CONFIG_FILE).toBe("llmgates-2api.json");
+		expect(COMPAT_CONFIG_FILE).toBe("llmgates/2api.json");
 	});
 });
 

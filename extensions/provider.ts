@@ -43,6 +43,7 @@ import {
 	refreshModelPricing,
 } from "./model-pricing-cache.js";
 import {
+	CONFIG_FILE_NAME,
 	connectionFromAmbientEnv,
 	connectionFromConfigFile,
 	connectionFromOAuthCredential,
@@ -531,7 +532,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 					});
 				} catch (error) {
 					throw new Error(
-						`Failed to save ${"llmgates.json"}: ${error instanceof Error ? error.message : String(error)}`,
+						`Failed to save ${CONFIG_FILE_NAME}: ${error instanceof Error ? error.message : String(error)}`,
 						{ cause: error },
 					);
 				}
@@ -611,7 +612,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 					}
 					return {
 						type: "api_key" as const,
-						source: conn.source === "env" ? "LLMGATES_API_KEY" : "llmgates.json",
+						source: conn.source === "env" ? "LLMGATES_API_KEY" : CONFIG_FILE_NAME,
 					};
 				},
 				async resolve(): Promise<AuthResult | undefined> {
@@ -628,7 +629,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 							LLMGATES_RESOLVED_BASE_URL: conn.inferenceBaseUrl,
 							LLMGATES_RESOLVED_SOURCE: conn.source,
 						},
-						source: conn.source === "env" ? "LLMGATES_API_KEY" : "llmgates.json",
+						source: conn.source === "env" ? "LLMGATES_API_KEY" : CONFIG_FILE_NAME,
 					};
 				},
 			}

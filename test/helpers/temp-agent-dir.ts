@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 
 export function withTempAgentDir(): { agentDir: string; cleanup: () => void } {
 	const agentDir = mkdtempSync(join(tmpdir(), "llmgates-agent-"));
+	mkdirSync(join(agentDir, "llmgates"), { recursive: true, mode: 0o700 });
 	return {
 		agentDir,
 		cleanup: () => rmSync(agentDir, { recursive: true, force: true }),

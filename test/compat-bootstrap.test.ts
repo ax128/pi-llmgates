@@ -245,7 +245,7 @@ describe("compat bootstrap transaction", () => {
 			const harness = createPi();
 			harness.bindAgentDir(agentDir);
 			try {
-				writeJson(join(agentDir, "llmgates-2api.json"), { instances });
+				writeJson(join(agentDir, "llmgates/2api.json"), { instances });
 				expect(() => registerCompatGateways(harness.pi, agentDir)).toThrow(/compat initialization.*reserved|compat initialization.*duplicate/i);
 				expect(harness.registered.size).toBe(0);
 			} finally {
