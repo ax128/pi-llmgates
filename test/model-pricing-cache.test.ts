@@ -590,6 +590,33 @@ describe("model-pricing-cache", () => {
 		expect(recovered?.rates["openai/gpt-5.6-sol"]).toMatchObject({ input: 5, output: 30 });
 	});
 
+	// The single-flight map only dedupes identical catalogs. Different catalogs under the
+	// same agentDir get different keys, so without the sync chain their read-modify-write
+	// of llmgates-model-pricing.json interleaves and the slower writer drops the other's
+	// rates. Guards the chain against being mistaken for redundant bookkeeping.
+	it("serializes different-catalog refreshes so neither loses the other's rates", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "pricing-serialize-"));
+		const openaiModels = [{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] }];
+		const anthropicModels = [{ id: "claude-opus-4-8", provider_id: "anthropic", capability_tags: ["chat"] }];
+
+		// Slow enough that an unserialized second sync would read the pre-write file.
+		const loadLiteLLMTable = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			return MOCK_LITELLM;
+		};
+
+		await Promise.all([
+			refreshModelPricing(agentDir, openaiModels, { now: () => 0, loadLiteLLMTable }),
+			refreshModelPricing(agentDir, anthropicModels, { now: () => 0, loadLiteLLMTable }),
+		]);
+
+		const persisted = readModelPricingFile(agentDir);
+		expect(Object.keys(persisted?.rates ?? {}).sort()).toEqual([
+			"anthropic/claude-opus-4-8",
+			"openai/gpt-5.6-sol",
+		]);
+	});
+
 	it("keeps cached rates when LiteLLM fetch fails", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "pricing-fail-"));
 		writeFileSync(
