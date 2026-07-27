@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -53,6 +53,9 @@ function createRuntime(cwd: string) {
 		commands,
 		selections,
 		scopeChoices,
+		emitNow(event: string, data: any = {}) {
+			for (const handler of handlers.get(event) ?? []) void handler(data, ctx);
+		},
 		async emit(event: string, data: any = {}) {
 			for (const handler of handlers.get(event) ?? []) await handler(data, ctx);
 		},
@@ -60,6 +63,78 @@ function createRuntime(cwd: string) {
 }
 
 describe("tps runtime subagent ordering", () => {
+	it("discovers owned meta created after session start without creating the artifacts directory", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-late-artifacts-"));
+		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");
+		mkdirSync(join(cwd, ".pi-subagents"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			expect(existsSync(artifactsDir)).toBe(false);
+
+			await runtime.emit("before_agent_start");
+			await runtime.emit("tool_execution_end", {
+				toolName: "subagent",
+				toolCallId: "call-late-artifacts",
+				result: { details: { runId: "CCCC-3333", async: true, results: [] } },
+			});
+			mkdirSync(artifactsDir);
+			const meta = join(artifactsDir, "cccc-3333_worker_0_meta.json");
+			writeFileSync(
+				meta,
+				JSON.stringify({ model: "late-model", usage: { turns: 1, input: 12, output: 3, cost: 0 } }),
+			);
+			const artifactTime = (Date.now() + 1000) / 1000;
+			utimesSync(meta, artifactTime, artifactTime);
+			await runtime.emit("agent_settled");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This turn");
+			await calls.handler("", runtime.ctx);
+			runtime.scopeChoices.push("This session");
+			await calls.handler("", runtime.ctx);
+
+			expect(runtime.selections).toHaveLength(2);
+			for (const options of runtime.selections) {
+				expect(options.some((line) => line.includes("late-model") && line.includes("1 call"))).toBe(true);
+			}
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("does not let detached usage tasks mutate a restarted session", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-generation-"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			runtime.emitNow("message_end", {
+				message: {
+					role: "assistant",
+					provider: "old-provider",
+					model: "old-model",
+					usage: { input: 10, output: 5, totalTokens: 15 },
+				},
+			});
+			runtime.emitNow("session_shutdown");
+			runtime.emitNow("session_start");
+			runtime.emitNow("before_agent_start");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This turn");
+			await calls.handler("", runtime.ctx);
+
+			expect(runtime.selections).toHaveLength(0);
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("settles owned meta into both turn and session while excluding unowned artifacts", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-"));
 		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");

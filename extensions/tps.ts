@@ -75,6 +75,7 @@ export default function (pi: ExtensionAPI) {
 	let usageTaskChain: Promise<void> = Promise.resolve();
 	let statusRefreshScheduled = false;
 	let sessionActive = false;
+	let sessionGeneration = 0;
 	let sessionStartedAtMs = 0;
 	let sessionArtifactsDir: string | null = null;
 	let subagentIngestState = createSubagentIngestState();
@@ -84,9 +85,10 @@ export default function (pi: ExtensionAPI) {
 	let unregisterSubagentBridge: (() => void) | undefined;
 
 	function runUsageTask(task: () => void | Promise<void>): void {
+		const expectedGeneration = sessionGeneration;
 		usageTaskChain = usageTaskChain
 			.then(async () => {
-				if (!sessionActive) {
+				if (!sessionActive || sessionGeneration !== expectedGeneration) {
 					return;
 				}
 				await task();
@@ -226,13 +228,12 @@ export default function (pi: ExtensionAPI) {
 			subagentWatcher.close();
 			subagentWatcher = undefined;
 		}
-		// Clear so tool_execution_end / debounced scans cannot use a stale dir after teardown.
-		sessionArtifactsDir = null;
 	}
 
-	function startSubagentWatcher(cwd: string): void {
-		stopSubagentWatcher();
-		sessionArtifactsDir = resolvePiSubagentsArtifactsDir(cwd);
+	function ensureSubagentWatcher(): void {
+		if (subagentWatcher !== undefined || !sessionArtifactsDir) {
+			return;
+		}
 		try {
 			subagentWatcher = watch(sessionArtifactsDir, (_, fileName) => {
 				if (typeof fileName === "string" && fileName.endsWith("_meta.json")) {
@@ -240,10 +241,15 @@ export default function (pi: ExtensionAPI) {
 				}
 			});
 		} catch {
-			sessionArtifactsDir = null;
 			return;
 		}
 		scanSubagentMetaArtifacts();
+	}
+
+	function startSubagentWatcher(cwd: string): void {
+		stopSubagentWatcher();
+		sessionArtifactsDir = resolvePiSubagentsArtifactsDir(cwd);
+		ensureSubagentWatcher();
 	}
 
 	async function showUsageBreakdown(ctx: ExtensionContext, stats: ModelUsageStats, scope: "turn" | "session"): Promise<void> {
@@ -323,6 +329,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", (_event, ctx) => {
+		sessionGeneration += 1;
 		sessionActive = true;
 		usageTaskChain = Promise.resolve();
 		sessionStats = createEmptyStats();
@@ -334,6 +341,7 @@ export default function (pi: ExtensionAPI) {
 		unregisterSubagentBridge = undefined;
 		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
 		stopSubagentWatcher();
+		sessionArtifactsDir = null;
 		if (
 			isPrimaryUiSession(ctx) &&
 			isSubagentBridgeEnabled() &&
@@ -343,7 +351,10 @@ export default function (pi: ExtensionAPI) {
 			unregisterSubagentBridge = registerSubagentUsageBridge(pi.events, {
 				sessionId: ctx.sessionManager.getSessionId(),
 				onRecords: ingestSubagentRecords,
-				onRunObserved: (runId) => sessionRunIds.add(runId),
+				onRunObserved: (runId) => {
+					ensureSubagentWatcher();
+					sessionRunIds.add(runId);
+				},
 				onForegroundComplete: scheduleSubagentMetaScan,
 			});
 		}
@@ -351,6 +362,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_execution_end", (event, ctx) => {
 		if (!isPrimaryUiSession(ctx)) return;
+		ensureSubagentWatcher();
 		for (const runId of extractSubagentRunIdsFromToolExecution(event.toolName, event.result)) {
 			sessionRunIds.add(runId);
 		}
@@ -395,6 +407,7 @@ export default function (pi: ExtensionAPI) {
 		if (!isPrimaryUiSession(ctx)) return;
 		if (requestStartMs === null) return;
 
+		ensureSubagentWatcher();
 		const startMs = requestStartMs;
 		const elapsedMs = Date.now() - startMs;
 		const elapsedSecondsExact = elapsedMs / 1000;
@@ -451,8 +464,10 @@ export default function (pi: ExtensionAPI) {
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
 		sessionActive = false;
+		sessionGeneration += 1;
 		clearRefreshTimer();
 		stopSubagentWatcher();
+		sessionArtifactsDir = null;
 		subagentIngestState = createSubagentIngestState();
 		sessionRunIds = new Set();
 		if (isPrimaryUiSession(ctx)) {
