@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createLLMGatesProvider } from "../extensions/provider.js";
 import {
 	applyModelOverridesToMemory,
 	clearModelOverridesMemory,
@@ -96,18 +97,102 @@ describe("readModelOverridesFile", () => {
 		expect(loaded?.models?.["gpt-5.6-sol"]?.endpoint).toBe("chat");
 	});
 
-	it("returns null on malformed JSON", () => {
+	it("returns undefined on malformed JSON", () => {
 		writeFileSync(join(dir, "llmgates/models.json"), "{ not json");
-		expect(readModelOverridesFile(dir)).toBeNull();
+		expect(readModelOverridesFile(dir)).toBeUndefined();
 	});
 
-	it("reload feeds the lookup memory", () => {
+	it.each([null, [], "responses", 42, true])("returns undefined for invalid root %j", (root) => {
+		writeFileSync(join(dir, "llmgates/models.json"), JSON.stringify(root));
+		expect(readModelOverridesFile(dir)).toBeUndefined();
+	});
+
+	it("missing config clears existing memory", () => {
+		applyModelOverridesToMemory({ defaults: { endpoint: "messages" } });
+		expect(reloadModelOverridesFromDisk(dir)).toBeNull();
+		expect(lookupEndpointOverride("x")).toBeUndefined();
+	});
+
+	it("valid config completely replaces existing memory", () => {
+		applyModelOverridesToMemory({
+			defaults: { endpoint: "responses" },
+			models: { old: { endpoint: "messages" } },
+		});
 		writeFileSync(
 			join(dir, "llmgates/models.json"),
-			JSON.stringify({ models: { "claude-opus-4.7": { endpoint: "messages" } } }),
+			JSON.stringify({ models: { fresh: { endpoint: "chat" } } }),
 		);
-		reloadModelOverridesFromDisk(dir);
-		expect(lookupEndpointOverride("claude-opus-4.7")).toBe("messages");
+
+		expect(reloadModelOverridesFromDisk(dir)).toEqual({
+			models: { fresh: { endpoint: "chat" } },
+		});
+		expect(lookupEndpointOverride("fresh")).toBe("chat_completions");
+		expect(lookupEndpointOverride("old")).toBeUndefined();
+	});
+
+	it.each([
+		["malformed JSON", "{ private-file-contents"],
+		["invalid root", JSON.stringify(["private-file-contents"])],
+	])("warns for %s and retains last-known-good memory", (_category, contents) => {
+		applyModelOverridesToMemory({ defaults: { endpoint: "messages" } });
+		writeFileSync(join(dir, "llmgates/models.json"), contents);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(reloadModelOverridesFromDisk(dir)).toBeUndefined();
+			expect(lookupEndpointOverride("x")).toBe("messages");
+			expect(warn).toHaveBeenCalledWith(
+				`[pi-llmgates-provider] Invalid model overrides file: ${join(dir, "llmgates/models.json")}`,
+			);
+			expect(warn.mock.calls.flat().join(" ")).not.toContain("private-file-contents");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("treats a valid root with invalid endpoints as an empty replacement", () => {
+		applyModelOverridesToMemory({ defaults: { endpoint: "messages" } });
+		writeFileSync(
+			join(dir, "llmgates/models.json"),
+			JSON.stringify({
+				defaults: { endpoint: "bogus" },
+				models: { bad: { endpoint: 42 }, alsoBad: null },
+			}),
+		);
+
+		expect(reloadModelOverridesFromDisk(dir)).toEqual({
+			defaults: { endpoint: "bogus" },
+		});
+		expect(lookupEndpointOverride("x")).toBeUndefined();
+	});
+
+	it("throws non-ENOENT filesystem errors and retains memory", () => {
+		applyModelOverridesToMemory({ defaults: { endpoint: "responses" } });
+		mkdirSync(join(dir, "llmgates/models.json"));
+
+		expect(() => reloadModelOverridesFromDisk(dir)).toThrowError(
+			expect.objectContaining({ code: "EISDIR" }),
+		);
+		expect(lookupEndpointOverride("x")).toBe("responses");
+	});
+
+	it("core provider startup warns on invalid config and starts without overrides", () => {
+		clearModelOverridesMemory();
+		writeFileSync(join(dir, "llmgates/models.json"), "{ invalid-at-startup");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			createLLMGatesProvider({
+				agentDir: dir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			expect(lookupEndpointOverride("x")).toBeUndefined();
+			expect(warn).toHaveBeenCalledWith(
+				`[pi-llmgates-provider] Invalid model overrides file: ${join(dir, "llmgates/models.json")}`,
+			);
+			expect(warn.mock.calls.flat().join(" ")).not.toContain("invalid-at-startup");
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });
 

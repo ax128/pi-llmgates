@@ -25,8 +25,9 @@ export interface ModelOverrideFile {
 	models?: Record<string, ModelOverrideEntry>;
 }
 
-let memoryDefaultsEndpoint: string | undefined;
-let memoryModelEndpoints: Map<string, string> | undefined;
+export type ModelOverrideLookup = (modelId: string) => string | undefined;
+
+let memoryLookup: ModelOverrideLookup = () => undefined;
 
 /** Normalize user endpoint aliases to the canonical gateway value. */
 export function normalizeEndpointOverride(value: unknown): string | undefined {
@@ -49,23 +50,22 @@ export function normalizeEndpointOverride(value: unknown): string | undefined {
 	return undefined;
 }
 
-export function applyModelOverridesToMemory(file: ModelOverrideFile | null | undefined): void {
-	memoryDefaultsEndpoint = normalizeEndpointOverride(file?.defaults?.endpoint);
-	const map = new Map<string, string>();
-	const models = file?.models;
-	if (models && isPlainObject(models)) {
-		for (const [id, entry] of Object.entries(models)) {
-			const endpoint = normalizeEndpointOverride((entry as ModelOverrideEntry | undefined)?.endpoint);
-			const key = id.trim();
-			if (endpoint && key) {
-				map.set(key, endpoint);
-			}
-		}
+export function createModelOverrideLookup(file: ModelOverrideFile | null): ModelOverrideLookup {
+	const defaultEndpoint = normalizeEndpointOverride(file?.defaults?.endpoint);
+	const endpoints = new Map<string, string>();
+	for (const [id, entry] of Object.entries(file?.models ?? {})) {
+		const endpoint = normalizeEndpointOverride(entry?.endpoint);
+		const key = id.trim();
+		if (endpoint && key) endpoints.set(key, endpoint);
 	}
-	memoryModelEndpoints = map.size > 0 ? map : undefined;
+	return (modelId) => endpoints.get(modelId.trim()) ?? defaultEndpoint;
 }
 
-export function readModelOverridesFile(agentDir: string): ModelOverrideFile | null {
+export function applyModelOverridesToMemory(file: ModelOverrideFile | null | undefined): void {
+	memoryLookup = createModelOverrideLookup(file ?? null);
+}
+
+export function readModelOverridesFile(agentDir: string): ModelOverrideFile | null | undefined {
 	const path = join(agentDir, LLMGATES_MODELS_FILE);
 	let raw: string;
 	try {
@@ -82,10 +82,10 @@ export function readModelOverridesFile(agentDir: string): ModelOverrideFile | nu
 	try {
 		parsed = JSON.parse(raw);
 	} catch {
-		return null;
+		return undefined;
 	}
 	if (!isPlainObject(parsed)) {
-		return null;
+		return undefined;
 	}
 
 	const file: ModelOverrideFile = {};
@@ -110,23 +110,27 @@ export function readModelOverridesFile(agentDir: string): ModelOverrideFile | nu
 	return file;
 }
 
-export function reloadModelOverridesFromDisk(agentDir: string): ModelOverrideFile | null {
+export function reloadModelOverridesFromDisk(
+	agentDir: string,
+	apply: (file: ModelOverrideFile | null) => void = applyModelOverridesToMemory,
+): ModelOverrideFile | null | undefined {
 	const file = readModelOverridesFile(agentDir);
-	applyModelOverridesToMemory(file);
+	if (file === undefined) {
+		console.warn(
+			`[pi-llmgates-provider] Invalid model overrides file: ${join(agentDir, LLMGATES_MODELS_FILE)}`,
+		);
+		return undefined;
+	}
+	apply(file);
 	return file;
 }
 
 /** Per-model override beats global default. Returns canonical endpoint or undefined. */
 export function lookupEndpointOverride(modelId: string): string | undefined {
-	const id = modelId?.trim();
-	if (!id || !memoryModelEndpoints?.has(id)) {
-		return memoryDefaultsEndpoint;
-	}
-	return memoryModelEndpoints.get(id);
+	return memoryLookup(modelId);
 }
 
 /** @internal test helper */
 export function clearModelOverridesMemory(): void {
-	memoryDefaultsEndpoint = undefined;
-	memoryModelEndpoints = undefined;
+	memoryLookup = () => undefined;
 }
