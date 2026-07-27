@@ -662,6 +662,73 @@ describe("compat instance provider", () => {
 		}
 	});
 
+	it("an old shutdown does not wait for a new session's catalog commit", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		let fetchCount = 0;
+		let releaseOldFetch!: () => void;
+		let markOldFetch!: () => void;
+		let releaseNewWrite!: () => void;
+		let markNewWrite!: () => void;
+		const oldFetchGate = new Promise<void>((resolve) => { releaseOldFetch = resolve; });
+		const oldFetchStarted = new Promise<void>((resolve) => { markOldFetch = resolve; });
+		const newWriteGate = new Promise<void>((resolve) => { releaseNewWrite = resolve; });
+		const newWriteStarted = new Promise<void>((resolve) => { markNewWrite = resolve; });
+		const newStore = createMemoryStore();
+		const write = newStore.write.bind(newStore);
+		newStore.write = async (entry) => {
+			markNewWrite();
+			await newWriteGate;
+			await write(entry);
+		};
+		const { agentDir, cleanup } = withTempAgentDir();
+		let oldRefresh: Promise<void> | undefined;
+		let shutdown: Promise<void> | undefined;
+		let newRefresh: Promise<void> | undefined;
+		try {
+			const provider = createCompatProvider({
+				agentDir,
+				instance: INSTANCE,
+				initialModels: [model("current")],
+				fetchImpl: async () => {
+					fetchCount += 1;
+					if (fetchCount === 1) {
+						markOldFetch();
+						await oldFetchGate;
+					}
+					return new Response(JSON.stringify([{ id: `session-${fetchCount}` }]));
+				},
+			});
+			const auth = credential("key", INSTANCE.baseUrl);
+			await provider.refreshModels!({ credential: auth, store: createMemoryStore(), allowNetwork: false });
+			oldRefresh = provider.startBackgroundRefresh({ force: true });
+			await oldFetchStarted;
+			shutdown = provider.shutdown();
+
+			provider.beginSession("restart");
+			await provider.refreshModels!({ credential: auth, store: newStore, allowNetwork: false });
+			newRefresh = provider.refreshModels!({ credential: auth, store: newStore, allowNetwork: true, force: true });
+			await Promise.race([
+				newWriteStarted,
+				new Promise<never>((_, reject) => setTimeout(() => reject(new Error("new session write did not start")), 1_000)),
+			]);
+			releaseOldFetch();
+
+			await Promise.race([
+				shutdown,
+				new Promise<never>((_, reject) => setTimeout(() => reject(new Error("old shutdown waited for new session commit")), 1_000)),
+			]);
+			expect(newStore.writes).toHaveLength(0);
+
+			releaseNewWrite();
+			await Promise.all([oldRefresh, newRefresh]);
+		} finally {
+			releaseOldFetch();
+			releaseNewWrite();
+			await Promise.allSettled([oldRefresh, shutdown, newRefresh].filter((task): task is Promise<void> => Boolean(task)));
+			cleanup();
+		}
+	});
+
 	it("retains a validated pending catalog when its queued consume becomes stale", async () => {
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		let fetchCount = 0;

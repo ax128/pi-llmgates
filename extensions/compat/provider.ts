@@ -827,10 +827,11 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			const shutdownGeneration = generation;
 			const controller = sessionController;
 			const tasks = [...activeTasks];
+			const commits = commitChain;
 			pending = null;
 			controller?.abort();
 			await Promise.allSettled(tasks);
-			await commitChain;
+			await commits;
 			if (generation !== shutdownGeneration || !shutDown) return;
 			for (const task of tasks) activeTasks.delete(task);
 			if (sessionController === controller) sessionController = null;
