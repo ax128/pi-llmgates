@@ -135,8 +135,11 @@ export function sumModelAttemptsUsage(modelAttempts: unknown): SubagentUsageCoun
 		if (!isPlainObject(usage)) {
 			continue;
 		}
+		if (!countersHaveSignal(usage as SubagentUsageCounters)) {
+			continue;
+		}
 		saw = true;
-		turns += normalizeCalls(usage.turns);
+		turns += normalizeCalls(usage.turns) || 1;
 		input += normalizeTokenCount(usage.input);
 		output += normalizeTokenCount(usage.output);
 		cacheRead += normalizeTokenCount(usage.cacheRead);
@@ -210,17 +213,19 @@ export function normalizeUsageFromPartial(partial: unknown): SubagentUsageCounte
 }
 
 function applyCallsHint(partial: Record<string, unknown>, counters: SubagentUsageCounters): SubagentUsageCounters {
-	if (normalizeCalls(counters.turns) > 0) {
+	if (
+		isPlainObject(partial.usage) &&
+		countersHaveSignal(partial.usage as SubagentUsageCounters) &&
+		normalizeCalls(counters.turns) > 0
+	) {
 		return counters;
 	}
-	const turnCount = normalizeCalls(partial.turnCount);
-	if (turnCount > 0) {
-		return { ...counters, turns: turnCount };
-	}
-	if (Array.isArray(partial.modelAttempts) && partial.modelAttempts.length > 0) {
-		return { ...counters, turns: partial.modelAttempts.length };
-	}
-	return counters;
+	const calls = Math.max(
+		normalizeCalls(counters.turns),
+		normalizeCalls(partial.turnCount),
+		Array.isArray(partial.modelAttempts) ? partial.modelAttempts.length : 0,
+	);
+	return calls > 0 ? { ...counters, turns: calls } : counters;
 }
 
 function modelLabelFromPartial(partial: Record<string, unknown>, fallbackAgent?: unknown): string {
@@ -376,6 +381,7 @@ export function resolveSubagentSourceKey(
 
 function aggregateModelAttemptsByModel(
 	modelAttempts: unknown,
+	parentModel?: unknown,
 	fallbackAgent?: unknown,
 ): SubagentModelUsage[] {
 	if (!Array.isArray(modelAttempts)) {
@@ -386,7 +392,11 @@ function aggregateModelAttemptsByModel(
 		if (!isPlainObject(attempt) || !isPlainObject(attempt.usage)) {
 			continue;
 		}
-		const modelLabel = normalizeSubagentModelLabel(attempt.model, fallbackAgent);
+		const attemptModel =
+			typeof attempt.model === "string" && attempt.model.trim()
+				? attempt.model
+				: parentModel;
+		const modelLabel = normalizeSubagentModelLabel(attemptModel, fallbackAgent);
 		const normalized = usageCountersToRecord("", modelLabel, attempt.usage as SubagentUsageCounters);
 		if (!normalized) {
 			continue;
@@ -424,12 +434,28 @@ function recordFromPartial(
 	}
 	const modelBreakdown = aggregateModelAttemptsByModel(
 		partial.modelAttempts,
+		partial.model,
 		fallbackAgent ?? partial.agent,
 	);
 	if (modelBreakdown.length === 0) {
 		return record;
 	}
-	return { ...record, modelBreakdown };
+	const breakdownCalls = modelBreakdown.reduce((sum, usage) => sum + usage.calls, 0);
+	const calls = Math.max(record.calls, breakdownCalls);
+	if (modelBreakdown.length === 1) {
+		modelBreakdown[0]!.calls = calls;
+	} else if (calls > breakdownCalls) {
+		modelBreakdown.push({
+			modelLabel: "subagent/mixed",
+			calls: calls - breakdownCalls,
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			costUsd: 0,
+		});
+	}
+	return { ...record, calls, modelBreakdown };
 }
 
 function parseSingleSubagentResult(

@@ -373,6 +373,184 @@ describe("tps subagent usage", () => {
 		expect(record?.calls).toBe(5);
 	});
 
+	it("preserves turnCount calls in a single-model attempt breakdown", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				turnCount: 5,
+				modelAttempts: [
+					{
+						model: "model-a",
+						usage: { input: 10, output: 2, cost: 0.01 },
+					},
+				],
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record?.calls).toBe(5);
+		expect(record?.modelBreakdown).toMatchObject([
+			{ modelLabel: "model-a", calls: 5, input: 10, output: 2 },
+		]);
+
+		const stats = new Map<
+			string,
+			import("../extensions/tps-stats.js").ModelUsageEntry
+		>();
+		recordSubagentUsageRecords(stats, record ? [record] : []);
+		expect(totalModelCalls(stats)).toBe(5);
+	});
+
+	it("keeps mixed-model attempt calls and puts unattributed remainder in mixed", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				turnCount: 5,
+				modelAttempts: [
+					{
+						model: "model-a",
+						usage: { turns: 2, input: 10, output: 2, cost: 0.01 },
+					},
+					{
+						model: "model-b",
+						usage: { input: 20, output: 4, cost: 0.02 },
+					},
+				],
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record?.calls).toBe(5);
+		expect(record?.modelBreakdown).toEqual([
+			{
+				modelLabel: "model-a",
+				calls: 2,
+				input: 10,
+				output: 2,
+				cacheRead: 0,
+				cacheWrite: 0,
+				costUsd: 0.01,
+			},
+			{
+				modelLabel: "model-b",
+				calls: 1,
+				input: 20,
+				output: 4,
+				cacheRead: 0,
+				cacheWrite: 0,
+				costUsd: 0.02,
+			},
+			{
+				modelLabel: "subagent/mixed",
+				calls: 2,
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				costUsd: 0,
+			},
+		]);
+		expect(
+			record?.modelBreakdown?.reduce((sum, usage) => sum + usage.calls, 0),
+		).toBe(record?.calls);
+		const stats = new Map<
+			string,
+			import("../extensions/tps-stats.js").ModelUsageEntry
+		>();
+		recordSubagentUsageRecords(stats, record ? [record] : []);
+		expect(totalModelCalls(stats)).toBe(5);
+	});
+
+	it("uses the parent model for attempts without a model", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				model: "parent-model",
+				modelAttempts: [
+					{ usage: { turns: 2, input: 10, output: 2, cost: 0.01 } },
+				],
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record?.modelBreakdown).toMatchObject([
+			{ modelLabel: "parent-model", calls: 2 },
+		]);
+	});
+
+	it("does not fan out lower-priority counters when usage is present", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				model: "parent-model",
+				usage: { turns: 2, input: 10, output: 2, cost: 0.01 },
+				modelAttempts: [
+					{ model: "other-model", usage: { turns: 9, input: 90 } },
+				],
+				totalCost: { inputTokens: 80, outputTokens: 8, costUsd: 0.8 },
+				tokens: { input: 70, output: 7 },
+				turnCount: 7,
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record).toMatchObject({
+			modelLabel: "parent-model",
+			calls: 2,
+			input: 10,
+			output: 2,
+			costUsd: 0.01,
+		});
+		expect(record?.modelBreakdown).toBeUndefined();
+	});
+
+	it("aggregates same-model attempts without reducing explicit calls", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				turnCount: 2,
+				modelAttempts: [
+					{
+						model: "model-a",
+						usage: { turns: 2, input: 10, output: 2, cost: 0.01 },
+					},
+					{
+						model: "model-a",
+						usage: { turns: 3, input: 20, output: 4, cost: 0.02 },
+					},
+				],
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record?.calls).toBe(5);
+		expect(record?.modelBreakdown).toMatchObject([
+			{
+				modelLabel: "model-a",
+				calls: 5,
+				input: 30,
+				output: 6,
+				costUsd: 0.03,
+			},
+		]);
+	});
+
+	it("falls back all missing attempt models to the agent label", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				modelAttempts: [
+					{ usage: { turns: 1, input: 10, output: 2, cost: 0.01 } },
+					{ usage: { turns: 2, input: 20, output: 4, cost: 0.02 } },
+				],
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record?.modelBreakdown).toMatchObject([
+			{
+				modelLabel: "subagent/worker",
+				calls: 3,
+				input: 30,
+				output: 6,
+			},
+		]);
+	});
+
 	it("attributes mixed model attempts and dedupes the whole child across paths", () => {
 		const child = {
 			agent: "reviewer",
