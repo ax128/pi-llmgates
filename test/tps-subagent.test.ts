@@ -373,6 +373,35 @@ describe("tps subagent usage", () => {
 		expect(record?.calls).toBe(5);
 	});
 
+	it("attributes mixed model attempts and dedupes the whole child across paths", () => {
+		const child = {
+			agent: "reviewer",
+			modelAttempts: [
+				{ model: "model-a", usage: { turns: 1, input: 10, output: 2, cost: 0.01 } },
+				{ model: "model-b", usage: { turns: 2, input: 20, output: 4, cost: 0.02 } },
+			],
+		};
+		const fromAsync = extractSubagentUsageFromAsyncComplete(
+			{ sessionId: "s", runId: "abc12345", results: [child] },
+			"s",
+		);
+		const fromMeta = parsePiSubagentsMetaJson(child, "meta:abc12345:reviewer:0");
+		const state = createSubagentIngestState();
+		const stats = new Map<string, import("../extensions/tps-stats.js").ModelUsageEntry>();
+
+		const first = selectFreshSubagentRecords(state, fromAsync);
+		recordSubagentUsageRecords(stats, first);
+		expect(first).toHaveLength(1);
+		expect(stats.get("model-a")).toMatchObject({ calls: 1, input: 10, output: 2, costUsd: 0.01 });
+		expect(stats.get("model-b")).toMatchObject({ calls: 2, input: 20, output: 4, costUsd: 0.02 });
+		expect(totalModelCalls(stats)).toBe(3);
+
+		const duplicate = selectFreshSubagentRecords(state, fromMeta ? [fromMeta] : []);
+		expect(duplicate).toEqual([]);
+		recordSubagentUsageRecords(stats, duplicate);
+		expect(totalModelCalls(stats)).toBe(3);
+	});
+
 	it("extracts async parallel complete; skips run aggregate when per-child present", () => {
 		const records = extractSubagentUsageFromAsyncComplete(
 			{
@@ -525,11 +554,16 @@ describe("tps subagent usage", () => {
 				JSON.stringify({
 					message: { role: "assistant", usage: { input: 4, output: 2 } },
 				}),
+				JSON.stringify({
+					role: "user",
+					usage: { input: 100, output: 100, cacheRead: 100, cacheWrite: 100 },
+				}),
 			].join("\n"),
 		);
 
 		const fromSession = extractSubagentUsageFromSessionFile(sessionFile);
 		expect(fromSession?.sourceKey).toBe(`session:${sessionFile}`);
+		expect(fromSession?.calls).toBe(2);
 		expect(fromSession?.input).toBe(7);
 		expect(fromSession?.output).toBe(3);
 

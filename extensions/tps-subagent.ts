@@ -19,9 +19,7 @@ export const SUBAGENT_TOOL_NAMES = new Set(["subagent", "task"]);
 const AGENT_NAME_RE = /^[a-z0-9._-]+$/i;
 const RUN_ID_HEX_RE = /^[0-9a-f]+$/;
 
-export interface SubagentUsageRecord {
-	/** Stable dedup key for this ingestion source. */
-	sourceKey: string;
+export interface SubagentModelUsage {
 	modelLabel: string;
 	calls: number;
 	input: number;
@@ -29,6 +27,12 @@ export interface SubagentUsageRecord {
 	cacheRead: number;
 	cacheWrite: number;
 	costUsd: number;
+}
+
+export interface SubagentUsageRecord extends SubagentModelUsage {
+	/** Stable dedup key for this logical child/run ingestion source. */
+	sourceKey: string;
+	modelBreakdown?: readonly SubagentModelUsage[];
 }
 
 export interface SubagentUsageCounters {
@@ -238,15 +242,17 @@ export function recordSubagentUsageRecords(
 	records: readonly SubagentUsageRecord[],
 ): void {
 	for (const record of records) {
-		const entry = stats.get(record.modelLabel) ?? emptyModelUsageEntry();
-		entry.calls += record.calls;
-		entry.input += record.input;
-		entry.output += record.output;
-		entry.cacheRead += record.cacheRead;
-		entry.cacheWrite += record.cacheWrite;
-		entry.totalTokens += record.input + record.output + record.cacheRead + record.cacheWrite;
-		entry.costUsd += record.costUsd;
-		stats.set(record.modelLabel, entry);
+		for (const usage of record.modelBreakdown ?? [record]) {
+			const entry = stats.get(usage.modelLabel) ?? emptyModelUsageEntry();
+			entry.calls += usage.calls;
+			entry.input += usage.input;
+			entry.output += usage.output;
+			entry.cacheRead += usage.cacheRead;
+			entry.cacheWrite += usage.cacheWrite;
+			entry.totalTokens += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+			entry.costUsd += usage.costUsd;
+			stats.set(usage.modelLabel, entry);
+		}
 	}
 }
 
@@ -368,6 +374,39 @@ export function resolveSubagentSourceKey(
 	);
 }
 
+function aggregateModelAttemptsByModel(
+	modelAttempts: unknown,
+	fallbackAgent?: unknown,
+): SubagentModelUsage[] {
+	if (!Array.isArray(modelAttempts)) {
+		return [];
+	}
+	const byModel = new Map<string, SubagentModelUsage>();
+	for (const attempt of modelAttempts) {
+		if (!isPlainObject(attempt) || !isPlainObject(attempt.usage)) {
+			continue;
+		}
+		const modelLabel = normalizeSubagentModelLabel(attempt.model, fallbackAgent);
+		const normalized = usageCountersToRecord("", modelLabel, attempt.usage as SubagentUsageCounters);
+		if (!normalized) {
+			continue;
+		}
+		const usage = byModel.get(modelLabel);
+		if (usage) {
+			usage.calls += normalized.calls;
+			usage.input += normalized.input;
+			usage.output += normalized.output;
+			usage.cacheRead += normalized.cacheRead;
+			usage.cacheWrite += normalized.cacheWrite;
+			usage.costUsd += normalized.costUsd;
+		} else {
+			const { sourceKey: _, ...modelUsage } = normalized;
+			byModel.set(modelLabel, modelUsage);
+		}
+	}
+	return [...byModel.values()];
+}
+
 function recordFromPartial(
 	partial: Record<string, unknown>,
 	sourceKey: string,
@@ -379,7 +418,18 @@ function recordFromPartial(
 	}
 	const withCalls = applyCallsHint(partial, counters);
 	const modelLabel = modelLabelFromPartial(partial, fallbackAgent);
-	return usageCountersToRecord(sourceKey, modelLabel, withCalls);
+	const record = usageCountersToRecord(sourceKey, modelLabel, withCalls);
+	if (!record || (isPlainObject(partial.usage) && countersHaveSignal(partial.usage as SubagentUsageCounters))) {
+		return record;
+	}
+	const modelBreakdown = aggregateModelAttemptsByModel(
+		partial.modelAttempts,
+		fallbackAgent ?? partial.agent,
+	);
+	if (modelBreakdown.length === 0) {
+		return record;
+	}
+	return { ...record, modelBreakdown };
 }
 
 function parseSingleSubagentResult(
@@ -683,7 +733,7 @@ export function extractSubagentUsageFromSessionFile(sessionFile: string): Subage
 	let output = 0;
 	let cacheRead = 0;
 	let cacheWrite = 0;
-	let saw = false;
+	let calls = 0;
 	for (const line of text.split(/\r?\n/)) {
 		const trimmed = line.trim();
 		if (!trimmed) {
@@ -699,22 +749,27 @@ export function extractSubagentUsageFromSessionFile(sessionFile: string): Subage
 			continue;
 		}
 		const usage =
-			(isPlainObject(entry.usage) ? entry.usage : null) ??
-			(isPlainObject(entry.message) && isPlainObject(entry.message.usage) ? entry.message.usage : null);
+			entry.role === "assistant" && isPlainObject(entry.usage)
+				? entry.usage
+				: isPlainObject(entry.message) &&
+					entry.message.role === "assistant" &&
+					isPlainObject(entry.message.usage)
+					? entry.message.usage
+					: null;
 		if (!usage) {
 			continue;
 		}
-		saw = true;
+		calls++;
 		input += normalizeTokenCount(usage.input);
 		output += normalizeTokenCount(usage.output);
 		cacheRead += normalizeTokenCount(usage.cacheRead);
 		cacheWrite += normalizeTokenCount(usage.cacheWrite);
 	}
-	if (!saw) {
+	if (calls === 0) {
 		return null;
 	}
 	return usageCountersToRecord(sessionFileSourceKey(sessionFile), "subagent/session", {
-		turns: 1,
+		turns: calls,
 		input,
 		output,
 		cacheRead,
