@@ -14,7 +14,7 @@ Fix the review findings on PR #12 without changing its public configuration shap
 
 This is a focused correction to the existing PR. It does not add another catalog service, metadata cache, provider strategy, configuration file, or cache migration.
 
-The public endpoint-override file remains `llmgates/models.json`, with the existing aliases and precedence. Pi's native `providers.llmgates.modelOverrides` remains the user override layer for `thinkingLevelMap`.
+The public endpoint-override file remains `llmgates/models.json`, with the existing aliases and precedence. Pi's native `providers.<actual providerId>.modelOverrides` remains the user override layer for `thinkingLevelMap`; the default provider ID is `llmgates`.
 
 ## Design
 
@@ -37,7 +37,7 @@ For an applicable exact match, the built-in model's `reasoning` and sparse `thin
 - `xhigh` and `max` remain available only when explicitly present;
 - `off` preserves the built-in value, including `null` or a missing key.
 
-For applicable Anthropic matches, copy only `compat.forceAdaptiveThinking` when it is explicitly `true`. Do not copy the full built-in `compat` object. The resulting model type and construction path must carry this minimal compat field through to the registered `Model<Api>` so the Anthropic adapter selects `thinking.type: "adaptive"` and `output_config.effort`.
+For applicable Anthropic matches, copy `compat.forceAdaptiveThinking` when it is explicitly `true` and `compat.supportsTemperature` when it is explicitly `false`. Do not copy the full built-in `compat` object. The resulting model type and construction path must carry these minimal adapter-safety fields through to the registered `Model<Api>` so the Anthropic adapter selects `thinking.type: "adaptive"` and `output_config.effort`, and omits unsupported `temperature` for Opus 4.7+ when thinking is disabled.
 
 ### Gateway metadata and fallbacks
 
@@ -68,6 +68,10 @@ The endpoint is resolved first, then converted to the final `api`, and only then
 Cached core models restore the `api` and `thinkingLevelMap` stored at cache-write time without endpoint/thinking remapping. The existing backward-compatibility patch may add transport `compat` to old Kimi cache entries, but does not replace their thinking map. Cache-only restore and `PI_OFFLINE` do not reload endpoint/thinking metadata. A non-forced refresh inside the freshness window also returns without fetching, reloading endpoint configuration, writing the store, or remapping models.
 
 A forced network failure preserves both in-memory models and the stored entry. A normal refresh whose store write fails also preserves both old values; the fetched candidate is published only after its store write succeeds. Current endpoint/thinking metadata is therefore adopted only by a successful core catalog refresh in this order: reload and network mapping, store write, then in-memory publish. No cache schema migration, startup rewrite, periodic timer, or maximum automatic-application delay is added.
+
+All foreground and background refreshes capture the current provider session generation. A refresh may write or publish only while its generation, request ID, connection, and abort state still match. Consuming a validated login catalog advances the request ID before committing, so any catalog request started before login validation cannot overwrite the login result. Shutdown cleanup is also generation-scoped and cannot erase state established by a later session.
+
+If the login catalog's cache write fails, the validated models remain authoritative only for that provider session. The next session clears this in-memory-ahead-of-store marker and allows the persisted last-known-good catalog to restore normally. A later successful same-session refresh may still persist and retain the validated catalog.
 
 After either upgrade or rollback, cached metadata written by another version may persist across sessions until one successful core catalog refresh rewrites it with the currently running resolver.
 
@@ -106,7 +110,7 @@ The focused test matrix covers:
 - one background EISDIR test pins warning visibility, sanitized output, non-rejection, zero network requests, and old model/store retention;
 - 2API provider creation and refresh do not read the endpoint file or alter core endpoint-override memory.
 
-The suite also updates old assertions that expected synthetic `xhigh/max` for unknown models. Focused lifecycle tests, typecheck, and the repository check are run before completion.
+The suite also updates old assertions that expected synthetic `xhigh/max` for unknown models. It additionally covers a pre-login request finishing after the validated login catalog, a foreground request crossing a shutdown/new-session boundary, next-session recovery after a login cache-write failure, and Anthropic request payloads for adaptive effort and unsupported temperature. Focused lifecycle tests, typecheck, and the repository check are run before completion.
 
 ## Rollback
 
