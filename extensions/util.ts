@@ -7,8 +7,10 @@ import {
 	chmodSync,
 	closeSync,
 	constants,
+	copyFileSync,
 	existsSync,
 	fsyncSync,
+	linkSync,
 	mkdirSync,
 	openSync,
 	renameSync,
@@ -33,15 +35,48 @@ const LEGACY_FILE_MOVES: ReadonlyArray<readonly [string, string]> = [
 	["llmgates-model-pricing.json", LLMGATES_PRICING_FILE],
 ];
 
-/** One-time migration: move legacy flat agent-dir files into the llmgates/ subdir. */
+function isHardLinkUnsupported(error: unknown): boolean {
+	return (
+		isPlainObject(error) &&
+		(error.code === "EXDEV" ||
+			error.code === "ENOTSUP" ||
+			error.code === "EPERM" ||
+			error.code === "EOPNOTSUPP")
+	);
+}
+
+/**
+ * One-time migration: move legacy flat agent-dir files into the llmgates/ subdir.
+ * Prefer hard link + unlink (no clobber on EEXIST). If hard links are unsupported,
+ * copy then unlink so readers that only open the new path still see the config.
+ */
 export function migrateLegacyConfigFiles(agentDir: string): void {
 	for (const [oldName, newName] of LEGACY_FILE_MOVES) {
 		const oldPath = join(agentDir, oldName);
 		const newPath = join(agentDir, newName);
-		if (existsSync(oldPath) && !existsSync(newPath)) {
-			ensureDirMode(dirname(newPath), SECRET_DIR_MODE);
-			renameSync(oldPath, newPath);
+		if (!existsSync(oldPath)) continue;
+		ensureDirMode(dirname(newPath), SECRET_DIR_MODE);
+		try {
+			linkSync(oldPath, newPath);
+		} catch (error) {
+			// Destination won the race — keep both; never overwrite.
+			if (isPlainObject(error) && error.code === "EEXIST") {
+				continue;
+			}
+			if (!isHardLinkUnsupported(error)) {
+				throw error;
+			}
+			// Hard link unsupported (FAT/SMB/some containers): copy without clobbering.
+			try {
+				copyFileSync(oldPath, newPath, constants.COPYFILE_EXCL);
+			} catch (copyError) {
+				if (isPlainObject(copyError) && copyError.code === "EEXIST") {
+					continue;
+				}
+				throw copyError;
+			}
 		}
+		unlinkSync(oldPath);
 	}
 }
 

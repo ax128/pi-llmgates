@@ -57,14 +57,31 @@ function originOf(url: string): string {
 	return parsed.origin;
 }
 
-async function cancelBody(response: Response | undefined): Promise<void> {
-	if (!response) {
-		return;
+function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) {
+		return Promise.reject(signal.reason ?? abortError());
 	}
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason ?? abortError());
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+function cancelBody(response: Response | undefined): void {
 	try {
-		await response.body?.cancel();
+		void response?.body?.cancel().catch(() => {});
 	} catch {
-		// ignore
+		// best effort: a non-cooperative body must not delay the caller
 	}
 }
 
@@ -72,16 +89,17 @@ async function readLimitedBody(
 	response: Response,
 	options: {
 		controller: AbortController;
+		signal: AbortSignal;
 		maxBytes: number;
 		operation: string;
 	},
 ): Promise<Buffer> {
-	const { controller, maxBytes, operation } = options;
+	const { controller, signal, maxBytes, operation } = options;
 	const contentLength = response.headers.get("content-length");
 	if (contentLength) {
 		const declared = Number(contentLength);
 		if (Number.isFinite(declared) && declared > maxBytes) {
-			await cancelBody(response);
+			cancelBody(response);
 			throw new ResponseLimitError(operation, maxBytes);
 		}
 	}
@@ -95,8 +113,8 @@ async function readLimitedBody(
 	let total = 0;
 	try {
 		while (true) {
-			// Rejects with the abort reason when the composed signal fires mid-body.
-			const { done, value } = await reader.read();
+			const { done, value } = await withAbort(reader.read(), signal);
+			if (signal.aborted) throw signal.reason ?? abortError();
 			if (done) {
 				break;
 			}
@@ -104,9 +122,9 @@ async function readLimitedBody(
 			if (total > maxBytes) {
 				controller.abort();
 				try {
-					await reader.cancel();
+					void reader.cancel().catch(() => {});
 				} catch {
-					// ignore
+					// best effort
 				}
 				throw new ResponseLimitError(operation, maxBytes);
 			}
@@ -170,16 +188,17 @@ export async function requestLimitedJson(options: {
 				throw new Error(validated.error ?? "invalid request URL");
 			}
 
-			response = await fetchImpl(currentUrl, {
+			response = await withAbort(fetchImpl(currentUrl, {
 				method: "GET",
 				headers,
 				redirect: "manual",
 				signal,
-			});
+			}), signal);
+			if (signal.aborted) throw signal.reason ?? abortError();
 
 			if (response.status >= 300 && response.status < 400) {
 				const location = response.headers.get("location");
-				await cancelBody(response);
+				cancelBody(response);
 				if (!location) {
 					throw new Error(`${operation} redirect missing Location header`);
 				}
@@ -199,7 +218,7 @@ export async function requestLimitedJson(options: {
 				continue;
 			}
 
-			const body = await readLimitedBody(response, { controller, maxBytes, operation });
+			const body = await readLimitedBody(response, { controller, signal, maxBytes, operation });
 
 			if (response.status < 200 || response.status >= 300) {
 				throw new HttpStatusError(operation, response.status, response.statusText);
@@ -222,6 +241,6 @@ export async function requestLimitedJson(options: {
 		}
 		throw error;
 	} finally {
-		await cancelBody(response);
+		cancelBody(response);
 	}
 }

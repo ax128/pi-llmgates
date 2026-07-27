@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 	collectPiSubagentsMetaUsage,
 	createSubagentIngestState,
 	extractSubagentRunAggregateFromAsyncStatus,
+	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromAsyncStatus,
 	extractSubagentUsageFromSessionFile,
@@ -27,6 +28,28 @@ const UUID_RUN = "1d706627-aada-4828-9207-bbab8fad3864";
 const UUID_NORM = "1d706627aada48289207bbab8fad3864";
 
 describe("tps subagent usage", () => {
+	it("extracts and normalizes owned run IDs from tool result root, details, and results", () => {
+		expect(
+			extractSubagentRunIdsFromToolExecution("subagent", {
+				runId: "AA-AA",
+				details: {
+					runId: "BB-BB",
+					async: true,
+					results: [
+						{ runId: "aa-aa" },
+						{ runId: "CC-CC" },
+						{ runId: "not-a-run" },
+					],
+				},
+			}),
+		).toEqual(["aaaa", "bbbb", "cccc"]);
+		expect(extractSubagentRunIdsFromToolExecution("task", { runId: UUID_RUN })).toEqual([
+			UUID_NORM,
+		]);
+		expect(extractSubagentRunIdsFromToolExecution("bash", { runId: UUID_RUN })).toEqual([]);
+		expect(extractSubagentRunIdsFromToolExecution("subagent", { runId: "invalid" })).toEqual([]);
+	});
+
 	it("extracts pi subagent tool usage from nested results", () => {
 		const records = extractSubagentUsageFromToolExecution(
 			"subagent",
@@ -186,6 +209,39 @@ describe("tps subagent usage", () => {
 
 		const second = collectPiSubagentsMetaUsage(artifactsDir, sessionStartedAtMs, ingested);
 		expect(second).toHaveLength(0);
+	});
+
+	it("filters current-window meta usage to explicitly allowed run IDs", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-owned-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		for (const [runId, input] of [["aaaa1111", 11], ["bbbb2222", 22]] as const) {
+			writeFileSync(
+				join(artifactsDir, `${runId}_worker_0_meta.json`),
+				JSON.stringify({
+					agent: "worker",
+					model: "owned-model",
+					usage: { turns: 1, input, output: 1, cost: 0 },
+				}),
+			);
+		}
+		const sessionStartedAtMs = Date.now() - 1000;
+		const records = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			sessionStartedAtMs,
+			new Set(),
+			new Set(["aaaa1111"]),
+		);
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({ sourceKey: "meta:aaaa1111:worker:0", input: 11 });
+		expect(
+			collectPiSubagentsMetaUsage(
+				artifactsDir,
+				sessionStartedAtMs,
+				new Set(),
+				new Set(),
+			),
+		).toEqual([]);
 	});
 
 	it("merges subagent usage into session totals", () => {
@@ -373,6 +429,213 @@ describe("tps subagent usage", () => {
 		expect(record?.calls).toBe(5);
 	});
 
+	it("preserves turnCount calls in a single-model attempt breakdown", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				turnCount: 5,
+				modelAttempts: [
+					{
+						model: "model-a",
+						usage: { input: 10, output: 2, cost: 0.01 },
+					},
+				],
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record?.calls).toBe(5);
+		expect(record?.modelBreakdown).toMatchObject([
+			{ modelLabel: "model-a", calls: 5, input: 10, output: 2 },
+		]);
+
+		const stats = new Map<
+			string,
+			import("../extensions/tps-stats.js").ModelUsageEntry
+		>();
+		recordSubagentUsageRecords(stats, record ? [record] : []);
+		expect(totalModelCalls(stats)).toBe(5);
+	});
+
+	it("keeps mixed-model attempt calls and puts unattributed remainder in mixed", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				turnCount: 5,
+				modelAttempts: [
+					{
+						model: "model-a",
+						usage: { turns: 2, input: 10, output: 2, cost: 0.01 },
+					},
+					{
+						model: "model-b",
+						usage: { input: 20, output: 4, cost: 0.02 },
+					},
+				],
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record?.calls).toBe(5);
+		expect(record?.modelBreakdown).toEqual([
+			{
+				modelLabel: "model-a",
+				calls: 2,
+				input: 10,
+				output: 2,
+				cacheRead: 0,
+				cacheWrite: 0,
+				costUsd: 0.01,
+			},
+			{
+				modelLabel: "model-b",
+				calls: 1,
+				input: 20,
+				output: 4,
+				cacheRead: 0,
+				cacheWrite: 0,
+				costUsd: 0.02,
+			},
+			{
+				modelLabel: "subagent/mixed",
+				calls: 2,
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				costUsd: 0,
+			},
+		]);
+		expect(
+			record?.modelBreakdown?.reduce((sum, usage) => sum + usage.calls, 0),
+		).toBe(record?.calls);
+		const stats = new Map<
+			string,
+			import("../extensions/tps-stats.js").ModelUsageEntry
+		>();
+		recordSubagentUsageRecords(stats, record ? [record] : []);
+		expect(totalModelCalls(stats)).toBe(5);
+	});
+
+	it("uses the parent model for attempts without a model", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				model: "parent-model",
+				modelAttempts: [
+					{ usage: { turns: 2, input: 10, output: 2, cost: 0.01 } },
+				],
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record?.modelBreakdown).toMatchObject([
+			{ modelLabel: "parent-model", calls: 2 },
+		]);
+	});
+
+	it("does not fan out lower-priority counters when usage is present", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				model: "parent-model",
+				usage: { turns: 2, input: 10, output: 2, cost: 0.01 },
+				modelAttempts: [
+					{ model: "other-model", usage: { turns: 9, input: 90 } },
+				],
+				totalCost: { inputTokens: 80, outputTokens: 8, costUsd: 0.8 },
+				tokens: { input: 70, output: 7 },
+				turnCount: 7,
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record).toMatchObject({
+			modelLabel: "parent-model",
+			calls: 2,
+			input: 10,
+			output: 2,
+			costUsd: 0.01,
+		});
+		expect(record?.modelBreakdown).toBeUndefined();
+	});
+
+	it("aggregates same-model attempts without reducing explicit calls", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				turnCount: 2,
+				modelAttempts: [
+					{
+						model: "model-a",
+						usage: { turns: 2, input: 10, output: 2, cost: 0.01 },
+					},
+					{
+						model: "model-a",
+						usage: { turns: 3, input: 20, output: 4, cost: 0.02 },
+					},
+				],
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record?.calls).toBe(5);
+		expect(record?.modelBreakdown).toMatchObject([
+			{
+				modelLabel: "model-a",
+				calls: 5,
+				input: 30,
+				output: 6,
+				costUsd: 0.03,
+			},
+		]);
+	});
+
+	it("falls back all missing attempt models to the agent label", () => {
+		const record = parsePiSubagentsMetaJson(
+			{
+				agent: "worker",
+				modelAttempts: [
+					{ usage: { turns: 1, input: 10, output: 2, cost: 0.01 } },
+					{ usage: { turns: 2, input: 20, output: 4, cost: 0.02 } },
+				],
+			},
+			"meta:abc12345:worker:0",
+		);
+		expect(record?.modelBreakdown).toMatchObject([
+			{
+				modelLabel: "subagent/worker",
+				calls: 3,
+				input: 30,
+				output: 6,
+			},
+		]);
+	});
+
+	it("attributes mixed model attempts and dedupes the whole child across paths", () => {
+		const child = {
+			agent: "reviewer",
+			modelAttempts: [
+				{ model: "model-a", usage: { turns: 1, input: 10, output: 2, cost: 0.01 } },
+				{ model: "model-b", usage: { turns: 2, input: 20, output: 4, cost: 0.02 } },
+			],
+		};
+		const fromAsync = extractSubagentUsageFromAsyncComplete(
+			{ sessionId: "s", runId: "abc12345", results: [child] },
+			"s",
+		);
+		const fromMeta = parsePiSubagentsMetaJson(child, "meta:abc12345:reviewer:0");
+		const state = createSubagentIngestState();
+		const stats = new Map<string, import("../extensions/tps-stats.js").ModelUsageEntry>();
+
+		const first = selectFreshSubagentRecords(state, fromAsync);
+		recordSubagentUsageRecords(stats, first);
+		expect(first).toHaveLength(1);
+		expect(stats.get("model-a")).toMatchObject({ calls: 1, input: 10, output: 2, costUsd: 0.01 });
+		expect(stats.get("model-b")).toMatchObject({ calls: 2, input: 20, output: 4, costUsd: 0.02 });
+		expect(totalModelCalls(stats)).toBe(3);
+
+		const duplicate = selectFreshSubagentRecords(state, fromMeta ? [fromMeta] : []);
+		expect(duplicate).toEqual([]);
+		recordSubagentUsageRecords(stats, duplicate);
+		expect(totalModelCalls(stats)).toBe(3);
+	});
+
 	it("extracts async parallel complete; skips run aggregate when per-child present", () => {
 		const records = extractSubagentUsageFromAsyncComplete(
 			{
@@ -525,11 +788,16 @@ describe("tps subagent usage", () => {
 				JSON.stringify({
 					message: { role: "assistant", usage: { input: 4, output: 2 } },
 				}),
+				JSON.stringify({
+					role: "user",
+					usage: { input: 100, output: 100, cacheRead: 100, cacheWrite: 100 },
+				}),
 			].join("\n"),
 		);
 
 		const fromSession = extractSubagentUsageFromSessionFile(sessionFile);
 		expect(fromSession?.sourceKey).toBe(`session:${sessionFile}`);
+		expect(fromSession?.calls).toBe(2);
 		expect(fromSession?.input).toBe(7);
 		expect(fromSession?.output).toBe(3);
 

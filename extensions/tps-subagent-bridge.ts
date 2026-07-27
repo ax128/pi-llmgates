@@ -1,6 +1,8 @@
 import type { EventBus } from "@earendil-works/pi-coding-agent";
 import {
 	extractSubagentUsageFromAsyncComplete,
+	normalizeRunIdForSourceKey,
+	subagentRunAggregateSourceKey,
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
 import { envFlag, isPlainObject } from "./util.js";
@@ -11,7 +13,8 @@ export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete"
 export interface SubagentUsageBridgeOptions {
 	sessionId: string | null | undefined;
 	onRecords: (records: readonly SubagentUsageRecord[]) => void;
-	onForegroundComplete?: () => void;
+	onRunObserved?: (normalizedRunId: string) => void;
+	onForegroundComplete?: (normalizedRunId: string) => void;
 	enabled?: boolean;
 }
 
@@ -40,7 +43,35 @@ export function registerSubagentUsageBridge(
 		return () => {};
 	}
 
+	const matchingSession = (data: unknown): data is Record<string, unknown> =>
+		Boolean(
+			options.sessionId &&
+				isPlainObject(data) &&
+				typeof data.sessionId === "string" &&
+				data.sessionId === options.sessionId,
+		);
+
+	const matchingRunId = (data: Record<string, unknown>): string | null => {
+		const candidate =
+			typeof data.runId === "string"
+				? data.runId
+				: typeof data.id === "string"
+					? data.id
+					: null;
+		if (!candidate || !subagentRunAggregateSourceKey(candidate)) {
+			return null;
+		}
+		return normalizeRunIdForSourceKey(candidate);
+	};
+
 	const onAsyncComplete = (data: unknown): void => {
+		if (!matchingSession(data)) {
+			return;
+		}
+		const runId = matchingRunId(data);
+		if (runId) {
+			options.onRunObserved?.(runId);
+		}
 		const records = extractSubagentUsageFromAsyncComplete(data, options.sessionId);
 		if (records.length > 0) {
 			options.onRecords(records);
@@ -48,14 +79,15 @@ export function registerSubagentUsageBridge(
 	};
 
 	const onForegroundComplete = (data: unknown): void => {
-		if (!options.onForegroundComplete || !options.sessionId) {
+		if (!matchingSession(data)) {
 			return;
 		}
-		// Match async-complete: require sessionId equality (missing/mismatched → no-op).
-		if (!isPlainObject(data) || typeof data.sessionId !== "string" || data.sessionId !== options.sessionId) {
+		const runId = matchingRunId(data);
+		if (!runId) {
 			return;
 		}
-		options.onForegroundComplete();
+		options.onRunObserved?.(runId);
+		options.onForegroundComplete?.(runId);
 	};
 
 	const offAsync = events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, onAsyncComplete);

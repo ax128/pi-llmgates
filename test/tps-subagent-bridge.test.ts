@@ -62,14 +62,16 @@ describe("tps-subagent-bridge", () => {
 		expect(isSubagentBridgeEnabled()).toBe(true);
 	});
 
-	it("register then emit async-complete triggers onRecords", () => {
+	it("register then emit async-complete observes the normalized run and triggers onRecords", () => {
 		const bus = createMemoryEventBus();
 		const batches: SubagentUsageRecord[][] = [];
+		const observed: string[] = [];
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
 			onRecords: (records) => {
 				batches.push([...records]);
 			},
+			onRunObserved: (runId) => observed.push(runId),
 		});
 
 		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
@@ -89,9 +91,69 @@ describe("tps-subagent-bridge", () => {
 			],
 		});
 
+		expect(observed).toEqual(["1d706627aada48289207bbab8fad3864"]);
 		expect(batches).toHaveLength(1);
 		expect(batches[0]).toHaveLength(1);
 		expect(batches[0]?.[0]?.input).toBe(10);
+		unregister();
+	});
+
+	it("observes a matching async run even when the event has no usage", () => {
+		const bus = createMemoryEventBus();
+		const observed: string[] = [];
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1",
+			onRecords: () => {},
+			onRunObserved: (runId) => observed.push(runId),
+		});
+
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			sessionId: "sess-1",
+			runId: UUID_RUN,
+			results: [],
+		});
+		expect(observed).toEqual(["1d706627aada48289207bbab8fad3864"]);
+		unregister();
+	});
+
+	it("delivers async-complete usage when session matches but runId is missing or invalid", () => {
+		const bus = createMemoryEventBus();
+		const batches: SubagentUsageRecord[][] = [];
+		const observed: string[] = [];
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1",
+			onRecords: (records) => {
+				batches.push([...records]);
+			},
+			onRunObserved: (runId) => observed.push(runId),
+		});
+
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			sessionId: "sess-1",
+			results: [
+				{
+					agent: "reviewer",
+					model: "llmgates/gpt-5.6-sol",
+					usage: { turns: 1, input: 7, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0 },
+				},
+			],
+		});
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			sessionId: "sess-1",
+			runId: "not-a-hex-run",
+			results: [
+				{
+					agent: "reviewer",
+					model: "llmgates/gpt-5.6-sol",
+					usage: { turns: 1, input: 3, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+				},
+			],
+		});
+
+		expect(observed).toEqual([]);
+		expect(batches).toHaveLength(2);
+		expect(batches[0]?.[0]?.input).toBe(7);
+		expect(batches[1]?.[0]?.input).toBe(3);
 		unregister();
 	});
 
@@ -122,22 +184,25 @@ describe("tps-subagent-bridge", () => {
 		unregister();
 	});
 
-	it("unregister stops further emits and foreground-complete calls rescan", () => {
+	it("unregister stops further emits and matching foreground-complete observes before rescan", () => {
 		const bus = createMemoryEventBus();
 		let recordsCalls = 0;
-		let foregroundCalls = 0;
+		const observed: string[] = [];
+		const foregroundRuns: string[] = [];
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
 			onRecords: () => {
 				recordsCalls += 1;
 			},
-			onForegroundComplete: () => {
-				foregroundCalls += 1;
+			onRunObserved: (runId) => observed.push(runId),
+			onForegroundComplete: (runId) => {
+				foregroundRuns.push(runId);
 			},
 		});
 
 		bus.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, { sessionId: "sess-1", runId: UUID_RUN });
-		expect(foregroundCalls).toBe(1);
+		expect(observed).toEqual(["1d706627aada48289207bbab8fad3864"]);
+		expect(foregroundRuns).toEqual(["1d706627aada48289207bbab8fad3864"]);
 
 		unregister();
 		bus.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, { sessionId: "sess-1", runId: UUID_RUN });
@@ -153,16 +218,21 @@ describe("tps-subagent-bridge", () => {
 				},
 			],
 		});
-		expect(foregroundCalls).toBe(1);
+		expect(foregroundRuns).toHaveLength(1);
+		expect(observed).toHaveLength(1);
 		expect(recordsCalls).toBe(0);
 	});
 
-	it("ignores foreground-complete without matching sessionId", () => {
+	it("does not observe completion events without an exact session match", () => {
 		const bus = createMemoryEventBus();
 		let foregroundCalls = 0;
+		let observedCalls = 0;
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
 			onRecords: () => {},
+			onRunObserved: () => {
+				observedCalls += 1;
+			},
 			onForegroundComplete: () => {
 				foregroundCalls += 1;
 			},
@@ -170,7 +240,10 @@ describe("tps-subagent-bridge", () => {
 
 		bus.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, { runId: UUID_RUN });
 		bus.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, { sessionId: "other", runId: UUID_RUN });
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { runId: UUID_RUN, results: [] });
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { sessionId: "other", runId: UUID_RUN, results: [] });
 		expect(foregroundCalls).toBe(0);
+		expect(observedCalls).toBe(0);
 		unregister();
 	});
 
