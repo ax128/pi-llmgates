@@ -27,6 +27,49 @@ describe("requestLimitedJson", () => {
 		}
 	});
 
+	it("times out when an injected fetch ignores AbortSignal", async () => {
+		await expect(
+			requestLimitedJson({
+				url: "https://example.com/v1/models",
+				headers: {},
+				timeoutMs: 20,
+				operation: "models",
+				fetchImpl: () => new Promise<Response>(() => {}),
+			}),
+		).rejects.toBeInstanceOf(RequestTimeoutError);
+	}, 500);
+
+	it("times out when an injected response stream ignores AbortSignal", async () => {
+		const body = new ReadableStream<Uint8Array>({
+			pull: () => new Promise<void>(() => {}),
+			cancel: () => new Promise<void>(() => {}),
+		});
+		await expect(
+			requestLimitedJson({
+				url: "https://example.com/v1/models",
+				headers: {},
+				timeoutMs: 20,
+				operation: "models",
+				fetchImpl: async () => new Response(body),
+			}),
+		).rejects.toBeInstanceOf(RequestTimeoutError);
+	}, 500);
+
+	it("preserves caller abort when an injected fetch ignores AbortSignal", async () => {
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(), 10);
+		await expect(
+			requestLimitedJson({
+				url: "https://example.com/v1/models",
+				headers: {},
+				signal: controller.signal,
+				timeoutMs: 200,
+				operation: "models",
+				fetchImpl: () => new Promise<Response>(() => {}),
+			}),
+		).rejects.toMatchObject({ name: "AbortError" });
+	}, 500);
+
 	it("aborts oversized body even without content-length", async () => {
 		const server = await startLoopbackServer([
 			{
