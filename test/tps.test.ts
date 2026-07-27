@@ -36,7 +36,7 @@ describe("tps stats cost", () => {
 		expect(formatCostUsd(12.3)).toBe("$12.30");
 	});
 
-	it("formats status line with cost instead of sub", () => {
+	it("formats a compact turn status", () => {
 		const stats = new Map([
 			[
 				"llmgates/gpt-5.6-sol",
@@ -51,8 +51,9 @@ describe("tps stats cost", () => {
 				},
 			],
 		]);
-		expect(formatTpsStatusLine(45, stats, 0.012)).toContain("cost $0.020");
-		expect(formatTpsStatusLine(45, stats, 0.012)).not.toContain("(sub)");
+		expect(formatTpsStatusLine(45, stats, 99)).toBe("45s · 2c · $0.020");
+		expect(formatTpsStatusLine(1_020, stats)).toBe("17m · 2c · $0.020");
+		expect(formatTpsStatusLine(0, new Map())).toBe("0s · 0c · $0.000");
 	});
 
 	it("includes per-model cost in breakdown", () => {

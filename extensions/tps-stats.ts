@@ -307,55 +307,22 @@ export function formatUsageBreakdownOptions(stats: ReadonlyMap<string, ModelUsag
 }
 
 export function formatElapsed(totalSeconds: number): string {
-	const safeSeconds = Math.max(0, Math.floor(totalSeconds));
-	const days = Math.floor(safeSeconds / 86400);
-	const hours = Math.floor((safeSeconds % 86400) / 3600);
-	const minutes = Math.floor((safeSeconds % 3600) / 60);
-	const seconds = safeSeconds % 60;
-
-	const units: Array<{ value: number; suffix: string }> = [
-		{ value: days, suffix: "d" },
-		{ value: hours, suffix: "h" },
-		{ value: minutes, suffix: "m" },
-		{ value: seconds, suffix: "s" },
-	];
-
-	const parts: string[] = [];
-	let started = false;
-	for (let i = 0; i < units.length; i++) {
-		const unit = units[i]!;
-		if (!started) {
-			if (unit.value === 0 && i < units.length - 1) continue;
-			started = true;
-		}
-		parts.push(`${unit.value}${unit.suffix}`);
-	}
-	return parts.join(" ");
+	const seconds = Math.max(0, Math.floor(totalSeconds));
+	if (seconds >= 86400) return `${Math.floor(seconds / 86400)}d`;
+	if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h`;
+	if (seconds >= 60) return `${Math.floor(seconds / 60)}m`;
+	return `${seconds}s`;
 }
 
 export function formatTpsStatusLine(
 	elapsedSeconds: number,
 	stats: ReadonlyMap<string, ModelUsageEntry>,
-	sessionCostUsd?: number,
+	_sessionCostUsd?: number,
 ): string {
 	const elapsed = formatElapsed(elapsedSeconds);
 	const calls = totalModelCalls(stats);
 	const turnCost = totalCostUsd(stats);
-	if (calls === 0 && turnCost === 0) {
-		return `Elapsed ${elapsed}`;
-	}
-
-	const parts = [`Elapsed ${elapsed}`];
-	if (calls > 0) {
-		const callLabel = calls === 1 ? "call" : "calls";
-		parts.push(`${calls.toLocaleString()} ${callLabel}`);
-	}
-	parts.push(`cost ${formatCostUsd(turnCost)}`);
-	if (typeof sessionCostUsd === "number" && sessionCostUsd > turnCost) {
-		parts.push(`session ${formatCostUsd(sessionCostUsd)}`);
-	}
-	parts.push("(/calls)");
-	return parts.join(" · ");
+	return `${elapsed} · ${calls.toLocaleString()}c · ${formatCostUsd(turnCost)}`;
 }
 
 export function formatUsageScopeTitle(scope: "turn" | "session", stats: ReadonlyMap<string, ModelUsageEntry>): string {
