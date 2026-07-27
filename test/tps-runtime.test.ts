@@ -163,7 +163,7 @@ describe("tps runtime subagent ordering", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 
 			const refreshed = runtime.statuses.slice(statusCount).some(
-				(status) => typeof status.value === "string" && status.value.includes("1 call"),
+				(status) => typeof status.value === "string" && /\b1c\b/.test(status.value),
 			);
 			expect(refreshed).toBe(true);
 		} finally {
