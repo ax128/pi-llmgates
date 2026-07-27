@@ -281,6 +281,7 @@ describe("native oauth login", () => {
 			expect(provider.getModels().map((model) => model.id)).toEqual(["validated"]);
 			expect((await store.read())?.models.map((model) => model.id)).toEqual(["validated"]);
 		} finally {
+			delete process.env.LLMGATES_PRICING_AUTO_UPDATE;
 			releaseStale();
 			cleanup();
 			await server.close();
