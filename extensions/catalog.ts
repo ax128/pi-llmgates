@@ -66,7 +66,7 @@ export interface PiProviderModel {
 	maxTokens: number;
 	api: PiApiType;
 	thinkingLevelMap?: ThinkingLevelMap;
-	compat?: { forceAdaptiveThinking: true };
+	compat?: { forceAdaptiveThinking?: true; supportsTemperature?: false };
 }
 
 export interface CreditsSnapshot {
@@ -229,7 +229,7 @@ export const MODEL_THINKING_RULES: readonly ModelThinkingRule[] = [
 interface ExactThinkingMetadata {
 	reasoning: boolean;
 	thinkingLevelMap?: ThinkingLevelMap;
-	compat?: { forceAdaptiveThinking: true };
+	compat?: { forceAdaptiveThinking?: true; supportsTemperature?: false };
 }
 
 function resolveExactThinkingMetadata(
@@ -246,13 +246,17 @@ function resolveExactThinkingMetadata(
 		: undefined;
 	if (!builtin) return undefined;
 
+	const builtinCompat = provider === "anthropic"
+		? builtin.compat as { forceAdaptiveThinking?: boolean; supportsTemperature?: boolean } | undefined
+		: undefined;
+	const compat = {
+		...(builtinCompat?.forceAdaptiveThinking === true ? { forceAdaptiveThinking: true as const } : {}),
+		...(builtinCompat?.supportsTemperature === false ? { supportsTemperature: false as const } : {}),
+	};
 	return {
 		reasoning: builtin.reasoning,
 		thinkingLevelMap: builtin.thinkingLevelMap ? { ...builtin.thinkingLevelMap } : undefined,
-		...(provider === "anthropic" &&
-			(builtin.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking === true
-			? { compat: { forceAdaptiveThinking: true as const } }
-			: {}),
+		...(Object.keys(compat).length > 0 ? { compat } : {}),
 	};
 }
 

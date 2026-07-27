@@ -399,6 +399,122 @@ describe("lifecycle", () => {
 		}
 	});
 
+	it("does not let a foreground refresh commit into a later session", async () => {
+		let release!: () => void;
+		let markStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				onRequest: markStarted,
+				body: async function* () {
+					await gate;
+					yield Buffer.from(JSON.stringify([{ id: "old-session", name: "Old session" }]));
+				},
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			const credential = {
+				type: "api_key" as const,
+				key: "k",
+				env: {
+					LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+					LLMGATES_RESOLVED_SOURCE: "env",
+				},
+			};
+			provider.beginSession("first");
+			const refresh = provider.refreshModels!({
+				store,
+				allowNetwork: true,
+				force: true,
+				credential,
+			});
+			await started;
+			await provider.shutdown();
+			provider.beginSession("second");
+			release();
+			await refresh;
+
+			expect(provider.getModels()).toEqual([]);
+			expect(store.writes).toHaveLength(0);
+		} finally {
+			release();
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("does not publish a foreground cache write completed in a later session", async () => {
+		let releaseWrite!: () => void;
+		let markWriteStarted!: () => void;
+		const writeStarted = new Promise<void>((resolve) => {
+			markWriteStarted = resolve;
+		});
+		const writeGate = new Promise<void>((resolve) => {
+			releaseWrite = resolve;
+		});
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				body: JSON.stringify([{ id: "old-session", name: "Old session" }]),
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			const write = store.write.bind(store);
+			store.write = async (entry) => {
+				markWriteStarted();
+				await writeGate;
+				await write(entry);
+			};
+			provider.beginSession("first");
+			const refresh = provider.refreshModels!({
+				store,
+				allowNetwork: true,
+				force: true,
+				credential: {
+					type: "api_key",
+					key: "k",
+					env: {
+						LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+						LLMGATES_RESOLVED_SOURCE: "env",
+					},
+				},
+			});
+			await writeStarted;
+			await provider.shutdown();
+			provider.beginSession("second");
+			releaseWrite();
+			await refresh;
+
+			expect(provider.getModels()).toEqual([]);
+		} finally {
+			releaseWrite();
+			cleanup();
+			await server.close();
+		}
+	});
+
 	it("shutdown aborts and ignores late commits", async () => {
 		let release!: () => void;
 		const gate = new Promise<void>((resolve) => {

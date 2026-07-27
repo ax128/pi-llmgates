@@ -235,6 +235,10 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	}
 	reloadEndpointOverride();
 
+	function lifecycleMatches(expectedGeneration: number): boolean {
+		return !shutDown && generation === expectedGeneration;
+	}
+
 	function track<T>(promise: Promise<T>): Promise<T> {
 		activeTasks.add(promise);
 		void promise.finally(() => activeTasks.delete(promise));
@@ -384,9 +388,10 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	}
 
 	async function refreshModels(context: RefreshModelsContext): Promise<void> {
-		if (shutDown) {
-			return;
-		}
+		const refreshGeneration = generation;
+		if (!lifecycleMatches(refreshGeneration)) return;
+		const requestId = nextRequestId++;
+		latestRequestId = requestId;
 		// Always capture scoped store for current runtime.
 		scopedStore = context.store;
 
@@ -407,10 +412,12 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		// Cache restore first.
 		try {
 			const stored = await context.store.read();
+			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
 			if (stored && (!modelsAheadOfStore || connectionChanged)) {
 				restoreFromStoreEntry(stored, connection);
 			}
 		} catch (error) {
+			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
 			logWarn(`Failed to read model cache: ${error instanceof Error ? error.message : String(error)}`);
 		}
 
@@ -425,14 +432,16 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			const pendingConnection = pending.connection;
 			clearPending();
 			await withCommit(async () => {
-				if (shutDown) return;
+				if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
 				try {
 					await context.store.write({ models: candidate, checkedAt: now() });
+					if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
 					modelsAheadOfStore = false;
 					setModels(candidate, true);
 					lastConnection = pendingConnection;
 					lastCheckedAt = now();
 				} catch (error) {
+					if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
 					// Login exception: keep old disk cache, publish in-memory models.
 					modelsAheadOfStore = true;
 					setModels(candidate, true);
@@ -474,19 +483,20 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			return;
 		}
 
-		const requestId = nextRequestId++;
-		latestRequestId = requestId;
 		const requestConnection = connection;
 
 		const fetched = await fetchCatalog(requestConnection, context.signal);
 		await withCommit(async () => {
-			if (shutDown) return;
+			if (!lifecycleMatches(refreshGeneration)) return;
 			if (context.signal?.aborted) {
 				throw new DOMException("The operation was aborted.", "AbortError");
 			}
 			if (requestId !== latestRequestId) return;
 			if (!connectionStillMatches(requestConnection)) return;
 			await context.store.write({ models: fetched, checkedAt: now() });
+			if (!lifecycleMatches(refreshGeneration)) return;
+			if (requestId !== latestRequestId) return;
+			if (!connectionStillMatches(requestConnection)) return;
 			modelsAheadOfStore = false;
 			setModels(fetched, true);
 			lastConnection = requestConnection;
@@ -706,7 +716,10 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				if (controller.signal.aborted) return;
 				if (!connectionStillMatches(requestConnection)) return;
 				await store.write({ models: fetched, checkedAt: now() });
-				if (shutDown || gen !== generation) return;
+				if (!lifecycleMatches(gen)) return;
+				if (requestId !== latestRequestId) return;
+				if (controller.signal.aborted) return;
+				if (!connectionStillMatches(requestConnection)) return;
 				modelsAheadOfStore = false;
 				setModels(fetched, true);
 				lastConnection = requestConnection;
@@ -744,6 +757,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				sessionController.abort();
 			}
 			generation += 1;
+			modelsAheadOfStore = false;
 			sessionController = new AbortController();
 			activeControllers.add(sessionController);
 			shutDown = false;
@@ -758,6 +772,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		async shutdown(): Promise<void> {
 			shutDown = true;
 			generation += 1;
+			const shutdownGeneration = generation;
 			wantBackgroundRefresh = false;
 			clearPending();
 			for (const controller of activeControllers) {
@@ -765,6 +780,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			}
 			sessionController?.abort();
 			await Promise.allSettled([...activeTasks]);
+			if (generation !== shutdownGeneration || !shutDown) return;
 			activeTasks.clear();
 			activeControllers.clear();
 			sessionController = null;

@@ -1,3 +1,5 @@
+import type { Context, Model } from "@earendil-works/pi-ai";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	applyGatewayModelCosts,
@@ -157,14 +159,61 @@ describe("toPiModel", () => {
 		},
 	);
 
-	it.each(["claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5"])(
-		"preserves adaptive xhigh/max metadata for %s",
+	it.each(["claude-opus-4-7", "claude-opus-4-8"])(
+		"preserves adaptive xhigh/max metadata and disables temperature for %s",
 		(id) => {
 			const model = toPiModel({ id, provider_id: "anthropic", web_chat_endpoint: "messages" });
-			expect(model?.compat).toEqual({ forceAdaptiveThinking: true });
+			expect(model?.compat).toEqual({ forceAdaptiveThinking: true, supportsTemperature: false });
 			expect(model?.thinkingLevelMap).toEqual({ xhigh: "xhigh", max: "max" });
 		},
 	);
+
+	it("drives adaptive effort and omits unsupported temperature in Anthropic payloads", async () => {
+		const mapped = toPiModel({
+			id: "claude-opus-4-7",
+			provider_id: "anthropic",
+			web_chat_endpoint: "messages",
+		});
+		const model = providerModelsToStoredModels("llmgates", [mapped!], "https://example.invalid/v1")[0] as Model<"anthropic-messages">;
+		const context: Context = { messages: [] };
+		const api = anthropicMessagesApi();
+		let adaptivePayload: Record<string, unknown> | undefined;
+		await api.streamSimple(model, context, {
+			apiKey: "test-key",
+			reasoning: "max",
+			temperature: 0.7,
+			onPayload(payload) {
+				adaptivePayload = payload as Record<string, unknown>;
+				throw new Error("payload captured");
+			},
+		}).result();
+		expect(adaptivePayload).toMatchObject({
+			thinking: { type: "adaptive" },
+			output_config: { effort: "max" },
+		});
+		expect(adaptivePayload).not.toHaveProperty("temperature");
+
+		let disabledPayload: Record<string, unknown> | undefined;
+		await api.streamSimple(model, context, {
+			apiKey: "test-key",
+			temperature: 0.7,
+			onPayload(payload) {
+				disabledPayload = payload as Record<string, unknown>;
+				throw new Error("payload captured");
+			},
+		}).result();
+		expect(disabledPayload).not.toHaveProperty("temperature");
+	});
+
+	it("preserves adaptive xhigh/max metadata for Claude Sonnet 5", () => {
+		const model = toPiModel({
+			id: "claude-sonnet-5",
+			provider_id: "anthropic",
+			web_chat_endpoint: "messages",
+		});
+		expect(model?.compat).toEqual({ forceAdaptiveThinking: true });
+		expect(model?.thinkingLevelMap).toEqual({ xhigh: "xhigh", max: "max" });
+	});
 
 	it("preserves Claude Fable off:null and extended levels", () => {
 		const model = toPiModel({
@@ -294,7 +343,7 @@ describe("toPiModel", () => {
 		});
 
 		expect(model?.api).toBe("anthropic-messages");
-		expect(model?.compat).toEqual({ forceAdaptiveThinking: true });
+		expect(model?.compat).toEqual({ forceAdaptiveThinking: true, supportsTemperature: false });
 		expect(model?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
 	});
 
