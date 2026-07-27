@@ -53,3 +53,42 @@
 - [x] Update README source order, sparse/adaptive semantics, endpoint error behavior, successful-refresh timing, 2API isolation, cache behavior, and rollback notes.
 - [x] Re-run lifecycle tests, then `npm run typecheck`, focused tests, and `npm run check`.
 - [x] Review `git diff --check`, final diff, and worktree status; confirm only intended files changed.
+
+### Task 4: Close catalog request and session races
+
+**Files:**
+- Modify: `extensions/provider.ts`
+- Modify: `test/lifecycle.test.ts`
+- Modify: `test/provider.test.ts`
+
+- [ ] Add a failing test where a catalog request starts before login validation, the validated pending catalog publishes, and the old request finishes afterward; assert the login catalog remains in memory and store.
+- [ ] Add a failing test where a foreground refresh crosses `shutdown()` and `beginSession()`; assert it cannot write or publish into the new session.
+- [ ] Add a failing test where login cache write fails, then a new session performs cache-only restore; assert the persisted last-known-good catalog is restored.
+- [ ] Run the three focused tests and confirm each fails for the intended stale-commit or stale-session behavior.
+- [ ] Capture generation at `refreshModels()` entry, invalidate older request IDs before consuming pending login data, re-check generation/request/connection after awaited writes, and make shutdown cleanup generation-scoped.
+- [ ] Reset the in-memory-ahead-of-store marker at the session boundary and re-run the focused tests until they pass.
+
+### Task 5: Preserve Anthropic adapter-safety metadata
+
+**Files:**
+- Modify: `extensions/catalog.ts`
+- Modify: `test/catalog.test.ts`
+
+- [ ] Add a failing catalog/request-contract test proving exact Opus 4.7 metadata keeps adaptive thinking and explicitly disables temperature.
+- [ ] Run the focused test and confirm `supportsTemperature` is missing.
+- [ ] Extend the minimal compat projection/type to copy only explicit `forceAdaptiveThinking: true` and `supportsTemperature: false`.
+- [ ] Re-run catalog tests and confirm sparse thinking metadata remains unchanged.
+
+### Task 6: Correct documentation and finish verification
+
+**Files:**
+- Modify: `README.md`
+- Modify: `docs/README.md`
+- Modify: `docs/superpowers/specs/2026-07-26-pr12-thinking-level-fixes-design.md`
+- Modify: `docs/superpowers/plans/2026-07-26-pr12-thinking-level-fixes-plan.md`
+
+- [ ] Document `providers.<actual providerId>.modelOverrides`, with `llmgates` identified as the default provider ID.
+- [ ] Add the PR #12 thinking-level design and plan to `docs/README.md`.
+- [ ] Mark Tasks 4–6 complete only after focused tests pass.
+- [ ] Run LSP diagnostics on changed TypeScript files, `npm run check`, `git diff --check`, and inspect the final diff/worktree status.
+- [ ] Request an independent code review, address high-confidence findings, commit, push the PR branch, and merge PR #13 only while its head SHA and base remain the reviewed revisions.
