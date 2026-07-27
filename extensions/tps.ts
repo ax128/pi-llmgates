@@ -17,6 +17,7 @@ import {
 import {
 	collectPiSubagentsMetaUsage,
 	createSubagentIngestState,
+	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromToolExecution,
 	recordSubagentUsageRecords,
 	resolvePiSubagentsArtifactsDir,
@@ -77,6 +78,7 @@ export default function (pi: ExtensionAPI) {
 	let sessionStartedAtMs = 0;
 	let sessionArtifactsDir: string | null = null;
 	let subagentIngestState = createSubagentIngestState();
+	let sessionRunIds = new Set<string>();
 	let subagentWatcher: FSWatcher | undefined;
 	let subagentMetaScanTimer: ReturnType<typeof setTimeout> | undefined;
 	let unregisterSubagentBridge: (() => void) | undefined;
@@ -165,19 +167,21 @@ export default function (pi: ExtensionAPI) {
 		turnStats = createEmptyStats();
 	}
 
-	function ingestSubagentRecords(records: readonly SubagentUsageRecord[]): void {
+	function applySubagentRecords(
+		records: readonly SubagentUsageRecord[],
+		targetIsTurn: boolean,
+	): void {
 		const fresh = selectFreshSubagentRecords(subagentIngestState, records);
 		if (fresh.length === 0) {
 			return;
 		}
+		recordSubagentUsageRecords(targetIsTurn ? turnStats : sessionStats, fresh);
+		scheduleStatusRefresh();
+	}
+
+	function ingestSubagentRecords(records: readonly SubagentUsageRecord[]): void {
 		const targetIsTurn = requestStartMs !== null;
-		runUsageTask(() => {
-			if (!sessionActive) {
-				return;
-			}
-			recordSubagentUsageRecords(targetIsTurn ? turnStats : sessionStats, fresh);
-			scheduleStatusRefresh();
-		});
+		runUsageTask(() => applySubagentRecords(records, targetIsTurn));
 	}
 
 	function scanSubagentMetaArtifacts(): void {
@@ -186,12 +190,19 @@ export default function (pi: ExtensionAPI) {
 		}
 		const artifactsDir = sessionArtifactsDir;
 		const startedAtMs = sessionStartedAtMs;
+		const targetIsTurn = requestStartMs !== null;
 		runUsageTask(() => {
 			if (!sessionActive || sessionArtifactsDir !== artifactsDir) {
 				return;
 			}
-			ingestSubagentRecords(
-				collectPiSubagentsMetaUsage(artifactsDir, startedAtMs, subagentIngestState.keys),
+			applySubagentRecords(
+				collectPiSubagentsMetaUsage(
+					artifactsDir,
+					startedAtMs,
+					subagentIngestState.keys,
+					sessionRunIds,
+				),
+				targetIsTurn,
 			);
 		});
 	}
@@ -318,6 +329,7 @@ export default function (pi: ExtensionAPI) {
 		lastSettledTurnStats = createEmptyStats();
 		sessionStartedAtMs = Date.now();
 		subagentIngestState = createSubagentIngestState();
+		sessionRunIds = new Set();
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
 		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
@@ -331,6 +343,7 @@ export default function (pi: ExtensionAPI) {
 			unregisterSubagentBridge = registerSubagentUsageBridge(pi.events, {
 				sessionId: ctx.sessionManager.getSessionId(),
 				onRecords: ingestSubagentRecords,
+				onRunObserved: (runId) => sessionRunIds.add(runId),
 				onForegroundComplete: scheduleSubagentMetaScan,
 			});
 		}
@@ -338,6 +351,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_execution_end", (event, ctx) => {
 		if (!isPrimaryUiSession(ctx)) return;
+		for (const runId of extractSubagentRunIdsFromToolExecution(event.toolName, event.result)) {
+			sessionRunIds.add(runId);
+		}
 		const records = extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId);
 		if (records.length > 0) {
 			ingestSubagentRecords(records);
@@ -379,8 +395,6 @@ export default function (pi: ExtensionAPI) {
 		if (!isPrimaryUiSession(ctx)) return;
 		if (requestStartMs === null) return;
 
-		scanSubagentMetaArtifacts();
-
 		const startMs = requestStartMs;
 		const elapsedMs = Date.now() - startMs;
 		const elapsedSecondsExact = elapsedMs / 1000;
@@ -389,7 +403,20 @@ export default function (pi: ExtensionAPI) {
 		requestStartMs = null;
 		clearRefreshTimer();
 
+		const artifactsDir = sessionArtifactsDir;
+		const startedAtMs = sessionStartedAtMs;
 		runUsageTask(() => {
+			if (artifactsDir && sessionArtifactsDir === artifactsDir) {
+				applySubagentRecords(
+					collectPiSubagentsMetaUsage(
+						artifactsDir,
+						startedAtMs,
+						subagentIngestState.keys,
+						sessionRunIds,
+					),
+					true,
+				);
+			}
 			lastSettledTurnStats = cloneModelUsageStats(turnStats);
 			mergeModelUsageStats(sessionStats, turnStats);
 			setElapsedStatus(ctx, elapsedSecondsFloor, lastSettledTurnStats);
@@ -427,6 +454,7 @@ export default function (pi: ExtensionAPI) {
 		clearRefreshTimer();
 		stopSubagentWatcher();
 		subagentIngestState = createSubagentIngestState();
+		sessionRunIds = new Set();
 		if (isPrimaryUiSession(ctx)) {
 			clearStatus(ctx);
 		}

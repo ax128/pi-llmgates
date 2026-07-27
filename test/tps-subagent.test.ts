@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 	collectPiSubagentsMetaUsage,
 	createSubagentIngestState,
 	extractSubagentRunAggregateFromAsyncStatus,
+	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromAsyncStatus,
 	extractSubagentUsageFromSessionFile,
@@ -27,6 +28,28 @@ const UUID_RUN = "1d706627-aada-4828-9207-bbab8fad3864";
 const UUID_NORM = "1d706627aada48289207bbab8fad3864";
 
 describe("tps subagent usage", () => {
+	it("extracts and normalizes owned run IDs from tool result root, details, and results", () => {
+		expect(
+			extractSubagentRunIdsFromToolExecution("subagent", {
+				runId: "AA-AA",
+				details: {
+					runId: "BB-BB",
+					async: true,
+					results: [
+						{ runId: "aa-aa" },
+						{ runId: "CC-CC" },
+						{ runId: "not-a-run" },
+					],
+				},
+			}),
+		).toEqual(["aaaa", "bbbb", "cccc"]);
+		expect(extractSubagentRunIdsFromToolExecution("task", { runId: UUID_RUN })).toEqual([
+			UUID_NORM,
+		]);
+		expect(extractSubagentRunIdsFromToolExecution("bash", { runId: UUID_RUN })).toEqual([]);
+		expect(extractSubagentRunIdsFromToolExecution("subagent", { runId: "invalid" })).toEqual([]);
+	});
+
 	it("extracts pi subagent tool usage from nested results", () => {
 		const records = extractSubagentUsageFromToolExecution(
 			"subagent",
@@ -186,6 +209,39 @@ describe("tps subagent usage", () => {
 
 		const second = collectPiSubagentsMetaUsage(artifactsDir, sessionStartedAtMs, ingested);
 		expect(second).toHaveLength(0);
+	});
+
+	it("filters current-window meta usage to explicitly allowed run IDs", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-owned-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		for (const [runId, input] of [["aaaa1111", 11], ["bbbb2222", 22]] as const) {
+			writeFileSync(
+				join(artifactsDir, `${runId}_worker_0_meta.json`),
+				JSON.stringify({
+					agent: "worker",
+					model: "owned-model",
+					usage: { turns: 1, input, output: 1, cost: 0 },
+				}),
+			);
+		}
+		const sessionStartedAtMs = Date.now() - 1000;
+		const records = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			sessionStartedAtMs,
+			new Set(),
+			new Set(["aaaa1111"]),
+		);
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({ sourceKey: "meta:aaaa1111:worker:0", input: 11 });
+		expect(
+			collectPiSubagentsMetaUsage(
+				artifactsDir,
+				sessionStartedAtMs,
+				new Set(),
+				new Set(),
+			),
+		).toEqual([]);
 	});
 
 	it("merges subagent usage into session totals", () => {

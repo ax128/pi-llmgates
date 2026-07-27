@@ -490,6 +490,41 @@ function looksLikeAsyncOrBackgroundLaunch(details: Record<string, unknown>): boo
 	return false;
 }
 
+/** Extract session-owned run IDs even when an async launch has no usage yet. */
+export function extractSubagentRunIdsFromToolExecution(
+	toolName: string,
+	result: unknown,
+): string[] {
+	if (!SUBAGENT_TOOL_NAMES.has(toolName.trim().toLowerCase()) || !isPlainObject(result)) {
+		return [];
+	}
+	const candidates: unknown[] = [result.runId];
+	for (const container of [result, result.details]) {
+		if (!isPlainObject(container)) {
+			continue;
+		}
+		candidates.push(container.runId);
+		if (Array.isArray(container.results)) {
+			for (const item of container.results) {
+				if (isPlainObject(item)) {
+					candidates.push(item.runId);
+				}
+			}
+		}
+	}
+	const runIds = new Set<string>();
+	for (const candidate of candidates) {
+		if (typeof candidate !== "string") {
+			continue;
+		}
+		const runId = normalizeRunIdForSourceKey(candidate);
+		if (runId && RUN_ID_HEX_RE.test(runId)) {
+			runIds.add(runId);
+		}
+	}
+	return [...runIds];
+}
+
 /** Extract rollup usage from pi `subagent` / Cursor `Task` tool results. */
 export function extractSubagentUsageFromToolExecution(
 	toolName: string,
@@ -603,11 +638,17 @@ export function collectPiSubagentsMetaUsage(
 	artifactsDir: string,
 	sessionStartedAtMs: number,
 	ingested: ReadonlySet<string>,
+	allowedRunIds?: ReadonlySet<string>,
 ): SubagentUsageRecord[] {
 	const out: SubagentUsageRecord[] = [];
 	for (const metaPath of listPiSubagentMetaFiles(artifactsDir)) {
 		const sourceKey = metaFileSourceKey(metaPath.split(/[/\\]/).pop() ?? "");
-		if (!sourceKey || ingested.has(sourceKey)) {
+		const source = sourceKey ? parseMetaSourceKeyGranularity(sourceKey) : null;
+		if (
+			!sourceKey ||
+			ingested.has(sourceKey) ||
+			(allowedRunIds !== undefined && (!source || !allowedRunIds.has(source.runId)))
+		) {
 			continue;
 		}
 		let mtimeMs = 0;
