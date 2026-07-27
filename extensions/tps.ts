@@ -2,8 +2,8 @@
  * TUI elapsed timer + cost / usage summary after each agent turn.
  * Adapted from @router-for-me/pi-cliproxyapi-provider (MIT).
  *
- * Usage aggregation and settle notifications run on a background task chain so
- * pi event handlers return immediately and never block the agent loop.
+ * Usage aggregation runs on a background task chain so pi event handlers return
+ * immediately and never block the agent loop.
  */
 
 import { watch, type FSWatcher } from "node:fs";
@@ -25,15 +25,12 @@ import {
 } from "./tps-subagent.js";
 import {
 	cloneModelUsageStats,
-	formatCostUsd,
 	formatTpsStatusLine,
 	formatUsageBreakdownOptions,
 	formatUsageScopeTitle,
 	formatUsageSummaryMessage,
 	mergeModelUsageStats,
-	totalCostUsd,
 	totalModelCalls,
-	totalUsage,
 	tryRecordAssistantUsage,
 	type ModelUsageStats,
 } from "./tps-stats.js";
@@ -130,7 +127,7 @@ export default function (pi: ExtensionAPI) {
 		safeUi(ctx, () => {
 			ctx.ui.setStatus(
 				STATUS_KEY,
-				ctx.ui.theme.fg("dim", formatTpsStatusLine(totalSeconds, stats, totalCostUsd(sessionStats))),
+				ctx.ui.theme.fg("dim", formatTpsStatusLine(totalSeconds, stats)),
 			);
 		});
 	}
@@ -381,42 +378,15 @@ export default function (pi: ExtensionAPI) {
 
 		scanSubagentMetaArtifacts();
 
-		const startMs = requestStartMs;
-		const elapsedMs = Date.now() - startMs;
-		const elapsedSecondsExact = elapsedMs / 1000;
-		const elapsedSecondsFloor = Math.floor(elapsedSecondsExact);
-
+		const elapsedSeconds = Math.floor((Date.now() - requestStartMs) / 1000);
 		requestStartMs = null;
 		clearRefreshTimer();
 
 		runUsageTask(() => {
 			lastSettledTurnStats = cloneModelUsageStats(turnStats);
 			mergeModelUsageStats(sessionStats, turnStats);
-			setElapsedStatus(ctx, elapsedSecondsFloor, lastSettledTurnStats);
+			setElapsedStatus(ctx, elapsedSeconds, lastSettledTurnStats);
 			statusCtx = ctx;
-
-			if (elapsedMs <= 0) {
-				return;
-			}
-
-			let message: string;
-			try {
-				const turnUsage = totalUsage(lastSettledTurnStats);
-				const tps = turnUsage.output > 0 ? (turnUsage.output / elapsedSecondsExact).toFixed(1) : "--";
-				const turnSummary = formatUsageSummaryMessage(lastSettledTurnStats, {
-					scope: "turn",
-					elapsedSeconds: elapsedSecondsExact,
-				});
-				const sessionCost = formatCostUsd(totalCostUsd(sessionStats));
-				message = `TPS ${tps} tok/s · turn cost ${formatCostUsd(turnUsage.costUsd)} · session total ${sessionCost} · ${elapsedSecondsExact.toFixed(1)}s. ${turnSummary} Details: /calls`;
-			} catch (error) {
-				logTpsIssue(`TPS settle summary failed: ${error instanceof Error ? error.message : String(error)}`);
-				message = `Turn finished in ${elapsedSecondsExact.toFixed(1)}s. Details: /calls`;
-			}
-
-			safeUi(ctx, () => {
-				ctx.ui.notify(message, "info");
-			});
 		});
 	});
 
