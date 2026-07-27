@@ -390,7 +390,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		return keysEqual(conn.apiKey, pending.connection.apiKey);
 	}
 
-	async function runRefreshModels(context: RefreshModelsContext): Promise<void> {
+	async function refreshModels(context: RefreshModelsContext): Promise<void> {
 		const refreshGeneration = generation;
 		if (!lifecycleMatches(refreshGeneration)) return;
 		const requestId = nextRequestId++;
@@ -431,20 +431,28 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			pending &&
 			pendingMatches(credential)
 		) {
-			const candidate = pending.models;
-			const pendingConnection = pending.connection;
-			clearPending();
+			const pendingCatalog = pending;
+			const candidate = pendingCatalog.models;
+			const pendingConnection = pendingCatalog.connection;
+			let consumed = false;
 			await withCommit(async () => {
 				if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+				if (pending !== pendingCatalog) return;
 				try {
 					await context.store.write({ models: candidate, checkedAt: now() });
 					if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+					if (pending !== pendingCatalog) return;
+					clearPending();
+					consumed = true;
 					modelsAheadOfStore = false;
 					setModels(candidate, true);
 					lastConnection = pendingConnection;
 					lastCheckedAt = now();
 				} catch (error) {
 					if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+					if (pending !== pendingCatalog) return;
+					clearPending();
+					consumed = true;
 					// Login exception: keep old disk cache, publish in-memory models.
 					modelsAheadOfStore = true;
 					setModels(candidate, true);
@@ -459,7 +467,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 					}
 				}
 			});
-			wantBackgroundRefresh = false;
+			if (consumed) wantBackgroundRefresh = false;
 			return;
 		}
 
@@ -748,9 +756,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		getModels(): readonly Model<Api>[] {
 			return models;
 		},
-		refreshModels(context: RefreshModelsContext) {
-			return track(runRefreshModels(context));
-		},
+		refreshModels,
 		stream<T extends Api>(model: Model<T>, context: Context, streamOptions?: ApiStreamOptions<T>) {
 			return streamFor(model as Model<Api>).stream(model as never, context, streamOptions as never);
 		},
@@ -785,6 +791,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			}
 			sessionController?.abort();
 			await Promise.allSettled([...activeTasks]);
+			await commitChain;
 			if (generation !== shutdownGeneration || !shutDown) return;
 			activeTasks.clear();
 			activeControllers.clear();
