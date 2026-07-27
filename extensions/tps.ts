@@ -139,17 +139,28 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
-	function scheduleStatusRefresh(): void {
-		if (statusRefreshScheduled || requestStartMs === null || !statusCtx) {
+	function scheduleStatusRefresh(targetStats: ModelUsageStats = turnStats): void {
+		if (
+			statusRefreshScheduled ||
+			requestStartMs === null ||
+			!statusCtx ||
+			targetStats !== turnStats
+		) {
 			return;
 		}
+		const expectedGeneration = sessionGeneration;
 		statusRefreshScheduled = true;
 		queueMicrotask(() => {
-			statusRefreshScheduled = false;
-			if (requestStartMs === null || !statusCtx) {
+			if (
+				sessionGeneration !== expectedGeneration ||
+				requestStartMs === null ||
+				!statusCtx ||
+				turnStats !== targetStats
+			) {
 				return;
 			}
-			setElapsedStatus(statusCtx, getElapsedSeconds(), turnStats);
+			statusRefreshScheduled = false;
+			setElapsedStatus(statusCtx, getElapsedSeconds(), targetStats);
 		});
 	}
 
@@ -158,7 +169,7 @@ export default function (pi: ExtensionAPI) {
 		scheduleStatusRefresh();
 	}
 
-	function clearStatus(ctx?: ExtensionContext): void {
+	function clearStatus(ctx?: ExtensionContext | null): void {
 		const target = ctx ?? statusCtx;
 		safeUi(target, () => {
 			target!.ui.setStatus(STATUS_KEY, undefined);
@@ -167,23 +178,24 @@ export default function (pi: ExtensionAPI) {
 
 	function resetTurnStats(): void {
 		turnStats = createEmptyStats();
+		statusRefreshScheduled = false;
 	}
 
 	function applySubagentRecords(
 		records: readonly SubagentUsageRecord[],
-		targetIsTurn: boolean,
+		targetStats: ModelUsageStats,
 	): void {
 		const fresh = selectFreshSubagentRecords(subagentIngestState, records);
 		if (fresh.length === 0) {
 			return;
 		}
-		recordSubagentUsageRecords(targetIsTurn ? turnStats : sessionStats, fresh);
-		scheduleStatusRefresh();
+		recordSubagentUsageRecords(targetStats, fresh);
+		scheduleStatusRefresh(targetStats);
 	}
 
 	function ingestSubagentRecords(records: readonly SubagentUsageRecord[]): void {
-		const targetIsTurn = requestStartMs !== null;
-		runUsageTask(() => applySubagentRecords(records, targetIsTurn));
+		const targetStats = requestStartMs !== null ? turnStats : sessionStats;
+		runUsageTask(() => applySubagentRecords(records, targetStats));
 	}
 
 	function scanSubagentMetaArtifacts(): void {
@@ -192,7 +204,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		const artifactsDir = sessionArtifactsDir;
 		const startedAtMs = sessionStartedAtMs;
-		const targetIsTurn = requestStartMs !== null;
+		const targetStats = requestStartMs !== null ? turnStats : sessionStats;
 		runUsageTask(() => {
 			if (!sessionActive || sessionArtifactsDir !== artifactsDir) {
 				return;
@@ -204,7 +216,7 @@ export default function (pi: ExtensionAPI) {
 					subagentIngestState.keys,
 					sessionRunIds,
 				),
-				targetIsTurn,
+				targetStats,
 			);
 		});
 	}
@@ -332,6 +344,11 @@ export default function (pi: ExtensionAPI) {
 		sessionGeneration += 1;
 		sessionActive = true;
 		usageTaskChain = Promise.resolve();
+		clearRefreshTimer();
+		clearStatus(statusCtx);
+		requestStartMs = null;
+		statusCtx = null;
+		resetTurnStats();
 		sessionStats = createEmptyStats();
 		lastSettledTurnStats = createEmptyStats();
 		sessionStartedAtMs = Date.now();
@@ -379,9 +396,10 @@ export default function (pi: ExtensionAPI) {
 		if (requestStartMs === null) return;
 
 		const message = event.message;
+		const targetStats = turnStats;
 		runUsageTask(() => {
-			if (tryRecordAssistantUsage(turnStats, message)) {
-				scheduleStatusRefresh();
+			if (tryRecordAssistantUsage(targetStats, message)) {
+				scheduleStatusRefresh(targetStats);
 			}
 		});
 	});
@@ -418,6 +436,7 @@ export default function (pi: ExtensionAPI) {
 
 		const artifactsDir = sessionArtifactsDir;
 		const startedAtMs = sessionStartedAtMs;
+		const settledTurnStats = turnStats;
 		runUsageTask(() => {
 			if (artifactsDir && sessionArtifactsDir === artifactsDir) {
 				applySubagentRecords(
@@ -427,13 +446,16 @@ export default function (pi: ExtensionAPI) {
 						subagentIngestState.keys,
 						sessionRunIds,
 					),
-					true,
+					settledTurnStats,
 				);
 			}
-			lastSettledTurnStats = cloneModelUsageStats(turnStats);
-			mergeModelUsageStats(sessionStats, turnStats);
-			setElapsedStatus(ctx, elapsedSecondsFloor, lastSettledTurnStats);
-			statusCtx = ctx;
+			const settledStats = cloneModelUsageStats(settledTurnStats);
+			mergeModelUsageStats(sessionStats, settledTurnStats);
+			if (turnStats === settledTurnStats && requestStartMs === null) {
+				lastSettledTurnStats = settledStats;
+				setElapsedStatus(ctx, elapsedSecondsFloor, settledStats);
+				statusCtx = ctx;
+			}
 
 			if (elapsedMs <= 0) {
 				return;
@@ -441,9 +463,9 @@ export default function (pi: ExtensionAPI) {
 
 			let message: string;
 			try {
-				const turnUsage = totalUsage(lastSettledTurnStats);
+				const turnUsage = totalUsage(settledStats);
 				const tps = turnUsage.output > 0 ? (turnUsage.output / elapsedSecondsExact).toFixed(1) : "--";
-				const turnSummary = formatUsageSummaryMessage(lastSettledTurnStats, {
+				const turnSummary = formatUsageSummaryMessage(settledStats, {
 					scope: "turn",
 					elapsedSeconds: elapsedSecondsExact,
 				});
@@ -470,12 +492,13 @@ export default function (pi: ExtensionAPI) {
 		sessionArtifactsDir = null;
 		subagentIngestState = createSubagentIngestState();
 		sessionRunIds = new Set();
-		if (isPrimaryUiSession(ctx)) {
+		const previousStatusCtx = statusCtx;
+		requestStartMs = null;
+		statusCtx = null;
+		statusRefreshScheduled = false;
+		clearStatus(previousStatusCtx);
+		if (ctx !== previousStatusCtx) {
 			clearStatus(ctx);
-		}
-		if (statusCtx === ctx) {
-			requestStartMs = null;
-			statusCtx = null;
 		}
 	});
 }

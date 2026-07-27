@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { existsSync, mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import registerTps from "../extensions/tps.js";
 
 type Handler = (event: any, ctx: ExtensionContext) => void | Promise<void>;
@@ -13,23 +13,32 @@ function createRuntime(cwd: string) {
 	const commands = new Map<string, Command>();
 	const selections: string[][] = [];
 	const scopeChoices: string[] = [];
+	const statuses: Array<{ context: string; value: string | undefined }> = [];
+	const notifications: Array<{ context: string; message: string }> = [];
 	const eventHandlers = new Map<string, Set<(data: unknown) => void>>();
-	const ctx = {
-		hasUI: true,
-		mode: "tui",
-		cwd,
-		sessionManager: { getSessionId: () => "session-1" },
-		ui: {
-			theme: { fg: (_color: string, text: string) => text },
-			setStatus() {},
-			notify() {},
-			select: async (_title: string, options: string[]) => {
-				if (scopeChoices.length > 0) return scopeChoices.shift();
-				selections.push(options);
-				return undefined;
+	function createContext(context: string): ExtensionContext {
+		return {
+			hasUI: true,
+			mode: "tui",
+			cwd,
+			sessionManager: { getSessionId: () => "session-1" },
+			ui: {
+				theme: { fg: (_color: string, text: string) => text },
+				setStatus(_key: string, value: string | undefined) {
+					statuses.push({ context, value });
+				},
+				notify(message: string) {
+					notifications.push({ context, message });
+				},
+				select: async (_title: string, options: string[]) => {
+					if (scopeChoices.length > 0) return scopeChoices.shift();
+					selections.push(options);
+					return undefined;
+				},
 			},
-		},
-	} as unknown as ExtensionContext;
+		} as unknown as ExtensionContext;
+	}
+	const ctx = createContext("default");
 	const pi = {
 		on(event: string, handler: Handler) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
@@ -53,16 +62,142 @@ function createRuntime(cwd: string) {
 		commands,
 		selections,
 		scopeChoices,
-		emitNow(event: string, data: any = {}) {
-			for (const handler of handlers.get(event) ?? []) void handler(data, ctx);
+		statuses,
+		notifications,
+		createContext,
+		emitEvent(event: string, data: unknown) {
+			for (const handler of eventHandlers.get(event) ?? []) handler(data);
 		},
-		async emit(event: string, data: any = {}) {
-			for (const handler of handlers.get(event) ?? []) await handler(data, ctx);
+		emitNow(event: string, data: any = {}, eventCtx = ctx) {
+			for (const handler of handlers.get(event) ?? []) void handler(data, eventCtx);
+		},
+		async emit(event: string, data: any = {}, eventCtx = ctx) {
+			for (const handler of handlers.get(event) ?? []) await handler(data, eventCtx);
 		},
 	};
 }
 
 describe("tps runtime subagent ordering", () => {
+	it("binds queued usage and settle work to consecutive turns", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-turn-race-"));
+		const runtime = createRuntime(cwd);
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+		try {
+			await runtime.emit("session_start");
+			runtime.emitNow("before_agent_start");
+			runtime.emitNow("message_end", {
+				message: {
+					role: "assistant",
+					provider: "test",
+					model: "turn-1",
+					usage: { input: 10, output: 1, totalTokens: 11 },
+				},
+			});
+			now.mockReturnValue(1_001);
+			runtime.emitNow("agent_settled");
+
+			runtime.emitNow("before_agent_start");
+			runtime.emitNow("message_end", {
+				message: {
+					role: "assistant",
+					provider: "test",
+					model: "turn-2",
+					usage: { input: 20, output: 2, totalTokens: 22 },
+				},
+			});
+			now.mockReturnValue(1_002);
+			runtime.emitNow("agent_settled");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This turn");
+			await calls.handler("", runtime.ctx);
+			runtime.scopeChoices.push("This session");
+			await calls.handler("", runtime.ctx);
+
+			expect(runtime.notifications.some(({ message }) => message.includes("test/turn-1"))).toBe(true);
+			expect(runtime.notifications.some(({ message }) => message.includes("test/turn-2"))).toBe(true);
+			expect(runtime.selections[0]?.some((line) => line.includes("test/turn-2"))).toBe(true);
+			expect(runtime.selections[0]?.some((line) => line.includes("test/turn-1"))).toBe(false);
+			expect(runtime.selections[1]?.some((line) => line.includes("test/turn-1"))).toBe(true);
+			expect(runtime.selections[1]?.some((line) => line.includes("test/turn-2"))).toBe(true);
+		} finally {
+			now.mockRestore();
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("invalidates status state when shutdown receives an equivalent context", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-context-race-"));
+		const runtime = createRuntime(cwd);
+		const oldCtx = runtime.createContext("old");
+		const shutdownCtx = runtime.createContext("shutdown");
+		const nextCtx = runtime.createContext("next");
+		try {
+			await runtime.emit("session_start", {}, oldCtx);
+			runtime.emitNow("before_agent_start", {}, oldCtx);
+			runtime.emitNow("message_end", {
+				message: { role: "assistant", model: "old", usage: { output: 1 } },
+			}, oldCtx);
+			runtime.emitNow("session_shutdown", {}, shutdownCtx);
+
+			expect(runtime.statuses.some((status) => status.context === "old" && status.value === undefined)).toBe(true);
+			expect(runtime.statuses.some((status) => status.context === "shutdown" && status.value === undefined)).toBe(true);
+
+			const statusCount = runtime.statuses.length;
+			runtime.emitNow("session_start", {}, nextCtx);
+			runtime.emitNow("before_agent_start", {}, nextCtx);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			expect(runtime.statuses.slice(statusCount).every((status) => status.context === "next")).toBe(true);
+			expect(runtime.statuses.at(-1)?.value).toBeDefined();
+		} finally {
+			await runtime.emit("session_shutdown", {}, nextCtx);
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("recovers the watcher from a matching completion event after artifacts appear", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-completion-recovery-"));
+		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");
+		mkdirSync(join(cwd, ".pi-subagents"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			expect(existsSync(artifactsDir)).toBe(false);
+
+			mkdirSync(artifactsDir);
+			const meta = join(artifactsDir, "dddd-4444_worker_0_meta.json");
+			writeFileSync(meta, JSON.stringify({
+				model: "completion-model",
+				usage: { turns: 1, input: 12, output: 3, cost: 0 },
+			}));
+			const artifactTime = (Date.now() + 1000) / 1000;
+			utimesSync(meta, artifactTime, artifactTime);
+			runtime.emitEvent("subagent:foreground-complete", {
+				sessionId: "session-1",
+				runId: "DDDD-4444",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			await runtime.emit("agent_settled");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This turn");
+			await calls.handler("", runtime.ctx);
+			runtime.scopeChoices.push("This session");
+			await calls.handler("", runtime.ctx);
+			for (const options of runtime.selections) {
+				expect(options.some((line) => line.includes("completion-model") && line.includes("1 call"))).toBe(true);
+			}
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("discovers owned meta created after session start without creating the artifacts directory", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-late-artifacts-"));
 		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");
