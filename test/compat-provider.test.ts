@@ -662,6 +662,55 @@ describe("compat instance provider", () => {
 		}
 	});
 
+	it("retains a validated pending catalog when its queued consume becomes stale", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		let fetchCount = 0;
+		let releaseFirstWrite!: () => void;
+		let markFirstWrite!: () => void;
+		const firstWriteGate = new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+		const firstWriteStarted = new Promise<void>((resolve) => { markFirstWrite = resolve; });
+		const store = createMemoryStore();
+		const write = store.write.bind(store);
+		store.write = async (entry) => {
+			if (store.writes.length === 0) {
+				markFirstWrite();
+				await firstWriteGate;
+			}
+			await write(entry);
+		};
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createCompatProvider({
+				agentDir,
+				instance: INSTANCE,
+				initialModels: [model("current")],
+				fetchImpl: async () => {
+					fetchCount += 1;
+					return new Response(JSON.stringify([{ id: fetchCount === 2 ? "pending" : `fetched-${fetchCount}` }]));
+				},
+			});
+			const auth = credential("key", INSTANCE.baseUrl);
+			const earlier = provider.refreshModels!({ credential: auth, store, allowNetwork: true, force: true });
+			await firstWriteStarted;
+			const loggedIn = await provider.auth.oauth!.login(
+				scriptedAuthInteraction([INSTANCE.baseUrl, "key"]),
+			);
+			const queuedConsume = provider.refreshModels!({ credential: loggedIn, store, allowNetwork: true });
+			await Promise.resolve();
+			await provider.refreshModels!({ credential: auth, store: createMemoryStore(), allowNetwork: false });
+			releaseFirstWrite();
+			await Promise.all([earlier, queuedConsume]);
+
+			await provider.refreshModels!({ credential: loggedIn, store, allowNetwork: true });
+
+			expect(provider.getModels().map((item) => item.id)).toEqual(["pending"]);
+			expect(fetchCount).toBe(2);
+		} finally {
+			releaseFirstWrite();
+			cleanup();
+		}
+	});
+
 	it("does not publish a stale foreground result after its store write", async () => {
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		let fetchCount = 0;
@@ -753,6 +802,50 @@ describe("compat instance provider", () => {
 			expect(provider.getModels().map((item) => item.id)).toEqual(["current"]);
 		} finally {
 			releaseFirstWrite();
+			cleanup();
+		}
+	});
+
+	it("shutdown waits for a foreground catalog commit", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		let releaseWrite!: () => void;
+		let markWrite!: () => void;
+		const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+		const writeStarted = new Promise<void>((resolve) => { markWrite = resolve; });
+		const store = createMemoryStore();
+		const write = store.write.bind(store);
+		store.write = async (entry) => {
+			markWrite();
+			await writeGate;
+			await write(entry);
+		};
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createCompatProvider({
+				agentDir,
+				instance: INSTANCE,
+				initialModels: [model("current")],
+				fetchImpl: async () => new Response(JSON.stringify([{ id: "stale" }])),
+			});
+			const refresh = provider.refreshModels!({
+				credential: credential("key", INSTANCE.baseUrl),
+				store,
+				allowNetwork: true,
+				force: true,
+			});
+			await writeStarted;
+			let shutdownFinished = false;
+			const shutdown = provider.shutdown().then(() => { shutdownFinished = true; });
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(shutdownFinished).toBe(false);
+			releaseWrite();
+			await Promise.all([refresh, shutdown]);
+			expect(provider.getModels().map((item) => item.id)).toEqual(["current"]);
+		} finally {
+			releaseWrite();
 			cleanup();
 		}
 	});

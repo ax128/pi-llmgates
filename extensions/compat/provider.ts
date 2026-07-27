@@ -566,9 +566,13 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			pendingMatches(context.credential)
 		) {
 			const candidate = pending!;
-			pending = null;
+			let consumed = false;
 			await withCommit(async () => {
-				if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+				if (
+					!lifecycleMatches(refreshGeneration) ||
+					requestId !== latestRequestId ||
+					pending !== candidate
+				) return;
 				candidate.catalog.store = context.store;
 				candidate.catalog.requestId = requestId;
 				candidate.catalog.checkedAt = now();
@@ -577,16 +581,24 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 				} catch (error) {
 					logWarn(providerId, `Login model cache write failed; using in-memory models: ${error instanceof Error ? error.message : String(error)}`);
 				}
-				if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+				if (
+					!lifecycleMatches(refreshGeneration) ||
+					requestId !== latestRequestId ||
+					pending !== candidate
+				) return;
+				pending = null;
+				consumed = true;
 				setModels(candidate.catalog.models, candidate.catalog);
 				currentInstance = { ...currentInstance, baseUrl: candidate.connection.baseUrl };
 				lastConnection = candidate.connection;
 				lastCheckedAt = now();
 			});
 			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
-			await persistInstanceBaseUrl(candidate.connection.baseUrl, refreshGeneration);
-			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
-			return;
+			if (consumed) {
+				await persistInstanceBaseUrl(candidate.connection.baseUrl, refreshGeneration);
+				if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+				return;
+			}
 		}
 
 		if (!context.allowNetwork || isOfflineMode()) return;
@@ -818,6 +830,7 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			pending = null;
 			controller?.abort();
 			await Promise.allSettled(tasks);
+			await commitChain;
 			if (generation !== shutdownGeneration || !shutDown) return;
 			for (const task of tasks) activeTasks.delete(task);
 			if (sessionController === controller) sessionController = null;
