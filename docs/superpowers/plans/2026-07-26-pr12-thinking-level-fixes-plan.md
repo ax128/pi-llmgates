@@ -89,6 +89,7 @@
 
 - [x] Document `providers.<actual providerId>.modelOverrides`, with `llmgates` identified as the default provider ID.
 - [x] Add the PR #12 thinking-level design and plan to `docs/README.md`.
-- [ ] Mark Tasks 4–6 complete only after focused tests pass.
-- [ ] Run LSP diagnostics on changed TypeScript files, `npm run check`, `git diff --check`, and inspect the final diff/worktree status.
-- [ ] Request an independent code review, address high-confidence findings, commit, push the PR branch, and merge PR #13 only while its head SHA and base remain the reviewed revisions.
+- [x] Mark Tasks 4–6 complete only after focused tests pass.
+- [x] Run LSP diagnostics on changed TypeScript files, `npm run check`, `git diff --check`, and inspect the final diff/worktree status.
+- [x] Request an independent code review and address its high-confidence findings.
+- [ ] Push the PR branch and merge PR #13 only while its head SHA and base remain the reviewed revisions.
