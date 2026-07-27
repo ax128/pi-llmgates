@@ -107,6 +107,10 @@ describe("normalizeAndValidateBaseUrl", () => {
 		expect(normalizeAndValidateBaseUrl("https://192.168.1.1/v1").ok).toBe(false);
 		expect(normalizeAndValidateBaseUrl("https://10.0.0.5/v1").ok).toBe(false);
 		expect(normalizeAndValidateBaseUrl("https://172.16.0.1/v1").ok).toBe(false);
+		expect(normalizeAndValidateBaseUrl("https://169.254.1.1/v1").ok).toBe(false);
+		expect(normalizeAndValidateBaseUrl("https://[fd12:3456:789a:1::1]/v1").ok).toBe(false);
+		expect(normalizeAndValidateBaseUrl("https://[fe80::1]/v1").ok).toBe(false);
+		expect(normalizeAndValidateBaseUrl("https://[::ffff:192.168.0.1]/v1").ok).toBe(false);
 		expect(normalizeAndValidateBaseUrl("http://127.0.0.1:8080/v1").ok).toBe(true);
 		expect(normalizeAndValidateBaseUrl("https://api.example/v1").ok).toBe(true);
 	});

@@ -105,7 +105,7 @@ export interface CompatProvider extends Provider {
 	startInitialPricingSync(): void;
 	shutdown(): Promise<void>;
 	startBackgroundRefresh(options?: { force?: boolean }): Promise<void>;
-	getInternalState(): { providerId: string; modelCount: number; generation: number };
+	getInternalState(): { providerId: string; modelCount: number; generation: number; hasPending: boolean };
 }
 
 export interface CompatBootstrapResult {
@@ -839,7 +839,7 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			lastConnection = null;
 		},
 		getInternalState() {
-			return { providerId, modelCount: models.length, generation };
+			return { providerId, modelCount: models.length, generation, hasPending: pending !== null };
 		},
 	};
 

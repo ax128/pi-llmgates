@@ -12,8 +12,8 @@ export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete"
 
 export interface SubagentUsageBridgeOptions {
 	sessionId: string | null | undefined;
-	/** pi session cwd — required for filesystem fallbacks (status.json / session.jsonl). */
-	workspaceRoot?: string;
+	/** pi session cwd — required; filesystem fallbacks are denied without a workspace root. */
+	workspaceRoot: string;
 	onRecords: (records: readonly SubagentUsageRecord[]) => void;
 	onRunObserved?: (normalizedRunId: string) => void;
 	onForegroundComplete?: (normalizedRunId: string) => void;

@@ -797,7 +797,7 @@ describe("tps subagent usage", () => {
 			].join("\n"),
 		);
 
-		const fromSession = extractSubagentUsageFromSessionFile(sessionFile);
+		const fromSession = extractSubagentUsageFromSessionFile(sessionFile, root);
 		expect(fromSession?.sourceKey).toBe(`session:${sessionFile}`);
 		expect(fromSession?.calls).toBe(2);
 		expect(fromSession?.input).toBe(7);
@@ -860,6 +860,7 @@ describe("tps subagent usage", () => {
 				results: [{ agent: "worker", index: 0 }],
 			},
 			"s",
+			root,
 		);
 		expect(fromAsync[0]?.sourceKey).toBe(`meta:${UUID_NORM}:worker:0`);
 
@@ -898,8 +899,8 @@ describe("tps subagent usage", () => {
 			}),
 		);
 
-		const step0 = extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0);
-		const step1 = extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 1);
+		const step0 = extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0, root);
+		const step1 = extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 1, root);
 		expect(step0?.input).toBe(1);
 		expect(step1?.input).toBe(2);
 
@@ -938,8 +939,8 @@ describe("tps subagent usage", () => {
 			}),
 		);
 
-		expect(extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0)).toBeNull();
-		const aggregate = extractSubagentRunAggregateFromAsyncStatus(asyncDir, UUID_RUN);
+		expect(extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0, root)).toBeNull();
+		const aggregate = extractSubagentRunAggregateFromAsyncStatus(asyncDir, UUID_RUN, root);
 		expect(aggregate?.sourceKey).toBe(`meta:${UUID_NORM}`);
 		expect(aggregate?.input).toBe(100);
 
@@ -951,6 +952,7 @@ describe("tps subagent usage", () => {
 				results: [{ agent: "a" }, { agent: "b" }, { agent: "c" }, { agent: "d" }],
 			},
 			"s",
+			root,
 		);
 		expect(records).toHaveLength(1);
 		expect(records[0]?.sourceKey).toBe(`meta:${UUID_NORM}`);
@@ -1040,5 +1042,28 @@ describe("tps subagent usage", () => {
 			}),
 		);
 		expect(extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0, root)).toBeNull();
+	});
+
+	it("denies filesystem fallbacks without workspaceRoot", () => {
+		const root = mkdtempSync(join(tmpdir(), "subagent-no-root-"));
+		const sessionFile = join(root, "child.jsonl");
+		writeFileSync(
+			sessionFile,
+			JSON.stringify({
+				role: "assistant",
+				usage: { input: 5, output: 1, cacheRead: 0, cacheWrite: 0 },
+			}),
+		);
+
+		expect(extractSubagentUsageFromSessionFile(sessionFile)).toBeNull();
+		const asyncDir = join(root, "async-run");
+		mkdirSync(asyncDir, { recursive: true });
+		writeFileSync(
+			join(asyncDir, "status.json"),
+			JSON.stringify({
+				steps: [{ agent: "worker", tokens: { input: 5, output: 1 } }],
+			}),
+		);
+		expect(extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0)).toBeNull();
 	});
 });

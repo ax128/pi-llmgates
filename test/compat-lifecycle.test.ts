@@ -77,7 +77,7 @@ function fakeProviderFactory() {
 			startInitialPricingSync: vi.fn(),
 			startBackgroundRefresh: vi.fn(async () => gate),
 			shutdown: vi.fn(async () => {}),
-			getInternalState: () => ({ providerId: options.instance.id, modelCount: 1, generation: 0 }),
+			getInternalState: () => ({ providerId: options.instance.id, modelCount: 1, generation: 0, hasPending: false }),
 			completeRefresh: release,
 			notifyModelsChanged: () => options.onModelsChanged?.(provider as never),
 		} as CompatProvider & {

@@ -685,8 +685,8 @@ export function collectPiSubagentsMetaUsage(
 	return out;
 }
 
-function readJsonFile(path: string, workspaceRoot?: string): unknown | null {
-	if (workspaceRoot !== undefined && !isSubagentPathWithinWorkspace(path, workspaceRoot)) {
+function readJsonFile(path: string, workspaceRoot: string | undefined): unknown | null {
+	if (workspaceRoot === undefined || !isSubagentPathWithinWorkspace(path, workspaceRoot)) {
 		return null;
 	}
 	try {
@@ -815,7 +815,7 @@ export function extractSubagentUsageFromSessionFile(
 	sessionFile: string,
 	workspaceRoot?: string,
 ): SubagentUsageRecord | null {
-	if (workspaceRoot !== undefined && !isSubagentPathWithinWorkspace(sessionFile, workspaceRoot)) {
+	if (workspaceRoot === undefined || !isSubagentPathWithinWorkspace(sessionFile, workspaceRoot)) {
 		return null;
 	}
 	let text: string;

@@ -132,6 +132,15 @@ function isPrivateOrLinkLocalIpLiteral(hostname: string): boolean {
 			if (isIP(mapped) === 4) {
 				return isPrivateOrLinkLocalIpLiteral(mapped);
 			}
+			const hexMapped = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(mapped);
+			if (hexMapped) {
+				const hi = Number.parseInt(hexMapped[1]!, 16);
+				const lo = Number.parseInt(hexMapped[2]!, 16);
+				const dotted = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+				if (isIP(dotted) === 4) {
+					return isPrivateOrLinkLocalIpLiteral(dotted);
+				}
+			}
 		}
 		return false;
 	}

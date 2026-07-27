@@ -118,6 +118,7 @@ describe("compat instance provider", () => {
 				providerId: INSTANCE.id,
 				modelCount: 1,
 				generation: 0,
+				hasPending: false,
 			});
 		} finally {
 			cleanup();
@@ -766,6 +767,24 @@ describe("compat instance provider", () => {
 			releaseOldFetch();
 			releaseNewWrite();
 			await Promise.allSettled([oldRefresh, shutdown, newRefresh].filter((task): task is Promise<void> => Boolean(task)));
+			cleanup();
+		}
+	});
+
+	it("does not clear pending catalog on beginSession without a prior shutdown", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createCompatProvider({
+				agentDir,
+				instance: INSTANCE,
+				fetchImpl: async () => new Response(JSON.stringify([{ id: "pending-model" }])),
+			});
+			await provider.auth.oauth!.login(scriptedAuthInteraction([INSTANCE.baseUrl, "key"]));
+			expect(provider.getInternalState().hasPending).toBe(true);
+			provider.beginSession("next");
+			expect(provider.getInternalState().hasPending).toBe(true);
+		} finally {
 			cleanup();
 		}
 	});
