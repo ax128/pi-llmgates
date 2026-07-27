@@ -17,7 +17,10 @@ import {
 	toPiApiType,
 	toPiModel,
 } from "../extensions/catalog.js";
-import { clearModelOverridesMemory } from "../extensions/model-overrides.js";
+import {
+	applyModelOverridesToMemory,
+	clearModelOverridesMemory,
+} from "../extensions/model-overrides.js";
 
 // Endpoint-override memory is module-global; keep tests hermetic across files.
 afterEach(() => clearModelOverridesMemory());
@@ -123,42 +126,68 @@ describe("toPiModel", () => {
 		expect(model?.reasoning).toBe(true);
 	});
 
-	it("fills known models from the thinking-level knowledge base", () => {
-		// claude-opus-4-7: anthropic native xhigh
-		expect(resolveThinkingLevels("claude-opus-4-7", "anthropic", "anthropic-messages", undefined)).toEqual([
-			"none",
-			"low",
-			"medium",
-			"high",
-			"xhigh",
-		]);
-		// openai gpt/o-series: minimal/low/medium/high
-		expect(resolveThinkingLevels("gpt-5.5", "openai", "openai-responses", undefined)).toEqual([
-			"none",
-			"minimal",
-			"low",
-			"medium",
-			"high",
-		]);
+	it("copies exact OpenAI built-in reasoning and sparse thinking metadata", () => {
+		const model = toPiModel({
+			id: "gpt-5.5",
+			provider_id: "openai",
+			web_chat_endpoint: "responses",
+		});
+
+		expect(model?.reasoning).toBe(true);
+		expect(model?.thinkingLevelMap).toEqual({ off: "none", minimal: null, xhigh: "xhigh" });
+		expect(Object.hasOwn(model?.thinkingLevelMap ?? {}, "low")).toBe(false);
 	});
 
-	it("falls back to full coverage by api when model is unknown", () => {
+	it.each(["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"])(
+		"preserves exact OpenAI xhigh/max metadata for %s",
+		(id) => {
+			const model = toPiModel({ id, provider_id: "openai", web_chat_endpoint: "responses" });
+			expect(model?.thinkingLevelMap?.xhigh).toBe("xhigh");
+			expect(model?.thinkingLevelMap?.max).toBe("max");
+		},
+	);
+
+	it.each(["claude-opus-4-6", "claude-sonnet-4-6"])(
+		"copies only adaptive compat and keeps xhigh absent for %s",
+		(id) => {
+			const model = toPiModel({ id, provider_id: "anthropic", web_chat_endpoint: "messages" });
+			expect(model?.compat).toEqual({ forceAdaptiveThinking: true });
+			expect(model?.thinkingLevelMap).toEqual({ max: "max" });
+			expect(Object.hasOwn(model?.thinkingLevelMap ?? {}, "minimal")).toBe(false);
+		},
+	);
+
+	it.each(["claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5"])(
+		"preserves adaptive xhigh/max metadata for %s",
+		(id) => {
+			const model = toPiModel({ id, provider_id: "anthropic", web_chat_endpoint: "messages" });
+			expect(model?.compat).toEqual({ forceAdaptiveThinking: true });
+			expect(model?.thinkingLevelMap).toEqual({ xhigh: "xhigh", max: "max" });
+		},
+	);
+
+	it("preserves Claude Fable off:null and extended levels", () => {
+		const model = toPiModel({
+			id: "claude-fable-5",
+			provider_id: "anthropic",
+			web_chat_endpoint: "messages",
+		});
+		expect(model?.compat).toEqual({ forceAdaptiveThinking: true });
+		expect(model?.thinkingLevelMap).toEqual({ off: null, xhigh: "xhigh", max: "max" });
+	});
+
+	it("falls back conservatively when model metadata is unknown", () => {
 		expect(resolveThinkingLevels("acme-unknown-1", undefined, "anthropic-messages", undefined)).toEqual([
 			"none",
 			"low",
 			"medium",
 			"high",
-			"xhigh",
-			"max",
 		]);
 		expect(resolveThinkingLevels("acme-unknown-1", undefined, "openai-responses", undefined)).toEqual([
 			"none",
-			"minimal",
 			"low",
 			"medium",
 			"high",
-			"xhigh",
-			"max",
 		]);
 	});
 
@@ -166,16 +195,13 @@ describe("toPiModel", () => {
 		expect(resolveThinkingLevels("acme-7", "acme", undefined, ["low", "high"])).toEqual(["low", "high"]);
 	});
 
-	it("caps xhigh/max send values per api in buildThinkingLevelMap", () => {
+	it("keeps explicit xhigh/max values independent of api", () => {
 		const full = ["none", "low", "medium", "high", "xhigh", "max"];
-		// OpenAI passes reasoning_effort through → cap at high (option A)
-		const oai = buildThinkingLevelMap(full, "openai-responses")!;
-		expect(oai.xhigh).toBe("high");
-		expect(oai.max).toBe("high");
-		// Anthropic natively accepts xhigh → keep, no native max → map to xhigh
-		const ant = buildThinkingLevelMap(full, "anthropic-messages")!;
-		expect(ant.xhigh).toBe("xhigh");
-		expect(ant.max).toBe("xhigh");
+		for (const api of ["openai-responses", "anthropic-messages"] as const) {
+			const map = buildThinkingLevelMap(full, api)!;
+			expect(map.xhigh).toBe("xhigh");
+			expect(map.max).toBe("max");
+		}
 	});
 
 	it("maps grok via the thinking knowledge base", () => {
@@ -222,22 +248,77 @@ describe("toPiModel", () => {
 		expect(isPiSelectableModel({ id: "gpt-5.6-sol", capability_tags: [] })).toBe(true);
 	});
 
-	it("knowledge base wins over gateway for known vendors", () => {
-		// gpt-5.5 is OpenAI → KB minimal/low/medium/high, even though gateway reports fewer.
+	it("uses applicable exact metadata before gateway levels", () => {
 		const model = toPiModel({
 			id: "gpt-5.5",
 			provider_id: "openai",
 			web_chat_endpoint: "responses",
-			supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }, { effort: "none" }],
+			supported_reasoning_levels: [{ effort: "low" }],
 		});
 
-		expect(model?.reasoning).toBe(true);
-		expect(model?.thinkingLevelMap?.off).toBe("none");
-		expect(model?.thinkingLevelMap?.minimal).toBe("minimal");
-		expect(model?.thinkingLevelMap?.low).toBe("low");
-		expect(model?.thinkingLevelMap?.medium).toBe("medium");
-		expect(model?.thinkingLevelMap?.high).toBe("high");
-		expect(model?.thinkingLevelMap?.xhigh).toBeNull();
+		expect(model?.thinkingLevelMap).toEqual({ off: "none", minimal: null, xhigh: "xhigh" });
+	});
+
+	it("requires a case-sensitive exact model ID match", () => {
+		const model = toPiModel({
+			id: "GPT-5.5",
+			provider_id: "openai",
+			web_chat_endpoint: "responses",
+			supported_reasoning_levels: [{ effort: "xhigh" }, { effort: "max" }],
+		});
+
+		expect(model?.thinkingLevelMap?.xhigh).toBe("xhigh");
+		expect(model?.thinkingLevelMap?.max).toBe("max");
+		expect(model?.thinkingLevelMap?.minimal).toBeNull();
+	});
+
+	it("copies reasoning=false and an absent map from an exact built-in", () => {
+		const model = toPiModel({
+			id: "gpt-4",
+			provider_id: "openai",
+			web_chat_endpoint: "responses",
+		});
+
+		expect(model?.reasoning).toBe(false);
+		expect(model?.thinkingLevelMap).toBeUndefined();
+	});
+
+	it("resolves endpoint overrides before selecting same-family metadata", () => {
+		applyModelOverridesToMemory({
+			models: { "claude-opus-4-7": { endpoint: "messages" } },
+		});
+		const model = toPiModel({
+			id: "claude-opus-4-7",
+			provider_id: "anthropic",
+			web_chat_endpoint: "responses",
+		});
+
+		expect(model?.api).toBe("anthropic-messages");
+		expect(model?.compat).toEqual({ forceAdaptiveThinking: true });
+		expect(model?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
+	});
+
+	it("skips built-in metadata for a cross-family endpoint override", () => {
+		applyModelOverridesToMemory({
+			models: { "claude-opus-4-7": { endpoint: "responses" } },
+		});
+		const model = toPiModel({
+			id: "claude-opus-4-7",
+			provider_id: "anthropic",
+			web_chat_endpoint: "messages",
+		});
+
+		expect(model?.api).toBe("openai-responses");
+		expect(model?.compat).toBeUndefined();
+		expect(model?.thinkingLevelMap).toEqual({
+			off: "none",
+			minimal: null,
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: null,
+			max: null,
+		});
 	});
 
 	it("respects gateway xhigh for unknown-vendor anthropic models", () => {

@@ -231,6 +231,48 @@ describe("mapCompatModelsPayload", () => {
 		});
 	});
 
+	it("uses exact OpenAI metadata with the fixed completions API", () => {
+		const { models } = mapCompatModelsPayload(
+			[{ id: "gpt-5.6-sol", provider_id: "openai" }],
+			OPTIONS,
+		);
+
+		expect(models[0]?.api).toBe("openai-completions");
+		expect(models[0]?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
+	});
+
+	it("does not carry Anthropic adaptive compat through 2API", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{
+					id: "claude-opus-4-7",
+					provider_id: "anthropic",
+					supported_reasoning_levels: [{ effort: "xhigh" }, { effort: "max" }],
+				},
+			],
+			OPTIONS,
+		);
+
+		expect(models[0]?.api).toBe("openai-completions");
+		expect(models[0]?.compat).toBeUndefined();
+		expect(models[0]?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
+	});
+
+	it("preserves gateway-reported K3 levels while injecting transport compat", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{
+					id: "k3",
+					supported_reasoning_levels: [{ effort: "xhigh" }, { effort: "max" }],
+				},
+			],
+			OPTIONS,
+		);
+
+		expect(models[0]?.compat).toEqual(moonshotKimiOpenAICompat("k3"));
+		expect(models[0]?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
+	});
+
 	it("injects Moonshot/Kimi openai-completions compat for CPA and Sub2API gateways", () => {
 		const sub2Options = {
 			providerId: "work-sub2api",
@@ -298,12 +340,13 @@ describe("mapCompatModelsPayload", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 1_048_576,
 			maxTokens: 131_072,
+			thinkingLevelMap: { off: "cached-off", max: "cached-max" },
 		};
 
 		applyMoonshotKimiCompatModel(cached);
 
 		expect(cached.compat).toEqual(moonshotKimiOpenAICompat("k3"));
-		expect(cached.thinkingLevelMap).toMatchObject({ low: "low", high: "high", max: "max", medium: null });
+		expect(cached.thinkingLevelMap).toEqual({ off: "cached-off", max: "cached-max" });
 		expect(isMoonshotKimiK3Model("k3")).toBe(true);
 	});
 });

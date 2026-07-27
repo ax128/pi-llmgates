@@ -15,11 +15,6 @@ import type {
 import { openAICompletionsApi } from "@earendil-works/pi-ai/compat";
 import { isOfflineMode, parseGatewayModelsPayload, type GatewayModel } from "../catalog.js";
 import {
-	applyModelOverridesToMemory,
-	readModelOverridesFile,
-	reloadModelOverridesFromDisk,
-} from "../model-overrides.js";
-import {
 	applyPricingCacheToResolver,
 	lookupMemoryContextWindow,
 	lookupMemoryPricingRates,
@@ -335,7 +330,6 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 	const instanceLoginUi = () => compatInstanceLoginUi(currentInstance.name);
 
 	applyPricingCacheToResolver(readModelPricingFile(agentDir));
-	applyModelOverridesToMemory(readModelOverridesFile(agentDir));
 
 	function lifecycleMatches(expectedGeneration: number): boolean {
 		return !shutDown && generation === expectedGeneration;
@@ -475,7 +469,6 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		signal: AbortSignal | undefined,
 		fetchGeneration: number,
 	): Promise<CatalogResult> {
-		reloadModelOverridesFromDisk(agentDir);
 		const payload = await requestLimitedJson({
 			url: compatModelsUrl(connection.baseUrl),
 			headers: {

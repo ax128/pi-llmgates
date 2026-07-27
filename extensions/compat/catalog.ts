@@ -1,12 +1,11 @@
 import type { Api, Model, OpenAICompletionsCompat } from "@earendil-works/pi-ai";
 import {
 	buildInputModalities,
-	buildThinkingLevelMap,
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_MAX_TOKENS,
 	extractReasoningEfforts,
 	parseGatewayModelsPayload,
-	resolveThinkingLevels,
+	resolveThinkingMetadata,
 	type GatewayModel,
 	type PiApiType,
 } from "../catalog.js";
@@ -98,13 +97,17 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
 }
 
 /** Patch compat metadata onto gateway-routed Kimi models (including cached catalog entries). */
-export function applyMoonshotKimiCompatModel<T extends Model<Api>>(model: T, vendor?: string): T {
+export function applyMoonshotKimiCompatModel<T extends Model<Api>>(
+	model: T,
+	vendor?: string,
+	applyK3ThinkingFallback = false,
+): T {
 	if (!isMoonshotKimiCompatModel(model.id, vendor)) {
 		return model;
 	}
 
 	model.compat = moonshotKimiOpenAICompat(model.id);
-	if (isMoonshotKimiK3Model(model.id)) {
+	if (applyK3ThinkingFallback && isMoonshotKimiK3Model(model.id)) {
 		model.thinkingLevelMap = { ...MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP };
 	}
 
@@ -153,7 +156,8 @@ export function mapCompatModelsPayload(
 		// 2API gateways expose only OpenAI Chat Completions (single stream adapter).
 		// Per-model endpoint override is intentionally core-LLMGates-only.
 		const api: PiApiType = "openai-completions";
-		const efforts = resolveThinkingLevels(id, vendor, api, extractReasoningEfforts(upstream));
+		const gatewayEfforts = extractReasoningEfforts(upstream);
+		const thinking = resolveThinkingMetadata(id, vendor, api, gatewayEfforts);
 
 		const displayName =
 			(typeof upstream.display_name === "string" && upstream.display_name.trim()) ||
@@ -165,14 +169,14 @@ export function mapCompatModelsPayload(
 			provider: options.providerId,
 			baseUrl: options.inferenceBaseUrl,
 			api,
-			reasoning: efforts.some((effort) => effort !== "none"),
+			reasoning: thinking.reasoning,
 			input: buildInputModalities(upstream),
 			cost: resolveModelCostRates(id),
 			contextWindow: resolveCompatContextWindow(id, explicitContext),
 			maxTokens,
-			thinkingLevelMap: buildThinkingLevelMap(efforts, api),
+			thinkingLevelMap: thinking.thinkingLevelMap,
 		};
-		models.push(applyMoonshotKimiCompatModel(model, vendor));
+		models.push(applyMoonshotKimiCompatModel(model, vendor, gatewayEfforts.length === 0));
 		catalogRefs.push(
 			vendor && KNOWN_UPSTREAM_VENDOR_IDS.has(vendor)
 				? { id, providerId: vendor }

@@ -29,6 +29,7 @@ import {
 import {
 	applyGatewayModelCosts,
 	DEFAULT_BASE_URL,
+	extractReasoningEfforts,
 	isOfflineMode,
 	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
@@ -38,9 +39,9 @@ import {
 } from "./catalog.js";
 import { applyMoonshotKimiCompatModel } from "./compat/catalog.js";
 import {
-	applyModelOverridesToMemory,
-	readModelOverridesFile,
+	createModelOverrideLookup,
 	reloadModelOverridesFromDisk,
+	type ModelOverrideLookup,
 } from "./model-overrides.js";
 import {
 	applyPricingCacheToResolver,
@@ -117,6 +118,15 @@ function logWarn(message: string): void {
 	console.warn(`[pi-llmgates-provider] ${message}`);
 }
 
+function backgroundRefreshErrorSummary(error: unknown): string {
+	if (error instanceof HttpStatusError) return `HTTP ${error.status}`;
+	const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+	if (code && ["EACCES", "EISDIR", "EIO", "ENOTDIR", "EPERM"].includes(code)) {
+		return `filesystem error (${code})`;
+	}
+	return error instanceof TypeError ? "network error" : "error";
+}
+
 function isModelStructValid(model: unknown, providerId: string, inferenceBaseUrl?: string): model is Model<Api> {
 	if (!model || typeof model !== "object" || Array.isArray(model)) {
 		return false;
@@ -138,25 +148,26 @@ function mapGatewayPayload(
 	providerId: string,
 	inferenceBaseUrl: string,
 	gatewayModels: readonly GatewayModel[],
+	endpointOverride: ModelOverrideLookup,
 ): Model<Api>[] {
 	const mapped: PiProviderModel[] = [];
 	const vendorById = new Map<string, string>();
+	const gatewayThinkingIds = new Set<string>();
 	const seen = new Set<string>();
 	for (const item of gatewayModels) {
-		const model = toPiModel(item);
+		const model = toPiModel(item, endpointOverride);
 		if (!model) continue;
 		if (seen.has(model.id)) continue;
 		seen.add(model.id);
 		mapped.push(model);
 		const vendor = (item.provider_id ?? "").trim().toLowerCase();
-		if (vendor) {
-			vendorById.set(model.id, vendor);
-		}
+		if (vendor) vendorById.set(model.id, vendor);
+		if (extractReasoningEfforts(item).length > 0) gatewayThinkingIds.add(model.id);
 	}
 	// LLMGates baseUrl is not moonshot.*; without explicit compat, pi-ai sends
 	// developer role for reasoning models → Moonshot "tokenization failed".
 	return providerModelsToStoredModels(providerId, mapped, inferenceBaseUrl).map((model) =>
-		applyMoonshotKimiCompatModel(model, vendorById.get(model.id)),
+		applyMoonshotKimiCompatModel(model, vendorById.get(model.id), !gatewayThinkingIds.has(model.id)),
 	);
 }
 
@@ -211,10 +222,18 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	const activeTasks = new Set<Promise<unknown>>();
 	const activeControllers = new Set<AbortController>();
 	let warnedLoginStoreFailure = false;
+	let modelsAheadOfStore = false;
 
 	const ambientAtStart = connectionFromAmbientEnv() ?? connectionFromConfigFile(agentDir);
 	applyPricingCacheToResolver(readModelPricingFile(agentDir));
-	applyModelOverridesToMemory(readModelOverridesFile(agentDir));
+	let endpointOverride = createModelOverrideLookup(null);
+	function reloadEndpointOverride(): ModelOverrideLookup {
+		reloadModelOverridesFromDisk(agentDir, (file) => {
+			endpointOverride = createModelOverrideLookup(file);
+		});
+		return endpointOverride;
+	}
+	reloadEndpointOverride();
 
 	function track<T>(promise: Promise<T>): Promise<T> {
 		activeTasks.add(promise);
@@ -314,7 +333,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		connection: CanonicalConnection,
 		signal: AbortSignal | undefined,
 	): Promise<Model<Api>[]> {
-		reloadModelOverridesFromDisk(agentDir);
+		const requestEndpointOverride = reloadEndpointOverride();
 		const payload = await requestLimitedJson({
 			url: connection.modelsUrl,
 			headers: {
@@ -330,7 +349,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		});
 		const gatewayModels = parseGatewayModelsPayload(payload);
 		schedulePricingSync(gatewayModels);
-		return mapGatewayPayload(providerId, connection.inferenceBaseUrl, gatewayModels);
+		return mapGatewayPayload(providerId, connection.inferenceBaseUrl, gatewayModels, requestEndpointOverride);
 	}
 
 	function connectionStillMatches(expected: CanonicalConnection): boolean {
@@ -376,14 +395,19 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			connectionFromCredential(credential) ??
 			connectionFromAmbientEnv() ??
 			connectionFromConfigFile(agentDir);
-		if (connection) {
-			lastConnection = connection;
-		}
+		const connectionChanged = Boolean(
+			connection &&
+				lastConnection &&
+				(lastConnection.inferenceBaseUrl !== connection.inferenceBaseUrl ||
+					!keysEqual(lastConnection.apiKey, connection.apiKey)),
+		);
+		if (connectionChanged) modelsAheadOfStore = false;
+		if (connection) lastConnection = connection;
 
 		// Cache restore first.
 		try {
 			const stored = await context.store.read();
-			if (stored) {
+			if (stored && (!modelsAheadOfStore || connectionChanged)) {
 				restoreFromStoreEntry(stored, connection);
 			}
 		} catch (error) {
@@ -404,11 +428,13 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				if (shutDown) return;
 				try {
 					await context.store.write({ models: candidate, checkedAt: now() });
+					modelsAheadOfStore = false;
 					setModels(candidate, true);
 					lastConnection = pendingConnection;
 					lastCheckedAt = now();
 				} catch (error) {
 					// Login exception: keep old disk cache, publish in-memory models.
+					modelsAheadOfStore = true;
 					setModels(candidate, true);
 					lastConnection = pendingConnection;
 					if (!warnedLoginStoreFailure) {
@@ -459,19 +485,13 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				throw new DOMException("The operation was aborted.", "AbortError");
 			}
 			if (requestId !== latestRequestId) return;
-			if (!connectionStillMatches(requestConnection)) {
-				return;
-			}
-			try {
-				await context.store.write({ models: fetched, checkedAt: now() });
-				setModels(fetched, true);
-				lastConnection = requestConnection;
-				lastCheckedAt = now();
-				wantBackgroundRefresh = false;
-			} catch (error) {
-				// Normal refresh: retain previous models and cache.
-				throw error instanceof Error ? error : new Error(String(error));
-			}
+			if (!connectionStillMatches(requestConnection)) return;
+			await context.store.write({ models: fetched, checkedAt: now() });
+			modelsAheadOfStore = false;
+			setModels(fetched, true);
+			lastConnection = requestConnection;
+			lastCheckedAt = now();
+			wantBackgroundRefresh = false;
 		});
 	}
 
@@ -687,6 +707,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				if (!connectionStillMatches(requestConnection)) return;
 				await store.write({ models: fetched, checkedAt: now() });
 				if (shutDown || gen !== generation) return;
+				modelsAheadOfStore = false;
 				setModels(fetched, true);
 				lastConnection = requestConnection;
 				lastCheckedAt = now();
@@ -696,6 +717,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				return;
 			}
 			// retain previous models; allow a later session_start to retry
+			logWarn(`Background model refresh failed: ${backgroundRefreshErrorSummary(error)}`);
 		}
 	}
 

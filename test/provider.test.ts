@@ -222,10 +222,13 @@ describe("native oauth login", () => {
 		}
 	});
 
-	it("login store write failure still publishes in-memory models", async () => {
-		const server = await startLoopbackServer([
-			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", name: "M1" }]) },
-		]);
+	it("login store write failure keeps newer in-memory models through a failed refresh", async () => {
+		const route = {
+			path: "/v1/models?client_version=pi",
+			status: 200,
+			body: JSON.stringify([{ id: "m1", name: "M1" }]),
+		};
+		const server = await startLoopbackServer([route]);
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			const provider = createLLMGatesProvider({
@@ -262,6 +265,16 @@ describe("native oauth login", () => {
 			// disk entry retained (no successful write)
 			const disk = await store.read();
 			expect(disk?.models.some((m) => m.id === "old")).toBe(true);
+
+			await provider.refreshModels!({ credential: cred, store, allowNetwork: false });
+			expect(provider.getModels().map((model) => model.id)).toEqual(["m1"]);
+
+			route.status = 500;
+			route.body = "failed refresh";
+			await expect(
+				provider.refreshModels!({ credential: cred, store, allowNetwork: true, force: true }),
+			).rejects.toThrow();
+			expect(provider.getModels().map((model) => model.id)).toEqual(["m1"]);
 		} finally {
 			cleanup();
 			await server.close();

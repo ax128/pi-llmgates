@@ -1,10 +1,18 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createLLMGatesProvider } from "../extensions/provider.js";
+import { CATALOG_BACKGROUND_REFRESH_MS } from "../extensions/util.js";
 import { createMemoryStore } from "./helpers/fake-store.js";
 import { startLoopbackServer } from "./helpers/loopback-server.js";
-import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
+import { withTempAgentDir, writeJson } from "./helpers/temp-agent-dir.js";
 
-const envKeys = ["LLMGATES_API_KEY", "LLMGATES_BASE_URL", "PI_OFFLINE"] as const;
+const envKeys = [
+	"LLMGATES_API_KEY",
+	"LLMGATES_BASE_URL",
+	"LLMGATES_PRICING_AUTO_UPDATE",
+	"PI_OFFLINE",
+] as const;
 afterEach(() => {
 	for (const key of envKeys) delete process.env[key];
 });
@@ -62,6 +70,291 @@ describe("lifecycle", () => {
 			expect(hits).toBe(0);
 			expect(provider.getModels().some((m) => m.id === "cached")).toBe(true);
 		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("isolates endpoint last-known-good state between core provider instances", async () => {
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				body: JSON.stringify([
+					{
+						id: "gpt-5.6-sol",
+						provider_id: "openai",
+						web_chat_endpoint: "chat_completions",
+					},
+				]),
+			},
+		]);
+		const first = withTempAgentDir();
+		const second = withTempAgentDir();
+		const credential = {
+			type: "api_key" as const,
+			key: "k",
+			env: {
+				LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+				LLMGATES_RESOLVED_SOURCE: "env",
+			},
+		};
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			writeJson(join(first.agentDir, "llmgates/models.json"), { defaults: { endpoint: "messages" } });
+			writeFileSync(join(second.agentDir, "llmgates/models.json"), "{ invalid");
+			const firstProvider = createLLMGatesProvider({
+				agentDir: first.agentDir,
+				providerId: "first",
+				providerName: "First",
+			});
+			const secondProvider = createLLMGatesProvider({
+				agentDir: second.agentDir,
+				providerId: "second",
+				providerName: "Second",
+			});
+
+			await secondProvider.refreshModels!({
+				store: createMemoryStore(),
+				allowNetwork: true,
+				force: true,
+				credential,
+			});
+			expect(secondProvider.getModels()[0]?.api).toBe("openai-completions");
+
+			writeJson(join(first.agentDir, "llmgates/models.json"), { defaults: { endpoint: "responses" } });
+			await firstProvider.refreshModels!({
+				store: createMemoryStore(),
+				allowNetwork: true,
+				force: true,
+				credential,
+			});
+			expect(firstProvider.getModels()[0]?.api).toBe("openai-responses");
+			await secondProvider.refreshModels!({
+				store: createMemoryStore(),
+				allowNetwork: true,
+				force: true,
+				credential,
+			});
+			expect(secondProvider.getModels()[0]?.api).toBe("openai-completions");
+		} finally {
+			warn.mockRestore();
+			first.cleanup();
+			second.cleanup();
+			await server.close();
+		}
+	});
+
+	it("keeps cached metadata through skips and failures, then adopts it after a successful core refresh", async () => {
+		let hits = 0;
+		const catalog = JSON.stringify([
+			{
+				id: "gpt-5.6-sol",
+				name: "Current",
+				provider_id: "openai",
+				web_chat_endpoint: "chat_completions",
+			},
+		]);
+		const route = {
+			path: "/v1/models?client_version=pi",
+			status: 200,
+			body: catalog,
+			onRequest: () => {
+				hits += 1;
+			},
+		};
+		const server = await startLoopbackServer([route]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		let clock = 1_000;
+		try {
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			writeJson(join(agentDir, "llmgates/models.json"), { defaults: { endpoint: "responses" } });
+			const cached = {
+				id: "gpt-5.6-sol",
+				name: "Cached",
+				provider: "llmgates",
+				api: "openai-completions" as const,
+				baseUrl: `${server.baseUrl}/v1`,
+				reasoning: true,
+				input: ["text" as const],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1,
+				maxTokens: 1,
+				thinkingLevelMap: { off: null, low: "cached-low", xhigh: null },
+				compat: { supportsDeveloperRole: false },
+			};
+			const store = createMemoryStore({ models: [cached], checkedAt: clock });
+			const credential = {
+				type: "api_key" as const,
+				key: "k",
+				env: {
+					LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+					LLMGATES_RESOLVED_SOURCE: "env",
+				},
+			};
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+				now: () => clock,
+			});
+
+			await provider.refreshModels!({ store, allowNetwork: false, credential });
+			expect(provider.getModels()[0]).toMatchObject({
+				api: "openai-completions",
+				thinkingLevelMap: cached.thinkingLevelMap,
+				compat: cached.compat,
+			});
+			expect(hits).toBe(0);
+
+			writeJson(join(agentDir, "llmgates/models.json"), { defaults: { endpoint: "messages" } });
+			await provider.refreshModels!({ store, allowNetwork: true, credential });
+			process.env.PI_OFFLINE = "1";
+			await provider.refreshModels!({ store, allowNetwork: true, force: true, credential });
+			delete process.env.PI_OFFLINE;
+			expect(hits).toBe(0);
+			expect(provider.getModels()[0]).toMatchObject({
+				api: "openai-completions",
+				thinkingLevelMap: cached.thinkingLevelMap,
+			});
+
+			route.status = 500;
+			route.body = "network failure";
+			await expect(
+				provider.refreshModels!({ store, allowNetwork: true, force: true, credential }),
+			).rejects.toThrow();
+			expect(provider.getModels()[0]).toMatchObject({
+				api: "openai-completions",
+				thinkingLevelMap: cached.thinkingLevelMap,
+			});
+			expect(store.writes).toHaveLength(0);
+
+			writeFileSync(join(agentDir, "llmgates/models.json"), "{ malformed endpoint file");
+			route.status = 200;
+			route.body = catalog;
+			clock += CATALOG_BACKGROUND_REFRESH_MS + 1;
+			let attemptedApi: string | undefined;
+			const write = store.write.bind(store);
+			store.write = async (entry) => {
+				attemptedApi = entry.models[0]?.api;
+				await write(entry);
+			};
+			store.failNextWrite = new Error("store unavailable");
+			await expect(provider.refreshModels!({ store, allowNetwork: true, credential })).rejects.toThrow(
+				"store unavailable",
+			);
+			expect(attemptedApi).toBe("anthropic-messages");
+			expect(provider.getModels()[0]).toMatchObject({
+				api: "openai-completions",
+				thinkingLevelMap: cached.thinkingLevelMap,
+			});
+			expect((await store.read())?.models[0]).toMatchObject({
+				api: "openai-completions",
+				thinkingLevelMap: cached.thinkingLevelMap,
+			});
+
+			writeJson(join(agentDir, "llmgates/models.json"), { defaults: { endpoint: "responses" } });
+			await provider.refreshModels!({ store, allowNetwork: true, force: true, credential });
+			expect(provider.getModels()[0]).toMatchObject({
+				api: "openai-responses",
+				thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+			});
+			expect(store.writes).toHaveLength(1);
+			expect(store.writes[0]?.models[0]).toMatchObject({
+				api: "openai-responses",
+				thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+			});
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("warns without rejecting when a background endpoint reload gets EISDIR", async () => {
+		let hits = 0;
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				onRequest: () => {
+					hits += 1;
+				},
+				body: "[]",
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			process.env.LLMGATES_API_KEY = "background-secret";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const store = createMemoryStore({
+				models: [
+					{
+						id: "cached",
+						name: "Cached",
+						provider: "llmgates",
+						api: "openai-responses",
+						baseUrl: `${server.baseUrl}/v1`,
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 1,
+						maxTokens: 1,
+					},
+				],
+				checkedAt: 1,
+			});
+			await provider.refreshModels!({
+				store,
+				allowNetwork: false,
+				credential: {
+					type: "api_key",
+					key: "background-secret",
+					env: {
+						LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+						LLMGATES_RESOLVED_SOURCE: "env",
+					},
+				},
+			});
+			mkdirSync(join(agentDir, "llmgates/models.json"));
+			await expect(
+				provider.refreshModels!({
+					store,
+					allowNetwork: true,
+					force: true,
+					credential: {
+						type: "api_key",
+						key: "background-secret",
+						env: {
+							LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+							LLMGATES_RESOLVED_SOURCE: "env",
+						},
+					},
+				}),
+			).rejects.toMatchObject({ code: "EISDIR" });
+			expect(hits).toBe(0);
+			expect(store.writes).toHaveLength(0);
+			expect(provider.getModels().map((model) => model.id)).toEqual(["cached"]);
+
+			provider.beginSession("startup");
+			await expect(provider.startBackgroundRefresh({ force: true })).resolves.toBeUndefined();
+
+			const warning = warn.mock.calls.flat().join(" ");
+			expect(warning).toContain("[pi-llmgates-provider] Background model refresh failed:");
+			expect(warning).toContain("EISDIR");
+			expect(warning).not.toContain("background-secret");
+			expect(hits).toBe(0);
+			expect(store.writes).toHaveLength(0);
+			expect(provider.getModels().map((model) => model.id)).toEqual(["cached"]);
+		} finally {
+			warn.mockRestore();
 			cleanup();
 			await server.close();
 		}

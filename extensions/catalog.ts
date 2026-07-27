@@ -1,8 +1,7 @@
-/**
- * Pure gateway catalog helpers (no pi-coding-agent import — safe for fast unit tests).
- */
+/** Gateway catalog helpers using pi-ai's loader-safe compat catalog entrypoint. */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { getModels } from "@earendil-works/pi-ai/compat";
 import packageJson from "../package.json" with { type: "json" };
 import { lookupEndpointOverride } from "./model-overrides.js";
 import { resolveModelCostRates } from "./model-pricing.js";
@@ -26,6 +25,10 @@ export const DEFAULT_MAX_TOKENS = 16384;
 export const DEFAULT_CONTEXT_WINDOW = 128000;
 
 const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const BUILTIN_MODELS = {
+	openai: new Map(getModels("openai").map((model) => [model.id, model])),
+	anthropic: new Map(getModels("anthropic").map((model) => [model.id, model])),
+};
 
 /** LLMGates tags for image/video generation — not selectable in pi coding agent. */
 const GENERATION_CAPABILITY_TAGS = new Set([
@@ -63,6 +66,7 @@ export interface PiProviderModel {
 	maxTokens: number;
 	api: PiApiType;
 	thinkingLevelMap?: ThinkingLevelMap;
+	compat?: { forceAdaptiveThinking: true };
 }
 
 export interface CreditsSnapshot {
@@ -208,84 +212,69 @@ export function extractReasoningEfforts(model: GatewayModel): string[] {
 	return efforts;
 }
 
-/**
- * Known reasoning-effort sets per model family (sourced from provider docs / pi-ai adapters):
- * - Anthropic xhigh is native on Opus 4.7/4.8, Sonnet 5, Fable 5
- *   (anthropic-messages.js `output_config: { effort: "xhigh" }`).
- * - OpenAI reasoning_effort: minimal/low/medium/high.
- * - Gemini / Grok / DeepSeek expose low/medium/high via OpenAI-compatible gateways.
- *
- * A match wins over gateway hints (gateways frequently under-report, leaving users
- * stuck at 3 levels). No match → gateway levels → full coverage by api.
- */
+/** Static reasoning data not covered by the reused OpenAI/Anthropic catalogs. */
 export interface ModelThinkingRule {
 	label: string;
 	pattern: RegExp;
-	provider?: string;
+	provider: string;
 	efforts: readonly string[];
 }
 
 export const MODEL_THINKING_RULES: readonly ModelThinkingRule[] = [
-	{ label: "Claude Opus 4.7+", provider: "anthropic", pattern: /^claude-opus-4-[7-9]/i, efforts: ["none", "low", "medium", "high", "xhigh"] },
-	{ label: "Claude Sonnet 5", provider: "anthropic", pattern: /^claude-sonnet-5/i, efforts: ["none", "low", "medium", "high", "xhigh"] },
-	{ label: "Claude Fable 5", provider: "anthropic", pattern: /^claude-fable-5/i, efforts: ["none", "low", "medium", "high", "xhigh"] },
-	{ label: "Claude (anthropic)", provider: "anthropic", pattern: /^claude-/i, efforts: ["none", "low", "medium", "high"] },
-	{ label: "OpenAI GPT/o-series", provider: "openai", pattern: /^(gpt-|o[134])/i, efforts: ["none", "minimal", "low", "medium", "high"] },
 	{ label: "Google Gemini", provider: "google", pattern: /^gemini-/i, efforts: ["none", "low", "medium", "high"] },
 	{ label: "xAI Grok", provider: "xai", pattern: /^grok-/i, efforts: ["none", "low", "medium", "high"] },
 	{ label: "DeepSeek", provider: "deepseek", pattern: /^deepseek-/i, efforts: ["none", "low", "medium", "high"] },
 ];
 
-/** Resolve the effort set for a model: knowledge base → gateway → full coverage by api. */
+interface ExactThinkingMetadata {
+	reasoning: boolean;
+	thinkingLevelMap?: ThinkingLevelMap;
+	compat?: { forceAdaptiveThinking: true };
+}
+
+function resolveExactThinkingMetadata(
+	modelId: string,
+	vendor: string | undefined,
+	api: PiApiType,
+): ExactThinkingMetadata | undefined {
+	const provider = vendor?.trim().toLowerCase();
+	const applicable =
+		(provider === "openai" && (api === "openai-responses" || api === "openai-completions")) ||
+		(provider === "anthropic" && api === "anthropic-messages");
+	const builtin = applicable
+		? BUILTIN_MODELS[provider as "openai" | "anthropic"].get(modelId)
+		: undefined;
+	if (!builtin) return undefined;
+
+	return {
+		reasoning: builtin.reasoning,
+		thinkingLevelMap: builtin.thinkingLevelMap ? { ...builtin.thinkingLevelMap } : undefined,
+		...(provider === "anthropic" &&
+			(builtin.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking === true
+			? { compat: { forceAdaptiveThinking: true as const } }
+			: {}),
+	};
+}
+
+/** Resolve non-built-in levels in source order: gateway → static data → fallback. */
 export function resolveThinkingLevels(
 	modelId: string,
 	vendor: string | undefined,
-	api: PiApiType | undefined,
+	_api: PiApiType | undefined,
 	gatewayEfforts: readonly string[] | undefined,
 ): string[] {
 	const id = modelId.trim();
-	const v = vendor?.trim().toLowerCase();
+	const provider = vendor?.trim().toLowerCase();
+	if (gatewayEfforts && gatewayEfforts.length > 0) return [...gatewayEfforts];
 
-	if (v) {
-		for (const rule of MODEL_THINKING_RULES) {
-			if (rule.provider && rule.provider !== v) continue;
-			if (rule.pattern.test(id)) return [...rule.efforts];
-		}
-	}
 	for (const rule of MODEL_THINKING_RULES) {
-		if (rule.provider) continue;
-		if (rule.pattern.test(id)) return [...rule.efforts];
+		if (rule.provider === provider && rule.pattern.test(id)) return [...rule.efforts];
 	}
 
-	if (gatewayEfforts && gatewayEfforts.length > 0) {
-		return [...gatewayEfforts];
-	}
-
-	// Unknown model + no gateway hint: full coverage. Api-safe send values are
-	// applied in buildThinkingLevelMap (xhigh/max capped where the api rejects them).
-	if (api === "anthropic-messages") {
-		return ["none", "low", "medium", "high", "xhigh", "max"];
-	}
-	return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+	return ["none", "low", "medium", "high"];
 }
 
-/**
- * Map a pi thinking level to the effort string actually sent to the gateway.
- * Anthropic natively accepts xhigh (budget tiers); OpenAI-style apis pass
- * reasoning_effort through verbatim and reject unknown values, so xhigh/max
- * cap at "high" (option A: keep the level selectable without 400s).
- */
-function safeEffortValue(level: string, api?: PiApiType): string {
-	if (!api) {
-		return level;
-	}
-	if (api === "anthropic-messages") {
-		return level === "max" ? "xhigh" : level;
-	}
-	return level === "xhigh" || level === "max" ? "high" : level;
-}
-
-export function buildThinkingLevelMap(efforts: string[], api?: PiApiType): ThinkingLevelMap | undefined {
+export function buildThinkingLevelMap(efforts: string[], _api?: PiApiType): ThinkingLevelMap | undefined {
 	if (efforts.length === 0) {
 		return undefined;
 	}
@@ -298,10 +287,28 @@ export function buildThinkingLevelMap(efforts: string[], api?: PiApiType): Think
 			map.off = supported.has("none") ? "none" : null;
 			continue;
 		}
-		map[level] = supported.has(level) ? safeEffortValue(level, api) : null;
+		map[level] = supported.has(level) ? level : null;
 	}
 
 	return map;
+}
+
+export type ResolvedThinkingMetadata = ExactThinkingMetadata;
+
+export function resolveThinkingMetadata(
+	modelId: string,
+	vendor: string | undefined,
+	api: PiApiType,
+	gatewayEfforts: readonly string[] | undefined,
+): ResolvedThinkingMetadata {
+	const exact = resolveExactThinkingMetadata(modelId, vendor, api);
+	if (exact) return exact;
+
+	const efforts = resolveThinkingLevels(modelId, vendor, api, gatewayEfforts);
+	return {
+		reasoning: efforts.some((effort) => effort !== "none"),
+		thinkingLevelMap: buildThinkingLevelMap(efforts, api),
+	};
 }
 
 export function buildInputModalities(model: GatewayModel): Array<"text" | "image"> {
@@ -331,7 +338,15 @@ export function buildInputModalities(model: GatewayModel): Array<"text" | "image
 	return input;
 }
 
-export function toPiModel(model: GatewayModel): PiProviderModel | null {
+export function toPiModel(model: GatewayModel): PiProviderModel | null;
+export function toPiModel(
+	model: GatewayModel,
+	endpointOverride: (modelId: string) => string | undefined,
+): PiProviderModel | null;
+export function toPiModel(
+	model: GatewayModel,
+	endpointOverride?: unknown,
+): PiProviderModel | null {
 	const id = gatewayModelId(model);
 	if (!id) {
 		return null;
@@ -345,10 +360,10 @@ export function toPiModel(model: GatewayModel): PiProviderModel | null {
 
 	const providerId = (model.provider_id ?? "").trim().toLowerCase();
 	const gatewayEfforts = extractReasoningEfforts(model);
-	const endpoint = lookupEndpointOverride(id) ?? resolveInferenceEndpoint(model);
+	const override = typeof endpointOverride === "function" ? endpointOverride(id) : lookupEndpointOverride(id);
+	const endpoint = override ?? resolveInferenceEndpoint(model);
 	const api = toPiApiType(endpoint, providerId);
-	const efforts = resolveThinkingLevels(id, providerId || undefined, api, gatewayEfforts);
-	const hasReasoning = efforts.some((effort) => effort !== "none");
+	const thinking = resolveThinkingMetadata(id, providerId || undefined, api, gatewayEfforts);
 
 	const contextWindow =
 		(typeof model.context_window === "number" && model.context_window > 0 ? model.context_window : undefined) ??
@@ -362,13 +377,14 @@ export function toPiModel(model: GatewayModel): PiProviderModel | null {
 	return {
 		id,
 		name: (model.display_name ?? model.name ?? id).trim() || id,
-		reasoning: hasReasoning,
+		reasoning: thinking.reasoning,
 		input: buildInputModalities(model),
 		cost: resolveModelCostRates(id, providerId || undefined),
 		contextWindow,
 		maxTokens,
 		api,
-		thinkingLevelMap: buildThinkingLevelMap(efforts, api),
+		thinkingLevelMap: thinking.thinkingLevelMap,
+		...(thinking.compat ? { compat: thinking.compat } : {}),
 	};
 }
 
