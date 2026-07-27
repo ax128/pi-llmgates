@@ -205,7 +205,7 @@ pi
 4. 将网关 catalog 映射为 pi 模型，按模型设置 `api`（`responses` / `chat_completions` / `messages`）
 5. 跳过 image / video **生成** 类模型（不适合 pi coding agent）
 6. `/balance` — 通过 `GET /v1/user/balance` 查询钱包与订阅
-7. TUI 扩展状态行：耗时、调用次数（含 subagent / Task 汇总）、估算**费用**，以及 `/calls` 查看 per-model 明细；结算通知还显示 TPS（tok/s）。父会话 assistant 用量在 `message_end` 时统计；同步 pi `subagent` / Cursor `Task` 工具结果与 `.pi-subagents/artifacts/*_meta.json` 汇总计入同一计数器；async / background 子代理通过 `subagent:async-complete` 旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与 Cursor `Task` 仍统计）。用量聚合在后台任务链中执行，不阻塞 agent 循环。
+7. TUI 扩展状态行以 `17m · 19c · $1.78` 的紧凑格式显示本轮耗时、调用次数（含 subagent / Task 汇总）和估算**费用**；每轮结束不再弹出 TPS 通知，per-model 明细仍通过 `/calls` 查看。父会话 assistant 用量在 `message_end` 时统计；同步 pi `subagent` / Cursor `Task` 工具结果与 `.pi-subagents/artifacts/*_meta.json` 汇总计入同一计数器；async / background 子代理通过 `subagent:async-complete` 旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与 Cursor `Task` 仍统计）。用量聚合在后台任务链中执行，不阻塞 agent 循环。
 
 ## 配置
 

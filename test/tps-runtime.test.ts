@@ -115,8 +115,7 @@ describe("tps runtime subagent ordering", () => {
 			runtime.scopeChoices.push("This session");
 			await calls.handler("", runtime.ctx);
 
-			expect(runtime.notifications.some(({ message }) => message.includes("test/turn-1"))).toBe(true);
-			expect(runtime.notifications.some(({ message }) => message.includes("test/turn-2"))).toBe(true);
+			expect(runtime.notifications.filter(({ message }) => message.includes("TPS "))).toEqual([]);
 			expect(runtime.selections[0]?.some((line) => line.includes("test/turn-2"))).toBe(true);
 			expect(runtime.selections[0]?.some((line) => line.includes("test/turn-1"))).toBe(false);
 			expect(runtime.selections[1]?.some((line) => line.includes("test/turn-1"))).toBe(true);

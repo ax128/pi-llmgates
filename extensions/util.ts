@@ -7,6 +7,7 @@ import {
 	chmodSync,
 	closeSync,
 	constants,
+	copyFileSync,
 	existsSync,
 	fsyncSync,
 	linkSync,
@@ -34,7 +35,21 @@ const LEGACY_FILE_MOVES: ReadonlyArray<readonly [string, string]> = [
 	["llmgates-model-pricing.json", LLMGATES_PRICING_FILE],
 ];
 
-/** One-time migration: move legacy flat agent-dir files into the llmgates/ subdir. */
+function isHardLinkUnsupported(error: unknown): boolean {
+	return (
+		isPlainObject(error) &&
+		(error.code === "EXDEV" ||
+			error.code === "ENOTSUP" ||
+			error.code === "EPERM" ||
+			error.code === "EOPNOTSUPP")
+	);
+}
+
+/**
+ * One-time migration: move legacy flat agent-dir files into the llmgates/ subdir.
+ * Prefer hard link + unlink (no clobber on EEXIST). If hard links are unsupported,
+ * copy then unlink so readers that only open the new path still see the config.
+ */
 export function migrateLegacyConfigFiles(agentDir: string): void {
 	for (const [oldName, newName] of LEGACY_FILE_MOVES) {
 		const oldPath = join(agentDir, oldName);
@@ -44,19 +59,22 @@ export function migrateLegacyConfigFiles(agentDir: string): void {
 		try {
 			linkSync(oldPath, newPath);
 		} catch (error) {
-			// EEXIST: destination won the race — keep both.
-			// EXDEV / ENOTSUP / EPERM / EOPNOTSUPP: hard link unsupported — leave legacy in place.
-			if (
-				isPlainObject(error) &&
-				(error.code === "EEXIST" ||
-					error.code === "EXDEV" ||
-					error.code === "ENOTSUP" ||
-					error.code === "EPERM" ||
-					error.code === "EOPNOTSUPP")
-			) {
+			// Destination won the race — keep both; never overwrite.
+			if (isPlainObject(error) && error.code === "EEXIST") {
 				continue;
 			}
-			throw error;
+			if (!isHardLinkUnsupported(error)) {
+				throw error;
+			}
+			// Hard link unsupported (FAT/SMB/some containers): copy without clobbering.
+			try {
+				copyFileSync(oldPath, newPath, constants.COPYFILE_EXCL);
+			} catch (copyError) {
+				if (isPlainObject(copyError) && copyError.code === "EEXIST") {
+					continue;
+				}
+				throw copyError;
+			}
 		}
 		unlinkSync(oldPath);
 	}

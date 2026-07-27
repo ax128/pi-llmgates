@@ -88,7 +88,7 @@ describe("migrateLegacyConfigFiles", () => {
 		}
 	});
 
-	it("skips a cross-device legacy file and still migrates the others", () => {
+	it("copies a cross-device legacy file when hard links are unavailable", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			writeFileSync(join(agentDir, "llmgates.json"), JSON.stringify({ baseUrl: "https://old.example/v1" }));
@@ -97,8 +97,8 @@ describe("migrateLegacyConfigFiles", () => {
 
 			migrateLegacyConfigFiles(agentDir);
 
-			expect(existsSync(join(agentDir, "llmgates.json"))).toBe(true);
-			expect(existsSync(join(agentDir, "llmgates/config.json"))).toBe(false);
+			expect(loadValidatedConfigFile(agentDir).baseUrl).toBe("https://old.example/v1");
+			expect(existsSync(join(agentDir, "llmgates.json"))).toBe(false);
 			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/2api.json"), "utf8"))).toEqual({ instances: [] });
 			expect(existsSync(join(agentDir, "llmgates-2api.json"))).toBe(false);
 		} finally {
@@ -107,7 +107,7 @@ describe("migrateLegacyConfigFiles", () => {
 		}
 	});
 
-	it("skips a legacy file when hard links are disallowed and still migrates the others", () => {
+	it("copies a legacy file when hard links are disallowed and still migrates the others", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			writeFileSync(join(agentDir, "llmgates.json"), JSON.stringify({ baseUrl: "https://old.example/v1" }));
@@ -116,10 +116,27 @@ describe("migrateLegacyConfigFiles", () => {
 
 			migrateLegacyConfigFiles(agentDir);
 
-			expect(existsSync(join(agentDir, "llmgates.json"))).toBe(true);
-			expect(existsSync(join(agentDir, "llmgates/config.json"))).toBe(false);
+			expect(loadValidatedConfigFile(agentDir).baseUrl).toBe("https://old.example/v1");
+			expect(existsSync(join(agentDir, "llmgates.json"))).toBe(false);
 			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/2api.json"), "utf8"))).toEqual({ instances: [] });
 			expect(existsSync(join(agentDir, "llmgates-2api.json"))).toBe(false);
+		} finally {
+			migrationRace.epermTarget = "";
+			cleanup();
+		}
+	});
+
+	it("does not overwrite via copy fallback when destination already exists", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeFileSync(join(agentDir, "llmgates.json"), JSON.stringify({ baseUrl: "https://legacy.example/v1" }));
+			writeFileSync(join(agentDir, "llmgates/config.json"), JSON.stringify({ baseUrl: "https://new.example/v1" }));
+			migrationRace.epermTarget = join(agentDir, "llmgates/config.json");
+
+			migrateLegacyConfigFiles(agentDir);
+
+			expect(loadValidatedConfigFile(agentDir).baseUrl).toBe("https://new.example/v1");
+			expect(existsSync(join(agentDir, "llmgates.json"))).toBe(true);
 		} finally {
 			migrationRace.epermTarget = "";
 			cleanup();
