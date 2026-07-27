@@ -43,15 +43,15 @@ export function registerSubagentUsageBridge(
 		return () => {};
 	}
 
-	const matchingRunId = (data: unknown): string | null => {
-		if (
-			!options.sessionId ||
-			!isPlainObject(data) ||
-			typeof data.sessionId !== "string" ||
-			data.sessionId !== options.sessionId
-		) {
-			return null;
-		}
+	const matchingSession = (data: unknown): data is Record<string, unknown> =>
+		Boolean(
+			options.sessionId &&
+				isPlainObject(data) &&
+				typeof data.sessionId === "string" &&
+				data.sessionId === options.sessionId,
+		);
+
+	const matchingRunId = (data: Record<string, unknown>): string | null => {
 		const candidate =
 			typeof data.runId === "string"
 				? data.runId
@@ -65,11 +65,13 @@ export function registerSubagentUsageBridge(
 	};
 
 	const onAsyncComplete = (data: unknown): void => {
-		const runId = matchingRunId(data);
-		if (!runId) {
+		if (!matchingSession(data)) {
 			return;
 		}
-		options.onRunObserved?.(runId);
+		const runId = matchingRunId(data);
+		if (runId) {
+			options.onRunObserved?.(runId);
+		}
 		const records = extractSubagentUsageFromAsyncComplete(data, options.sessionId);
 		if (records.length > 0) {
 			options.onRecords(records);
@@ -77,6 +79,9 @@ export function registerSubagentUsageBridge(
 	};
 
 	const onForegroundComplete = (data: unknown): void => {
+		if (!matchingSession(data)) {
+			return;
+		}
 		const runId = matchingRunId(data);
 		if (!runId) {
 			return;

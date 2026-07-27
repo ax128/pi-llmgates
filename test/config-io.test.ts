@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-const migrationRace = vi.hoisted(() => ({ target: "", armed: false }));
+const migrationRace = vi.hoisted(() => ({ target: "", armed: false, exdevTarget: "" }));
 
 vi.mock("node:fs", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs")>();
@@ -16,6 +16,10 @@ vi.mock("node:fs", async (importOriginal) => {
 			return exists;
 		},
 		linkSync(existingPath: import("node:fs").PathLike, newPath: import("node:fs").PathLike) {
+			if (migrationRace.exdevTarget && String(newPath) === migrationRace.exdevTarget) {
+				const error = Object.assign(new Error("cross-device link"), { code: "EXDEV" });
+				throw error;
+			}
 			if (migrationRace.armed && String(newPath) === migrationRace.target) {
 				migrationRace.armed = false;
 				fs.writeFileSync(newPath, "new");
@@ -71,6 +75,25 @@ describe("migrateLegacyConfigFiles", () => {
 		} finally {
 			migrationRace.armed = false;
 			migrationRace.target = "";
+			cleanup();
+		}
+	});
+
+	it("skips a cross-device legacy file and still migrates the others", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeFileSync(join(agentDir, "llmgates.json"), JSON.stringify({ baseUrl: "https://old.example/v1" }));
+			writeFileSync(join(agentDir, "llmgates-2api.json"), JSON.stringify({ instances: [] }));
+			migrationRace.exdevTarget = join(agentDir, "llmgates/config.json");
+
+			migrateLegacyConfigFiles(agentDir);
+
+			expect(existsSync(join(agentDir, "llmgates.json"))).toBe(true);
+			expect(existsSync(join(agentDir, "llmgates/config.json"))).toBe(false);
+			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/2api.json"), "utf8"))).toEqual({ instances: [] });
+			expect(existsSync(join(agentDir, "llmgates-2api.json"))).toBe(false);
+		} finally {
+			migrationRace.exdevTarget = "";
 			cleanup();
 		}
 	});

@@ -44,7 +44,10 @@ export function migrateLegacyConfigFiles(agentDir: string): void {
 		try {
 			linkSync(oldPath, newPath);
 		} catch (error) {
-			if (isPlainObject(error) && error.code === "EEXIST") continue;
+			// EEXIST: destination won the race — keep both. EXDEV/unsupported: leave legacy in place.
+			if (isPlainObject(error) && (error.code === "EEXIST" || error.code === "EXDEV" || error.code === "ENOTSUP")) {
+				continue;
+			}
 			throw error;
 		}
 		unlinkSync(oldPath);

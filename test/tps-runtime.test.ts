@@ -128,6 +128,52 @@ describe("tps runtime subagent ordering", () => {
 		}
 	});
 
+	it("releases the status refresh latch when settle abandons a pending microtask", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-status-latch-"));
+		const runtime = createRuntime(cwd);
+		const now = vi.spyOn(Date, "now").mockReturnValue(5_000);
+		try {
+			await runtime.emit("session_start");
+			runtime.emitNow("before_agent_start");
+			runtime.emitNow("message_end", {
+				message: {
+					role: "assistant",
+					provider: "test",
+					model: "latched",
+					usage: { input: 1, output: 1, totalTokens: 2 },
+				},
+			});
+			// Queue settle after the usage task arms the latch but before the status microtask runs.
+			queueMicrotask(() => {
+				now.mockReturnValue(5_001);
+				runtime.emitNow("agent_settled");
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			now.mockReturnValue(6_000);
+			runtime.emitNow("before_agent_start");
+			const statusCount = runtime.statuses.length;
+			runtime.emitNow("message_end", {
+				message: {
+					role: "assistant",
+					provider: "test",
+					model: "after-latch",
+					usage: { input: 2, output: 2, totalTokens: 4 },
+				},
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const refreshed = runtime.statuses.slice(statusCount).some(
+				(status) => typeof status.value === "string" && status.value.includes("1 call"),
+			);
+			expect(refreshed).toBe(true);
+		} finally {
+			now.mockRestore();
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("invalidates status state when shutdown receives an equivalent context", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-context-race-"));
 		const runtime = createRuntime(cwd);
@@ -180,7 +226,7 @@ describe("tps runtime subagent ordering", () => {
 				sessionId: "session-1",
 				runId: "DDDD-4444",
 			});
-			await new Promise((resolve) => setTimeout(resolve, 300));
+			await new Promise((resolve) => setTimeout(resolve, 400));
 			await runtime.emit("agent_settled");
 			await new Promise((resolve) => setTimeout(resolve, 0));
 

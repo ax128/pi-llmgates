@@ -151,6 +151,8 @@ export default function (pi: ExtensionAPI) {
 		const expectedGeneration = sessionGeneration;
 		statusRefreshScheduled = true;
 		queueMicrotask(() => {
+			// Always release the latch first so an abandoned refresh cannot block later turns.
+			statusRefreshScheduled = false;
 			if (
 				sessionGeneration !== expectedGeneration ||
 				requestStartMs === null ||
@@ -159,7 +161,6 @@ export default function (pi: ExtensionAPI) {
 			) {
 				return;
 			}
-			statusRefreshScheduled = false;
 			setElapsedStatus(statusCtx, getElapsedSeconds(), targetStats);
 		});
 	}
@@ -178,7 +179,6 @@ export default function (pi: ExtensionAPI) {
 
 	function resetTurnStats(): void {
 		turnStats = createEmptyStats();
-		statusRefreshScheduled = false;
 	}
 
 	function applySubagentRecords(
@@ -432,7 +432,13 @@ export default function (pi: ExtensionAPI) {
 		const elapsedSecondsFloor = Math.floor(elapsedSecondsExact);
 
 		requestStartMs = null;
+		statusRefreshScheduled = false;
 		clearRefreshTimer();
+		// Drop pending debounce so a late timer cannot target sessionStats before/after settle merge.
+		if (subagentMetaScanTimer !== undefined) {
+			clearTimeout(subagentMetaScanTimer);
+			subagentMetaScanTimer = undefined;
+		}
 
 		const artifactsDir = sessionArtifactsDir;
 		const startedAtMs = sessionStartedAtMs;

@@ -116,6 +116,47 @@ describe("tps-subagent-bridge", () => {
 		unregister();
 	});
 
+	it("delivers async-complete usage when session matches but runId is missing or invalid", () => {
+		const bus = createMemoryEventBus();
+		const batches: SubagentUsageRecord[][] = [];
+		const observed: string[] = [];
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1",
+			onRecords: (records) => {
+				batches.push([...records]);
+			},
+			onRunObserved: (runId) => observed.push(runId),
+		});
+
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			sessionId: "sess-1",
+			results: [
+				{
+					agent: "reviewer",
+					model: "llmgates/gpt-5.6-sol",
+					usage: { turns: 1, input: 7, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0 },
+				},
+			],
+		});
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			sessionId: "sess-1",
+			runId: "not-a-hex-run",
+			results: [
+				{
+					agent: "reviewer",
+					model: "llmgates/gpt-5.6-sol",
+					usage: { turns: 1, input: 3, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+				},
+			],
+		});
+
+		expect(observed).toEqual([]);
+		expect(batches).toHaveLength(2);
+		expect(batches[0]?.[0]?.input).toBe(7);
+		expect(batches[1]?.[0]?.input).toBe(3);
+		unregister();
+	});
+
 	it("ignores async-complete when sessionId mismatches", () => {
 		const bus = createMemoryEventBus();
 		let called = 0;
