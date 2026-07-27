@@ -61,12 +61,12 @@
 - Modify: `test/lifecycle.test.ts`
 - Modify: `test/provider.test.ts`
 
-- [ ] Add a failing test where a catalog request starts before login validation, the validated pending catalog publishes, and the old request finishes afterward; assert the login catalog remains in memory and store.
-- [ ] Add a failing test where a foreground refresh crosses `shutdown()` and `beginSession()`; assert it cannot write or publish into the new session.
-- [ ] Add a failing test where login cache write fails, then a new session performs cache-only restore; assert the persisted last-known-good catalog is restored.
-- [ ] Run the three focused tests and confirm each fails for the intended stale-commit or stale-session behavior.
-- [ ] Capture generation at `refreshModels()` entry, invalidate older request IDs before consuming pending login data, re-check generation/request/connection after awaited writes, and make shutdown cleanup generation-scoped.
-- [ ] Reset the in-memory-ahead-of-store marker at the session boundary and re-run the focused tests until they pass.
+- [x] Add a failing test where a catalog request starts before login validation, the validated pending catalog publishes, and the old request finishes afterward; assert the login catalog remains in memory and store.
+- [x] Add a failing test where a foreground refresh crosses `shutdown()` and `beginSession()`; assert it cannot write or publish into the new session.
+- [x] Add a failing test where login cache write fails, then a new session performs cache-only restore; assert the persisted last-known-good catalog is restored.
+- [x] Run the three focused tests and confirm each fails for the intended stale-commit or stale-session behavior.
+- [x] Capture generation at `refreshModels()` entry, invalidate older request IDs before consuming pending login data, re-check generation/request/connection after awaited writes, and make shutdown cleanup generation-scoped.
+- [x] Reset the in-memory-ahead-of-store marker at the session boundary and re-run the focused tests until they pass.
 
 ### Task 5: Preserve Anthropic adapter-safety metadata
 
@@ -74,10 +74,10 @@
 - Modify: `extensions/catalog.ts`
 - Modify: `test/catalog.test.ts`
 
-- [ ] Add a failing catalog/request-contract test proving exact Opus 4.7 metadata keeps adaptive thinking and explicitly disables temperature.
-- [ ] Run the focused test and confirm `supportsTemperature` is missing.
-- [ ] Extend the minimal compat projection/type to copy only explicit `forceAdaptiveThinking: true` and `supportsTemperature: false`.
-- [ ] Re-run catalog tests and confirm sparse thinking metadata remains unchanged.
+- [x] Add a failing catalog/request-contract test proving exact Opus 4.7 metadata keeps adaptive thinking and explicitly disables temperature.
+- [x] Run the focused test and confirm `supportsTemperature` is missing.
+- [x] Extend the minimal compat projection/type to copy only explicit `forceAdaptiveThinking: true` and `supportsTemperature: false`.
+- [x] Re-run catalog tests and confirm sparse thinking metadata remains unchanged.
 
 ### Task 6: Correct documentation and finish verification
 
@@ -87,8 +87,8 @@
 - Modify: `docs/superpowers/specs/2026-07-26-pr12-thinking-level-fixes-design.md`
 - Modify: `docs/superpowers/plans/2026-07-26-pr12-thinking-level-fixes-plan.md`
 
-- [ ] Document `providers.<actual providerId>.modelOverrides`, with `llmgates` identified as the default provider ID.
-- [ ] Add the PR #12 thinking-level design and plan to `docs/README.md`.
+- [x] Document `providers.<actual providerId>.modelOverrides`, with `llmgates` identified as the default provider ID.
+- [x] Add the PR #12 thinking-level design and plan to `docs/README.md`.
 - [ ] Mark Tasks 4–6 complete only after focused tests pass.
 - [ ] Run LSP diagnostics on changed TypeScript files, `npm run check`, `git diff --check`, and inspect the final diff/worktree status.
 - [ ] Request an independent code review, address high-confidence findings, commit, push the PR branch, and merge PR #13 only while its head SHA and base remain the reviewed revisions.
