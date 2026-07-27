@@ -762,8 +762,8 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			generation += 1;
 			sessionController = new AbortController();
 			shutDown = false;
-			pending = null;
 			if (restartingAfterShutdown) {
+				pending = null;
 				scopedStore = undefined;
 				lastConnection = null;
 				lastCheckedAt = undefined;

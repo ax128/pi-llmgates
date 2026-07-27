@@ -27,8 +27,6 @@ export interface ModelOverrideFile {
 
 export type ModelOverrideLookup = (modelId: string) => string | undefined;
 
-let memoryLookup: ModelOverrideLookup = () => undefined;
-
 /** Normalize user endpoint aliases to the canonical gateway value. */
 export function normalizeEndpointOverride(value: unknown): string | undefined {
 	if (typeof value !== "string") {
@@ -59,10 +57,6 @@ export function createModelOverrideLookup(file: ModelOverrideFile | null): Model
 		if (endpoint && key) endpoints.set(key, endpoint);
 	}
 	return (modelId) => endpoints.get(modelId.trim()) ?? defaultEndpoint;
-}
-
-export function applyModelOverridesToMemory(file: ModelOverrideFile | null | undefined): void {
-	memoryLookup = createModelOverrideLookup(file ?? null);
 }
 
 export function readModelOverridesFile(agentDir: string): ModelOverrideFile | null | undefined {
@@ -112,7 +106,7 @@ export function readModelOverridesFile(agentDir: string): ModelOverrideFile | nu
 
 export function reloadModelOverridesFromDisk(
 	agentDir: string,
-	apply: (file: ModelOverrideFile | null) => void = applyModelOverridesToMemory,
+	apply: (file: ModelOverrideFile | null) => void,
 ): ModelOverrideFile | null | undefined {
 	const file = readModelOverridesFile(agentDir);
 	if (file === undefined) {
@@ -123,14 +117,4 @@ export function reloadModelOverridesFromDisk(
 	}
 	apply(file);
 	return file;
-}
-
-/** Per-model override beats global default. Returns canonical endpoint or undefined. */
-export function lookupEndpointOverride(modelId: string): string | undefined {
-	return memoryLookup(modelId);
-}
-
-/** @internal test helper */
-export function clearModelOverridesMemory(): void {
-	memoryLookup = () => undefined;
 }

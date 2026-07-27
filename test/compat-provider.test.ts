@@ -8,11 +8,6 @@ import {
 	encodeCompatRefreshMeta,
 	listInstances,
 } from "../extensions/compat/storage.js";
-import {
-	applyModelOverridesToMemory,
-	clearModelOverridesMemory,
-	lookupEndpointOverride,
-} from "../extensions/model-overrides.js";
 import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
 import type { CompatInstance } from "../extensions/compat/types.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
@@ -35,7 +30,6 @@ const originalEnv = {
 };
 
 afterEach(() => {
-	clearModelOverridesMemory();
 	for (const [key, value] of Object.entries(originalEnv)) {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
@@ -72,32 +66,30 @@ function credential(
 }
 
 describe("compat instance provider", () => {
-	it("creation ignores endpoint config errors and preserves core override memory", () => {
+	it("creation tolerates llmgates/models.json being a directory", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
-			applyModelOverridesToMemory({ defaults: { endpoint: "messages" } });
 			mkdirSync(join(agentDir, "llmgates/models.json"));
-
-			const provider = createCompatProvider({ agentDir, instance: INSTANCE });
-
-			expect(provider.getModels()).toEqual([]);
-			expect(lookupEndpointOverride("core-model")).toBe("messages");
+			const compat = createCompatProvider({ agentDir, instance: INSTANCE });
+			expect(compat.getModels()).toEqual([]);
 		} finally {
 			cleanup();
 		}
 	});
 
-	it("forced refresh ignores endpoint config errors and preserves core override memory", async () => {
+	it("forced refresh keeps openai-completions transport regardless of endpoint config file", async () => {
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
+			writeFileSync(
+				join(agentDir, "llmgates/models.json"),
+				JSON.stringify({ defaults: { endpoint: "responses" } }),
+			);
 			const provider = createCompatProvider({
 				agentDir,
 				instance: INSTANCE,
 				fetchImpl: async () => new Response(JSON.stringify([{ id: "compat-model" }])),
 			});
-			applyModelOverridesToMemory({ defaults: { endpoint: "responses" } });
-			mkdirSync(join(agentDir, "llmgates/models.json"));
 
 			await provider.refreshModels!({
 				credential: credential("key", INSTANCE.baseUrl),
@@ -110,7 +102,6 @@ describe("compat instance provider", () => {
 				id: "compat-model",
 				api: "openai-completions",
 			});
-			expect(lookupEndpointOverride("core-model")).toBe("responses");
 		} finally {
 			cleanup();
 		}

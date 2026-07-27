@@ -12,6 +12,8 @@ export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete"
 
 export interface SubagentUsageBridgeOptions {
 	sessionId: string | null | undefined;
+	/** pi session cwd — required for filesystem fallbacks (status.json / session.jsonl). */
+	workspaceRoot?: string;
 	onRecords: (records: readonly SubagentUsageRecord[]) => void;
 	onRunObserved?: (normalizedRunId: string) => void;
 	onForegroundComplete?: (normalizedRunId: string) => void;
@@ -72,7 +74,7 @@ export function registerSubagentUsageBridge(
 		if (runId) {
 			options.onRunObserved?.(runId);
 		}
-		const records = extractSubagentUsageFromAsyncComplete(data, options.sessionId);
+		const records = extractSubagentUsageFromAsyncComplete(data, options.sessionId, options.workspaceRoot);
 		if (records.length > 0) {
 			options.onRecords(records);
 		}

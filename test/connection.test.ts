@@ -82,6 +82,12 @@ describe("resolveCanonicalConnection", () => {
 });
 
 describe("normalizeAndValidateBaseUrl", () => {
+	const envKeys = ["LLMGATES_BLOCK_PRIVATE_URLS"] as const;
+
+	afterEach(() => {
+		for (const key of envKeys) delete process.env[key];
+	});
+
 	it("allows https, localhost, 127/8, ::1, and ipv4-mapped loopback", () => {
 		expect(normalizeAndValidateBaseUrl("https://api.example/v1").ok).toBe(true);
 		expect(normalizeAndValidateBaseUrl("http://localhost:8080/v1").ok).toBe(true);
@@ -94,6 +100,15 @@ describe("normalizeAndValidateBaseUrl", () => {
 		expect(normalizeAndValidateBaseUrl("http://evil.example/v1").ok).toBe(false);
 		expect(normalizeAndValidateBaseUrl("http://0.0.0.0/v1").ok).toBe(false);
 		expect(normalizeAndValidateBaseUrl("https://user:pass@example.com/v1").ok).toBe(false);
+	});
+
+	it("rejects private IP literals when LLMGATES_BLOCK_PRIVATE_URLS is set", () => {
+		process.env.LLMGATES_BLOCK_PRIVATE_URLS = "1";
+		expect(normalizeAndValidateBaseUrl("https://192.168.1.1/v1").ok).toBe(false);
+		expect(normalizeAndValidateBaseUrl("https://10.0.0.5/v1").ok).toBe(false);
+		expect(normalizeAndValidateBaseUrl("https://172.16.0.1/v1").ok).toBe(false);
+		expect(normalizeAndValidateBaseUrl("http://127.0.0.1:8080/v1").ok).toBe(true);
+		expect(normalizeAndValidateBaseUrl("https://api.example/v1").ok).toBe(true);
 	});
 });
 

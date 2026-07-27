@@ -364,6 +364,7 @@ export default function (pi: ExtensionAPI) {
 			startSubagentWatcher(ctx.cwd);
 			unregisterSubagentBridge = registerSubagentUsageBridge(pi.events, {
 				sessionId: ctx.sessionManager.getSessionId(),
+				workspaceRoot: ctx.cwd,
 				onRecords: ingestSubagentRecords,
 				onRunObserved: (runId) => {
 					ensureSubagentWatcher();
