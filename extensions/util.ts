@@ -9,6 +9,7 @@ import {
 	constants,
 	existsSync,
 	fsyncSync,
+	linkSync,
 	mkdirSync,
 	openSync,
 	renameSync,
@@ -38,10 +39,15 @@ export function migrateLegacyConfigFiles(agentDir: string): void {
 	for (const [oldName, newName] of LEGACY_FILE_MOVES) {
 		const oldPath = join(agentDir, oldName);
 		const newPath = join(agentDir, newName);
-		if (existsSync(oldPath) && !existsSync(newPath)) {
-			ensureDirMode(dirname(newPath), SECRET_DIR_MODE);
-			renameSync(oldPath, newPath);
+		if (!existsSync(oldPath)) continue;
+		ensureDirMode(dirname(newPath), SECRET_DIR_MODE);
+		try {
+			linkSync(oldPath, newPath);
+		} catch (error) {
+			if (isPlainObject(error) && error.code === "EEXIST") continue;
+			throw error;
 		}
+		unlinkSync(oldPath);
 	}
 }
 
