@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-const migrationRace = vi.hoisted(() => ({ target: "", armed: false, exdevTarget: "" }));
+const migrationRace = vi.hoisted(() => ({
+	target: "",
+	armed: false,
+	exdevTarget: "",
+	epermTarget: "",
+}));
 
 vi.mock("node:fs", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs")>();
@@ -18,6 +23,10 @@ vi.mock("node:fs", async (importOriginal) => {
 		linkSync(existingPath: import("node:fs").PathLike, newPath: import("node:fs").PathLike) {
 			if (migrationRace.exdevTarget && String(newPath) === migrationRace.exdevTarget) {
 				const error = Object.assign(new Error("cross-device link"), { code: "EXDEV" });
+				throw error;
+			}
+			if (migrationRace.epermTarget && String(newPath) === migrationRace.epermTarget) {
+				const error = Object.assign(new Error("operation not permitted"), { code: "EPERM" });
 				throw error;
 			}
 			if (migrationRace.armed && String(newPath) === migrationRace.target) {
@@ -94,6 +103,25 @@ describe("migrateLegacyConfigFiles", () => {
 			expect(existsSync(join(agentDir, "llmgates-2api.json"))).toBe(false);
 		} finally {
 			migrationRace.exdevTarget = "";
+			cleanup();
+		}
+	});
+
+	it("skips a legacy file when hard links are disallowed and still migrates the others", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeFileSync(join(agentDir, "llmgates.json"), JSON.stringify({ baseUrl: "https://old.example/v1" }));
+			writeFileSync(join(agentDir, "llmgates-2api.json"), JSON.stringify({ instances: [] }));
+			migrationRace.epermTarget = join(agentDir, "llmgates/config.json");
+
+			migrateLegacyConfigFiles(agentDir);
+
+			expect(existsSync(join(agentDir, "llmgates.json"))).toBe(true);
+			expect(existsSync(join(agentDir, "llmgates/config.json"))).toBe(false);
+			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/2api.json"), "utf8"))).toEqual({ instances: [] });
+			expect(existsSync(join(agentDir, "llmgates-2api.json"))).toBe(false);
+		} finally {
+			migrationRace.epermTarget = "";
 			cleanup();
 		}
 	});
