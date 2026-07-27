@@ -443,9 +443,10 @@ describe("lifecycle", () => {
 				credential,
 			});
 			await started;
-			await provider.shutdown();
-			provider.beginSession("second");
+			const shutdown = provider.shutdown();
 			release();
+			await shutdown;
+			provider.beginSession("second");
 			await refresh;
 
 			expect(provider.getModels()).toEqual([]);
@@ -502,9 +503,15 @@ describe("lifecycle", () => {
 				},
 			});
 			await writeStarted;
-			await provider.shutdown();
-			provider.beginSession("second");
+			let shutDown = false;
+			const shutdown = provider.shutdown().then(() => {
+				shutDown = true;
+			});
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(shutDown).toBe(false);
 			releaseWrite();
+			await shutdown;
+			provider.beginSession("second");
 			await refresh;
 
 			expect(provider.getModels()).toEqual([]);

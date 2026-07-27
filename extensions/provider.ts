@@ -241,7 +241,10 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 
 	function track<T>(promise: Promise<T>): Promise<T> {
 		activeTasks.add(promise);
-		void promise.finally(() => activeTasks.delete(promise));
+		void promise.then(
+			() => activeTasks.delete(promise),
+			() => activeTasks.delete(promise),
+		);
 		return promise;
 	}
 
@@ -387,7 +390,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		return keysEqual(conn.apiKey, pending.connection.apiKey);
 	}
 
-	async function refreshModels(context: RefreshModelsContext): Promise<void> {
+	async function runRefreshModels(context: RefreshModelsContext): Promise<void> {
 		const refreshGeneration = generation;
 		if (!lifecycleMatches(refreshGeneration)) return;
 		const requestId = nextRequestId++;
@@ -745,7 +748,9 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		getModels(): readonly Model<Api>[] {
 			return models;
 		},
-		refreshModels,
+		refreshModels(context: RefreshModelsContext) {
+			return track(runRefreshModels(context));
+		},
 		stream<T extends Api>(model: Model<T>, context: Context, streamOptions?: ApiStreamOptions<T>) {
 			return streamFor(model as Model<Api>).stream(model as never, context, streamOptions as never);
 		},
