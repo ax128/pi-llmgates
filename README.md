@@ -273,6 +273,55 @@ pi
 
 同时存在时，`inference_endpoint` 优先于 `web_chat_endpoint`。
 
+### 思考等级（reasoning effort）
+
+pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展按以下顺序解析：
+
+1. **运行时 pi-ai 的 OpenAI / Anthropic 精确 metadata**：`provider_id`、模型 ID 和最终 `api` family 都匹配时，直接采用当前运行时 pi-ai catalog 的 `reasoning` 与 `thinkingLevelMap`。
+2. **网关**：没有适用的精确 metadata、但网关上报了非空 `supported_reasoning_levels` 时，原样采用网关值。
+3. **静态规则**：网关未上报时，Google / xAI / DeepSeek 使用内置 family 规则；现有 Kimi K3 transport compat 也只在无网关 levels 时补其固定 map。
+4. **保守兜底**：其余未知模型只启用 `off`（发送 `none`）/ `low` / `medium` / `high`，不合成扩展档位。
+
+精确 metadata 的 `thinkingLevelMap` 保持稀疏语义：缺失 key 仍缺失，显式 `null` 仍禁用，对 `xhigh` / `max` 不降级或补齐。适用的 Anthropic metadata 还会保留 `forceAdaptiveThinking`，由 adapter 使用 adaptive thinking 与 `output_config.effort`；明确不支持 temperature 的模型也不会发送该参数。endpoint override 先决定最终 `api`；跨 OpenAI / Anthropic family 时不会套用不兼容的精确 metadata。
+
+**用户级微调（pi 原生钩子）**：在 `~/.pi/agent/models.json` 用 `providers.<实际 providerId>.modelOverrides` 覆盖单个模型的思考等级（默认 provider ID 为 `llmgates`；最顶层，合并语义，只覆盖你写的 key）：
+
+```jsonc
+{
+  "providers": {
+    "llmgates": {
+      "modelOverrides": {
+        "claude-opus-4-7": { "thinkingLevelMap": { "max": "xhigh" } },
+        "gpt-5.6-sol":      { "thinkingLevelMap": { "xhigh": null, "max": null } }
+      }
+    }
+  }
+}
+```
+
+`thinkingLevelMap` 的 key 为 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`，value 为 `string`（发送给网关的 effort）或 `null`（禁用该档）。这是 pi 自带的模型覆盖钩子，不涉及 apiKey。
+
+### 模型出口（endpoint / api）
+
+默认按上表自动解析。若需强制指定（例如把某个模型从 `responses` 改走 `messages`），在 `~/.pi/agent/llmgates/models.json` 配置：
+
+```jsonc
+{
+  "defaults": { "endpoint": "responses" },
+  "models": {
+    "gpt-5.6-sol":      { "endpoint": "chat_completions" },
+    "claude-sonnet-4-6": { "endpoint": "messages" }
+  }
+}
+```
+
+- 值接受别名：`responses` / `chat`·`chat_completions`·`completions` / `messages`·`anthropic`。
+- 优先级：**per-model > `defaults` > 网关 `inference_endpoint`/`web_chat_endpoint` > 按 id 启发式**。
+- 文件不存在（`ENOENT`）表示清空 override；有效 object 替换当前配置；JSON/根结构畸形时 warning 并继续使用该 core provider 实例的 last-known-good（首次加载则无 override，不与其他实例共享）。其他文件系统错误（如 `EACCES` / `EISDIR`）不会静默改路由：显式刷新在请求 catalog 前失败，后台刷新只 warning，并保留旧模型与缓存。warning 不输出 API key、文件原文或任意底层错误正文。
+- endpoint 与 thinking metadata 只会在**下一次成功的 core catalog refresh** 完成网络映射、cache 写入和内存发布后生效。cache-only、`PI_OFFLINE`、freshness-window skip 都不会重映射缓存模型；网络或 cache 写入失败也保留旧值。这里没有周期 timer 或“最长 5 分钟自动生效”保证。
+- 缓存保存写入时的 `api`、`thinkingLevelMap` 与 `compat`；恢复时 `api`/thinking map 不重映射，只有既有的旧 Kimi 条目可补 transport `compat`。因此 upgrade 或 rollback 后，旧 metadata 可跨版本滞留，直到一次成功 core catalog refresh 重写缓存。
+- 仅 **core `llmgates`** provider 支持（它注册了 3 个 stream adapter）；**2API 兼容层完全不读取 `llmgates/models.json`**，始终走 OpenAI Chat Completions。
+
 ## 定价与费用估算
 
 TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与 LLMGates 钱包扣费可能不同；账户实际消费请用 `/balance` 查询。
@@ -289,6 +338,8 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与 LLMGa
 ```
 
 设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
+
+**`llmgates/models.json`** — 每模型出口（endpoint / `api`）覆盖，纯手动、无网络同步。详见 [模型出口](#模型出口-endpoint--api)。
 
 **`llmgates/pricing.json`** — 可编辑的 USD / **100 万 token** 单价（`input`、`output`、`cacheRead`、`cacheWrite`）。键为 `modelId` 或 `provider/modelId`（如 `openai/gpt-5.6-sol`）：
 
@@ -318,8 +369,8 @@ Pi 内置 footer 在 OAuth 登录时可能仍显示 `(sub)`，该标记与 LLMGa
 - 网关网络调用（`/models`、`/balance`、推理）使用全操作超时、5 MiB 响应体上限、同源手动重定向。
 - 启用 `pricingAutoUpdate` 时，零售价同步从 `raw.githubusercontent.com` 拉取固定 LiteLLM JSON（后台、30s 超时、8 MiB 上限），不阻塞目录或推理。可通过配置或 `LLMGATES_PRICING_AUTO_UPDATE=0` 关闭。
 - TPS / 费用统计在后台队列预处理 assistant usage；畸形 usage 跳过或归零，失败不影响推理（`LLMGATES_DEBUG=1` 记录详情）。
-- 启动采用 cache-first；模型刷新在 session 启动后后台进行，失败保留旧 catalog。
-- 登录后 cache 写入失败不撤销登录：会话使用已验证目录，磁盘保留旧缓存。
+- 启动采用 cache-first；cache-only、离线或 freshness-window skip 直接使用缓存中的 routing/thinking metadata。session 启动可触发一次后台刷新，但没有周期刷新 timer；失败会 warning 并保留旧 catalog/cache。
+- 普通 catalog refresh 只有在网络映射与 cache 写入都成功后才发布新模型；网络或 cache 写入失败保留内存与磁盘旧值。登录后 cache 写入失败是例外：不撤销登录，会话使用已验证目录，磁盘保留旧缓存。
 - 优先 `/login` 或 `LLMGATES_API_KEY`，避免在 `llmgates/config.json` 存 key。配置写入 mode `0600` 且原子替换。
 - **不支持 / 不安全：** 通过 `~/.pi/agent/models.json` overlay 配置本 provider 的 `apiKey`（pi 可能重新启用 config-value 语法）。请勿这样做。
 - **历史迁移：** `auth.json` 中若存在 `type: "api_key"` 凭证，注册 **fail-closed**。删除该条目或 `/logout` 后 `/reload`；扩展不会自动迁移或改写 `auth.json`。

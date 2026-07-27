@@ -1,6 +1,6 @@
 import type { Api, Model, OAuthCredential } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createCompatProvider } from "../extensions/compat/provider.js";
 import {
@@ -8,6 +8,11 @@ import {
 	encodeCompatRefreshMeta,
 	listInstances,
 } from "../extensions/compat/storage.js";
+import {
+	applyModelOverridesToMemory,
+	clearModelOverridesMemory,
+	lookupEndpointOverride,
+} from "../extensions/model-overrides.js";
 import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
 import type { CompatInstance } from "../extensions/compat/types.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
@@ -30,6 +35,7 @@ const originalEnv = {
 };
 
 afterEach(() => {
+	clearModelOverridesMemory();
 	for (const [key, value] of Object.entries(originalEnv)) {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
@@ -66,6 +72,50 @@ function credential(
 }
 
 describe("compat instance provider", () => {
+	it("creation ignores endpoint config errors and preserves core override memory", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			applyModelOverridesToMemory({ defaults: { endpoint: "messages" } });
+			mkdirSync(join(agentDir, "llmgates/models.json"));
+
+			const provider = createCompatProvider({ agentDir, instance: INSTANCE });
+
+			expect(provider.getModels()).toEqual([]);
+			expect(lookupEndpointOverride("core-model")).toBe("messages");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("forced refresh ignores endpoint config errors and preserves core override memory", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createCompatProvider({
+				agentDir,
+				instance: INSTANCE,
+				fetchImpl: async () => new Response(JSON.stringify([{ id: "compat-model" }])),
+			});
+			applyModelOverridesToMemory({ defaults: { endpoint: "responses" } });
+			mkdirSync(join(agentDir, "llmgates/models.json"));
+
+			await provider.refreshModels!({
+				credential: credential("key", INSTANCE.baseUrl),
+				store: createMemoryStore(),
+				allowNetwork: true,
+				force: true,
+			});
+
+			expect(provider.getModels()[0]).toMatchObject({
+				id: "compat-model",
+				api: "openai-completions",
+			});
+			expect(lookupEndpointOverride("core-model")).toBe("responses");
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("exposes a synchronous defensive copy of initialModels", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {

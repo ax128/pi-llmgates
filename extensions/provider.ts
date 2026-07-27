@@ -29,6 +29,7 @@ import {
 import {
 	applyGatewayModelCosts,
 	DEFAULT_BASE_URL,
+	extractReasoningEfforts,
 	isOfflineMode,
 	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
@@ -37,6 +38,11 @@ import {
 	type PiProviderModel,
 } from "./catalog.js";
 import { applyMoonshotKimiCompatModel } from "./compat/catalog.js";
+import {
+	createModelOverrideLookup,
+	reloadModelOverridesFromDisk,
+	type ModelOverrideLookup,
+} from "./model-overrides.js";
 import {
 	applyPricingCacheToResolver,
 	readModelPricingFile,
@@ -112,6 +118,15 @@ function logWarn(message: string): void {
 	console.warn(`[pi-llmgates-provider] ${message}`);
 }
 
+function backgroundRefreshErrorSummary(error: unknown): string {
+	if (error instanceof HttpStatusError) return `HTTP ${error.status}`;
+	const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+	if (code && ["EACCES", "EISDIR", "EIO", "ENOTDIR", "EPERM"].includes(code)) {
+		return `filesystem error (${code})`;
+	}
+	return error instanceof TypeError ? "network error" : "error";
+}
+
 function isModelStructValid(model: unknown, providerId: string, inferenceBaseUrl?: string): model is Model<Api> {
 	if (!model || typeof model !== "object" || Array.isArray(model)) {
 		return false;
@@ -133,25 +148,26 @@ function mapGatewayPayload(
 	providerId: string,
 	inferenceBaseUrl: string,
 	gatewayModels: readonly GatewayModel[],
+	endpointOverride: ModelOverrideLookup,
 ): Model<Api>[] {
 	const mapped: PiProviderModel[] = [];
 	const vendorById = new Map<string, string>();
+	const gatewayThinkingIds = new Set<string>();
 	const seen = new Set<string>();
 	for (const item of gatewayModels) {
-		const model = toPiModel(item);
+		const model = toPiModel(item, endpointOverride);
 		if (!model) continue;
 		if (seen.has(model.id)) continue;
 		seen.add(model.id);
 		mapped.push(model);
 		const vendor = (item.provider_id ?? "").trim().toLowerCase();
-		if (vendor) {
-			vendorById.set(model.id, vendor);
-		}
+		if (vendor) vendorById.set(model.id, vendor);
+		if (extractReasoningEfforts(item).length > 0) gatewayThinkingIds.add(model.id);
 	}
 	// LLMGates baseUrl is not moonshot.*; without explicit compat, pi-ai sends
 	// developer role for reasoning models → Moonshot "tokenization failed".
 	return providerModelsToStoredModels(providerId, mapped, inferenceBaseUrl).map((model) =>
-		applyMoonshotKimiCompatModel(model, vendorById.get(model.id)),
+		applyMoonshotKimiCompatModel(model, vendorById.get(model.id), !gatewayThinkingIds.has(model.id)),
 	);
 }
 
@@ -206,13 +222,29 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	const activeTasks = new Set<Promise<unknown>>();
 	const activeControllers = new Set<AbortController>();
 	let warnedLoginStoreFailure = false;
+	let modelsAheadOfStore = false;
 
 	const ambientAtStart = connectionFromAmbientEnv() ?? connectionFromConfigFile(agentDir);
 	applyPricingCacheToResolver(readModelPricingFile(agentDir));
+	let endpointOverride = createModelOverrideLookup(null);
+	function reloadEndpointOverride(): ModelOverrideLookup {
+		reloadModelOverridesFromDisk(agentDir, (file) => {
+			endpointOverride = createModelOverrideLookup(file);
+		});
+		return endpointOverride;
+	}
+	reloadEndpointOverride();
+
+	function lifecycleMatches(expectedGeneration: number): boolean {
+		return !shutDown && generation === expectedGeneration;
+	}
 
 	function track<T>(promise: Promise<T>): Promise<T> {
 		activeTasks.add(promise);
-		void promise.finally(() => activeTasks.delete(promise));
+		void promise.then(
+			() => activeTasks.delete(promise),
+			() => activeTasks.delete(promise),
+		);
 		return promise;
 	}
 
@@ -308,6 +340,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		connection: CanonicalConnection,
 		signal: AbortSignal | undefined,
 	): Promise<Model<Api>[]> {
+		const requestEndpointOverride = reloadEndpointOverride();
 		const payload = await requestLimitedJson({
 			url: connection.modelsUrl,
 			headers: {
@@ -323,7 +356,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		});
 		const gatewayModels = parseGatewayModelsPayload(payload);
 		schedulePricingSync(gatewayModels);
-		return mapGatewayPayload(providerId, connection.inferenceBaseUrl, gatewayModels);
+		return mapGatewayPayload(providerId, connection.inferenceBaseUrl, gatewayModels, requestEndpointOverride);
 	}
 
 	function connectionStillMatches(expected: CanonicalConnection): boolean {
@@ -358,9 +391,10 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	}
 
 	async function refreshModels(context: RefreshModelsContext): Promise<void> {
-		if (shutDown) {
-			return;
-		}
+		const refreshGeneration = generation;
+		if (!lifecycleMatches(refreshGeneration)) return;
+		const requestId = nextRequestId++;
+		latestRequestId = requestId;
 		// Always capture scoped store for current runtime.
 		scopedStore = context.store;
 
@@ -369,17 +403,24 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			connectionFromCredential(credential) ??
 			connectionFromAmbientEnv() ??
 			connectionFromConfigFile(agentDir);
-		if (connection) {
-			lastConnection = connection;
-		}
+		const connectionChanged = Boolean(
+			connection &&
+				lastConnection &&
+				(lastConnection.inferenceBaseUrl !== connection.inferenceBaseUrl ||
+					!keysEqual(lastConnection.apiKey, connection.apiKey)),
+		);
+		if (connectionChanged) modelsAheadOfStore = false;
+		if (connection) lastConnection = connection;
 
 		// Cache restore first.
 		try {
 			const stored = await context.store.read();
-			if (stored) {
+			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+			if (stored && (!modelsAheadOfStore || connectionChanged)) {
 				restoreFromStoreEntry(stored, connection);
 			}
 		} catch (error) {
+			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
 			logWarn(`Failed to read model cache: ${error instanceof Error ? error.message : String(error)}`);
 		}
 
@@ -390,18 +431,30 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			pending &&
 			pendingMatches(credential)
 		) {
-			const candidate = pending.models;
-			const pendingConnection = pending.connection;
-			clearPending();
+			const pendingCatalog = pending;
+			const candidate = pendingCatalog.models;
+			const pendingConnection = pendingCatalog.connection;
+			let consumed = false;
 			await withCommit(async () => {
-				if (shutDown) return;
+				if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+				if (pending !== pendingCatalog) return;
 				try {
 					await context.store.write({ models: candidate, checkedAt: now() });
+					if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+					if (pending !== pendingCatalog) return;
+					clearPending();
+					consumed = true;
+					modelsAheadOfStore = false;
 					setModels(candidate, true);
 					lastConnection = pendingConnection;
 					lastCheckedAt = now();
 				} catch (error) {
+					if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+					if (pending !== pendingCatalog) return;
+					clearPending();
+					consumed = true;
 					// Login exception: keep old disk cache, publish in-memory models.
+					modelsAheadOfStore = true;
 					setModels(candidate, true);
 					lastConnection = pendingConnection;
 					if (!warnedLoginStoreFailure) {
@@ -414,7 +467,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 					}
 				}
 			});
-			wantBackgroundRefresh = false;
+			if (consumed) wantBackgroundRefresh = false;
 			return;
 		}
 
@@ -441,30 +494,25 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			return;
 		}
 
-		const requestId = nextRequestId++;
-		latestRequestId = requestId;
 		const requestConnection = connection;
 
 		const fetched = await fetchCatalog(requestConnection, context.signal);
 		await withCommit(async () => {
-			if (shutDown) return;
+			if (!lifecycleMatches(refreshGeneration)) return;
 			if (context.signal?.aborted) {
 				throw new DOMException("The operation was aborted.", "AbortError");
 			}
 			if (requestId !== latestRequestId) return;
-			if (!connectionStillMatches(requestConnection)) {
-				return;
-			}
-			try {
-				await context.store.write({ models: fetched, checkedAt: now() });
-				setModels(fetched, true);
-				lastConnection = requestConnection;
-				lastCheckedAt = now();
-				wantBackgroundRefresh = false;
-			} catch (error) {
-				// Normal refresh: retain previous models and cache.
-				throw error instanceof Error ? error : new Error(String(error));
-			}
+			if (!connectionStillMatches(requestConnection)) return;
+			await context.store.write({ models: fetched, checkedAt: now() });
+			if (!lifecycleMatches(refreshGeneration)) return;
+			if (requestId !== latestRequestId) return;
+			if (!connectionStillMatches(requestConnection)) return;
+			modelsAheadOfStore = false;
+			setModels(fetched, true);
+			lastConnection = requestConnection;
+			lastCheckedAt = now();
+			wantBackgroundRefresh = false;
 		});
 	}
 
@@ -679,7 +727,11 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				if (controller.signal.aborted) return;
 				if (!connectionStillMatches(requestConnection)) return;
 				await store.write({ models: fetched, checkedAt: now() });
-				if (shutDown || gen !== generation) return;
+				if (!lifecycleMatches(gen)) return;
+				if (requestId !== latestRequestId) return;
+				if (controller.signal.aborted) return;
+				if (!connectionStillMatches(requestConnection)) return;
+				modelsAheadOfStore = false;
 				setModels(fetched, true);
 				lastConnection = requestConnection;
 				lastCheckedAt = now();
@@ -689,6 +741,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				return;
 			}
 			// retain previous models; allow a later session_start to retry
+			logWarn(`Background model refresh failed: ${backgroundRefreshErrorSummary(error)}`);
 		}
 	}
 
@@ -715,6 +768,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				sessionController.abort();
 			}
 			generation += 1;
+			modelsAheadOfStore = false;
 			sessionController = new AbortController();
 			activeControllers.add(sessionController);
 			shutDown = false;
@@ -729,6 +783,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		async shutdown(): Promise<void> {
 			shutDown = true;
 			generation += 1;
+			const shutdownGeneration = generation;
 			wantBackgroundRefresh = false;
 			clearPending();
 			for (const controller of activeControllers) {
@@ -736,6 +791,8 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			}
 			sessionController?.abort();
 			await Promise.allSettled([...activeTasks]);
+			await commitChain;
+			if (generation !== shutdownGeneration || !shutDown) return;
 			activeTasks.clear();
 			activeControllers.clear();
 			sessionController = null;

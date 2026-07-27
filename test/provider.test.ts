@@ -222,10 +222,197 @@ describe("native oauth login", () => {
 		}
 	});
 
-	it("login store write failure still publishes in-memory models", async () => {
+	it("keeps a validated login catalog when an older refresh finishes later", async () => {
+		let requests = 0;
+		let releaseStale!: () => void;
+		let markStaleStarted!: () => void;
+		const staleStarted = new Promise<void>((resolve) => {
+			markStaleStarted = resolve;
+		});
+		const staleGate = new Promise<void>((resolve) => {
+			releaseStale = resolve;
+		});
 		const server = await startLoopbackServer([
-			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", name: "M1" }]) },
+			{
+				path: "/v1/models?client_version=pi",
+				onRequest: () => {
+					requests += 1;
+					if (requests === 1) markStaleStarted();
+				},
+				body: async function* () {
+					const request = requests;
+					if (request === 1) await staleGate;
+					yield Buffer.from(JSON.stringify([{ id: request === 1 ? "stale" : "validated" }]));
+				},
+			},
 		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			const ambientCredential = {
+				type: "api_key" as const,
+				key: "k-secret",
+				env: {
+					LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+					LLMGATES_RESOLVED_SOURCE: "env",
+				},
+			};
+			const staleRefresh = provider.refreshModels!({
+				credential: ambientCredential,
+				store,
+				allowNetwork: true,
+				force: true,
+			});
+			await staleStarted;
+
+			const credential = await provider.auth.oauth!.login(
+				scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]),
+			);
+			await provider.refreshModels!({ credential, store, allowNetwork: true });
+			releaseStale();
+			await staleRefresh;
+
+			expect(provider.getModels().map((model) => model.id)).toEqual(["validated"]);
+			expect((await store.read())?.models.map((model) => model.id)).toEqual(["validated"]);
+		} finally {
+			delete process.env.LLMGATES_PRICING_AUTO_UPDATE;
+			releaseStale();
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("retains a validated pending catalog when its queued consume becomes stale", async () => {
+		let requests = 0;
+		let releaseWrite!: () => void;
+		let markWriteStarted!: () => void;
+		const writeStarted = new Promise<void>((resolve) => {
+			markWriteStarted = resolve;
+		});
+		const writeGate = new Promise<void>((resolve) => {
+			releaseWrite = resolve;
+		});
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				onRequest: () => {
+					requests += 1;
+				},
+				body: async function* () {
+					yield Buffer.from(JSON.stringify([{ id: requests === 1 ? "old" : "validated" }]));
+				},
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			const write = store.write.bind(store);
+			store.write = async (entry) => {
+				if (entry.models[0]?.id === "old") {
+					markWriteStarted();
+					await writeGate;
+				}
+				await write(entry);
+			};
+			const ambientCredential = {
+				type: "api_key" as const,
+				key: "k-secret",
+				env: {
+					LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+					LLMGATES_RESOLVED_SOURCE: "env",
+				},
+			};
+			const oldRefresh = provider.refreshModels!({
+				credential: ambientCredential,
+				store,
+				allowNetwork: true,
+				force: true,
+			});
+			await writeStarted;
+			const credential = await provider.auth.oauth!.login(
+				scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]),
+			);
+			const pendingConsume = provider.refreshModels!({ credential, store, allowNetwork: true });
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			await provider.refreshModels!({ credential: ambientCredential, store, allowNetwork: false });
+			releaseWrite();
+			await Promise.all([oldRefresh, pendingConsume]);
+
+			expect(provider.getInternalState().hasPending).toBe(true);
+			await provider.refreshModels!({ credential, store, allowNetwork: true });
+			expect(provider.getModels().map((model) => model.id)).toEqual(["validated"]);
+		} finally {
+			delete process.env.LLMGATES_PRICING_AUTO_UPDATE;
+			releaseWrite();
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("restores persisted models in the next session after a login cache write failure", async () => {
+		const server = await startLoopbackServer([
+			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "validated" }]) },
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const credential = await provider.auth.oauth!.login(
+				scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]),
+			);
+			const store = createMemoryStore({
+				models: [
+					{
+						id: "persisted",
+						name: "Persisted",
+						provider: "llmgates",
+						api: "openai-responses",
+						baseUrl: `${server.baseUrl}/v1`,
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 1,
+						maxTokens: 1,
+					},
+				],
+			});
+			store.failNextWrite = new Error("disk full");
+			await provider.refreshModels!({ credential, store, allowNetwork: true });
+			expect(provider.getModels().map((model) => model.id)).toEqual(["validated"]);
+
+			await provider.shutdown();
+			provider.beginSession("next");
+			await provider.refreshModels!({ credential, store, allowNetwork: false });
+
+			expect(provider.getModels().map((model) => model.id)).toEqual(["persisted"]);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("login store write failure keeps newer in-memory models through a failed refresh", async () => {
+		const route = {
+			path: "/v1/models?client_version=pi",
+			status: 200,
+			body: JSON.stringify([{ id: "m1", name: "M1" }]),
+		};
+		const server = await startLoopbackServer([route]);
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			const provider = createLLMGatesProvider({
@@ -262,6 +449,16 @@ describe("native oauth login", () => {
 			// disk entry retained (no successful write)
 			const disk = await store.read();
 			expect(disk?.models.some((m) => m.id === "old")).toBe(true);
+
+			await provider.refreshModels!({ credential: cred, store, allowNetwork: false });
+			expect(provider.getModels().map((model) => model.id)).toEqual(["m1"]);
+
+			route.status = 500;
+			route.body = "failed refresh";
+			await expect(
+				provider.refreshModels!({ credential: cred, store, allowNetwork: true, force: true }),
+			).rejects.toThrow();
+			expect(provider.getModels().map((model) => model.id)).toEqual(["m1"]);
 		} finally {
 			cleanup();
 			await server.close();

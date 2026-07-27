@@ -1,14 +1,15 @@
-/**
- * Pure gateway catalog helpers (no pi-coding-agent import — safe for fast unit tests).
- */
+/** Gateway catalog helpers using pi-ai's loader-safe compat catalog entrypoint. */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { getModels } from "@earendil-works/pi-ai/compat";
 import packageJson from "../package.json" with { type: "json" };
+import { lookupEndpointOverride } from "./model-overrides.js";
 import { resolveModelCostRates } from "./model-pricing.js";
 import { envFlag, isPlainObject } from "./util.js";
 
+// Matches pi-ai ModelThinkingLevel (off + minimal/low/medium/high/xhigh/max). No "ultra".
 export type ThinkingLevelMap = Partial<
-	Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra", string | null>
+	Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>
 >;
 
 export type PiApiType = "openai-responses" | "openai-completions" | "anthropic-messages";
@@ -23,10 +24,11 @@ export const USER_AGENT = `pi-llmgates-provider/${PACKAGE_VERSION}`;
 export const DEFAULT_MAX_TOKENS = 16384;
 export const DEFAULT_CONTEXT_WINDOW = 128000;
 
-const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
-
-/** Plugin fallback when gateway omits supported_reasoning_levels (off + 低/中/高). */
-export const DEFAULT_PI_REASONING_EFFORTS = ["none", "low", "medium", "high"] as const;
+const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const BUILTIN_MODELS = {
+	openai: new Map(getModels("openai").map((model) => [model.id, model])),
+	anthropic: new Map(getModels("anthropic").map((model) => [model.id, model])),
+};
 
 /** LLMGates tags for image/video generation — not selectable in pi coding agent. */
 const GENERATION_CAPABILITY_TAGS = new Set([
@@ -64,6 +66,7 @@ export interface PiProviderModel {
 	maxTokens: number;
 	api: PiApiType;
 	thinkingLevelMap?: ThinkingLevelMap;
+	compat?: { forceAdaptiveThinking?: true; supportsTemperature?: false };
 }
 
 export interface CreditsSnapshot {
@@ -209,15 +212,73 @@ export function extractReasoningEfforts(model: GatewayModel): string[] {
 	return efforts;
 }
 
-export function inferReasoningEfforts(model: GatewayModel): string[] {
-	const explicit = extractReasoningEfforts(model);
-	if (explicit.length > 0) {
-		return explicit;
-	}
-	return [...DEFAULT_PI_REASONING_EFFORTS];
+/** Static reasoning data not covered by the reused OpenAI/Anthropic catalogs. */
+export interface ModelThinkingRule {
+	label: string;
+	pattern: RegExp;
+	provider: string;
+	efforts: readonly string[];
 }
 
-export function buildThinkingLevelMap(efforts: string[]): ThinkingLevelMap | undefined {
+export const MODEL_THINKING_RULES: readonly ModelThinkingRule[] = [
+	{ label: "Google Gemini", provider: "google", pattern: /^gemini-/i, efforts: ["none", "low", "medium", "high"] },
+	{ label: "xAI Grok", provider: "xai", pattern: /^grok-/i, efforts: ["none", "low", "medium", "high"] },
+	{ label: "DeepSeek", provider: "deepseek", pattern: /^deepseek-/i, efforts: ["none", "low", "medium", "high"] },
+];
+
+interface ExactThinkingMetadata {
+	reasoning: boolean;
+	thinkingLevelMap?: ThinkingLevelMap;
+	compat?: { forceAdaptiveThinking?: true; supportsTemperature?: false };
+}
+
+function resolveExactThinkingMetadata(
+	modelId: string,
+	vendor: string | undefined,
+	api: PiApiType,
+): ExactThinkingMetadata | undefined {
+	const provider = vendor?.trim().toLowerCase();
+	const applicable =
+		(provider === "openai" && (api === "openai-responses" || api === "openai-completions")) ||
+		(provider === "anthropic" && api === "anthropic-messages");
+	const builtin = applicable
+		? BUILTIN_MODELS[provider as "openai" | "anthropic"].get(modelId)
+		: undefined;
+	if (!builtin) return undefined;
+
+	const builtinCompat = provider === "anthropic"
+		? builtin.compat as { forceAdaptiveThinking?: boolean; supportsTemperature?: boolean } | undefined
+		: undefined;
+	const compat = {
+		...(builtinCompat?.forceAdaptiveThinking === true ? { forceAdaptiveThinking: true as const } : {}),
+		...(builtinCompat?.supportsTemperature === false ? { supportsTemperature: false as const } : {}),
+	};
+	return {
+		reasoning: builtin.reasoning,
+		thinkingLevelMap: builtin.thinkingLevelMap ? { ...builtin.thinkingLevelMap } : undefined,
+		...(Object.keys(compat).length > 0 ? { compat } : {}),
+	};
+}
+
+/** Resolve non-built-in levels in source order: gateway → static data → fallback. */
+export function resolveThinkingLevels(
+	modelId: string,
+	vendor: string | undefined,
+	_api: PiApiType | undefined,
+	gatewayEfforts: readonly string[] | undefined,
+): string[] {
+	const id = modelId.trim();
+	const provider = vendor?.trim().toLowerCase();
+	if (gatewayEfforts && gatewayEfforts.length > 0) return [...gatewayEfforts];
+
+	for (const rule of MODEL_THINKING_RULES) {
+		if (rule.provider === provider && rule.pattern.test(id)) return [...rule.efforts];
+	}
+
+	return ["none", "low", "medium", "high"];
+}
+
+export function buildThinkingLevelMap(efforts: string[], _api?: PiApiType): ThinkingLevelMap | undefined {
 	if (efforts.length === 0) {
 		return undefined;
 	}
@@ -234,6 +295,24 @@ export function buildThinkingLevelMap(efforts: string[]): ThinkingLevelMap | und
 	}
 
 	return map;
+}
+
+export type ResolvedThinkingMetadata = ExactThinkingMetadata;
+
+export function resolveThinkingMetadata(
+	modelId: string,
+	vendor: string | undefined,
+	api: PiApiType,
+	gatewayEfforts: readonly string[] | undefined,
+): ResolvedThinkingMetadata {
+	const exact = resolveExactThinkingMetadata(modelId, vendor, api);
+	if (exact) return exact;
+
+	const efforts = resolveThinkingLevels(modelId, vendor, api, gatewayEfforts);
+	return {
+		reasoning: efforts.some((effort) => effort !== "none"),
+		thinkingLevelMap: buildThinkingLevelMap(efforts, api),
+	};
 }
 
 export function buildInputModalities(model: GatewayModel): Array<"text" | "image"> {
@@ -263,7 +342,15 @@ export function buildInputModalities(model: GatewayModel): Array<"text" | "image
 	return input;
 }
 
-export function toPiModel(model: GatewayModel): PiProviderModel | null {
+export function toPiModel(model: GatewayModel): PiProviderModel | null;
+export function toPiModel(
+	model: GatewayModel,
+	endpointOverride: (modelId: string) => string | undefined,
+): PiProviderModel | null;
+export function toPiModel(
+	model: GatewayModel,
+	endpointOverride?: unknown,
+): PiProviderModel | null {
 	const id = gatewayModelId(model);
 	if (!id) {
 		return null;
@@ -276,9 +363,11 @@ export function toPiModel(model: GatewayModel): PiProviderModel | null {
 	}
 
 	const providerId = (model.provider_id ?? "").trim().toLowerCase();
-	const endpoint = resolveInferenceEndpoint(model);
-	const efforts = inferReasoningEfforts(model);
-	const hasReasoning = efforts.some((effort) => effort !== "none");
+	const gatewayEfforts = extractReasoningEfforts(model);
+	const override = typeof endpointOverride === "function" ? endpointOverride(id) : lookupEndpointOverride(id);
+	const endpoint = override ?? resolveInferenceEndpoint(model);
+	const api = toPiApiType(endpoint, providerId);
+	const thinking = resolveThinkingMetadata(id, providerId || undefined, api, gatewayEfforts);
 
 	const contextWindow =
 		(typeof model.context_window === "number" && model.context_window > 0 ? model.context_window : undefined) ??
@@ -292,13 +381,14 @@ export function toPiModel(model: GatewayModel): PiProviderModel | null {
 	return {
 		id,
 		name: (model.display_name ?? model.name ?? id).trim() || id,
-		reasoning: hasReasoning,
+		reasoning: thinking.reasoning,
 		input: buildInputModalities(model),
 		cost: resolveModelCostRates(id, providerId || undefined),
 		contextWindow,
 		maxTokens,
-		api: toPiApiType(endpoint, providerId),
-		thinkingLevelMap: buildThinkingLevelMap(efforts),
+		api,
+		thinkingLevelMap: thinking.thinkingLevelMap,
+		...(thinking.compat ? { compat: thinking.compat } : {}),
 	};
 }
 
