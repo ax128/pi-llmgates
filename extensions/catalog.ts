@@ -3,7 +3,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import packageJson from "../package.json" with { type: "json" };
-import { lookupEndpointOverride } from "./model-overrides.js";
 import { resolveModelCostRates } from "./model-pricing.js";
 import { envFlag, isPlainObject } from "./util.js";
 
@@ -364,7 +363,7 @@ export function toPiModel(
 
 	const providerId = (model.provider_id ?? "").trim().toLowerCase();
 	const gatewayEfforts = extractReasoningEfforts(model);
-	const override = typeof endpointOverride === "function" ? endpointOverride(id) : lookupEndpointOverride(id);
+	const override = typeof endpointOverride === "function" ? endpointOverride(id) : undefined;
 	const endpoint = override ?? resolveInferenceEndpoint(model);
 	const api = toPiApiType(endpoint, providerId);
 	const thinking = resolveThinkingMetadata(id, providerId || undefined, api, gatewayEfforts);

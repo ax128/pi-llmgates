@@ -248,6 +248,7 @@ pi
 | `LLMGATES_PROVIDER_NAME` | 覆盖 `providerName` |
 | `LLMGATES_PRICING_AUTO_UPDATE` | 覆盖 `pricingAutoUpdate`（默认 `true`；`0` / `false` 关闭） |
 | `LLMGATES_DEBUG` | 设为 `1` / `true` / `yes` 时输出调试日志 |
+| `LLMGATES_BLOCK_PRIVATE_URLS` | 设为 `1` / `true` / `yes` 时拒绝 **IP 字面量** 形式的 private / link-local 网关地址（loopback 仍允许）；hostname（如 `gateway.local`）不受此规则约束 |
 | `LLMGATES_TPS_SUBAGENT` | 默认启用；设为 `0` / `false` / `no` 时关闭子代理 async 旁路与 meta 扫描 |
 | `PI_OFFLINE` | 设为 `1` / `true` / `yes` 时跳过网络 catalog 刷新 |
 

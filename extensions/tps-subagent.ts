@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import {
 	emptyModelUsageEntry,
 	normalizeTokenCount,
@@ -634,6 +634,23 @@ export function resolvePiSubagentsArtifactsDir(cwd: string): string {
 	return join(cwd, PI_SUBAGENTS_ARTIFACTS_DIR);
 }
 
+/** Agent workspace root for subagent artifact reads (pi session cwd). */
+export function resolveSubagentWorkspaceRoot(cwd: string): string {
+	return resolve(cwd);
+}
+
+/** True when `candidate` resolves inside the workspace (blocks path traversal). */
+export function isSubagentPathWithinWorkspace(candidate: string, cwd: string): boolean {
+	const trimmed = candidate.trim();
+	if (!trimmed) {
+		return false;
+	}
+	const root = resolveSubagentWorkspaceRoot(cwd);
+	const target = isAbsolute(trimmed) ? resolve(trimmed) : resolve(root, trimmed);
+	const rel = relative(root, target);
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 export function collectPiSubagentsMetaUsage(
 	artifactsDir: string,
 	sessionStartedAtMs: number,
@@ -668,7 +685,10 @@ export function collectPiSubagentsMetaUsage(
 	return out;
 }
 
-function readJsonFile(path: string): unknown | null {
+function readJsonFile(path: string, workspaceRoot: string | undefined): unknown | null {
+	if (workspaceRoot === undefined || !isSubagentPathWithinWorkspace(path, workspaceRoot)) {
+		return null;
+	}
 	try {
 		return JSON.parse(readFileSync(path, "utf8"));
 	} catch {
@@ -681,8 +701,9 @@ export function extractSubagentUsageFromAsyncStatus(
 	asyncDir: string,
 	runId: string,
 	childIndex: number,
+	workspaceRoot?: string,
 ): SubagentUsageRecord | null {
-	const status = readJsonFile(join(asyncDir, "status.json"));
+	const status = readJsonFile(join(asyncDir, "status.json"), workspaceRoot);
 	if (!isPlainObject(status)) {
 		return null;
 	}
@@ -709,8 +730,9 @@ export function extractSubagentUsageFromAsyncStatus(
 export function extractSubagentRunAggregateFromAsyncStatus(
 	asyncDir: string,
 	runId: string,
+	workspaceRoot?: string,
 ): SubagentUsageRecord | null {
-	const status = readJsonFile(join(asyncDir, "status.json"));
+	const status = readJsonFile(join(asyncDir, "status.json"), workspaceRoot);
 	if (!isPlainObject(status)) {
 		return null;
 	}
@@ -789,7 +811,13 @@ export function selectFreshSubagentRecords(
 }
 
 /** Last-resort: sum assistant usage lines from a child session.jsonl. */
-export function extractSubagentUsageFromSessionFile(sessionFile: string): SubagentUsageRecord | null {
+export function extractSubagentUsageFromSessionFile(
+	sessionFile: string,
+	workspaceRoot?: string,
+): SubagentUsageRecord | null {
+	if (workspaceRoot === undefined || !isSubagentPathWithinWorkspace(sessionFile, workspaceRoot)) {
+		return null;
+	}
 	let text: string;
 	try {
 		text = readFileSync(sessionFile, "utf8");
@@ -867,6 +895,7 @@ function resolveChildSourceKey(
 export function extractSubagentUsageFromAsyncComplete(
 	data: unknown,
 	currentSessionId: string | null | undefined,
+	workspaceRoot?: string,
 ): SubagentUsageRecord[] {
 	if (!isPlainObject(data)) {
 		return [];
@@ -892,7 +921,7 @@ export function extractSubagentUsageFromAsyncComplete(
 		let record = recordFromPartial(item, sourceKey, agent);
 
 		if (!record && asyncDir) {
-			const fromStatus = extractSubagentUsageFromAsyncStatus(asyncDir, runId ?? "", i);
+			const fromStatus = extractSubagentUsageFromAsyncStatus(asyncDir, runId ?? "", i, workspaceRoot);
 			if (fromStatus) {
 				// Keep meta:{runId}:{agent}:{i} for dedupe with tool/meta paths when possible.
 				record = { ...fromStatus, sourceKey };
@@ -907,7 +936,7 @@ export function extractSubagentUsageFromAsyncComplete(
 						? item.artifactPaths.outputPath
 						: undefined;
 			if (sessionFile) {
-				const fromSession = extractSubagentUsageFromSessionFile(sessionFile);
+				const fromSession = extractSubagentUsageFromSessionFile(sessionFile, workspaceRoot);
 				if (fromSession) {
 					record = {
 						...fromSession,
@@ -946,7 +975,7 @@ export function extractSubagentUsageFromAsyncComplete(
 		}
 	}
 	if (asyncDir && runId) {
-		const fromStatusAgg = extractSubagentRunAggregateFromAsyncStatus(asyncDir, runId);
+		const fromStatusAgg = extractSubagentRunAggregateFromAsyncStatus(asyncDir, runId, workspaceRoot);
 		if (fromStatusAgg) {
 			return [fromStatusAgg];
 		}

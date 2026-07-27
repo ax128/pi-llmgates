@@ -79,7 +79,7 @@ function fakeProviderFactory(options: { blockRefresh?: boolean } = {}) {
 			startInitialPricingSync: vi.fn(),
 			startBackgroundRefresh: vi.fn(async () => refreshGate),
 			shutdown: vi.fn(async () => refreshGate),
-			getInternalState: () => ({ providerId: providerOptions.instance.id, modelCount: 1, generation: 0 }),
+			getInternalState: () => ({ providerId: providerOptions.instance.id, modelCount: 1, generation: 0, hasPending: false }),
 		} as CompatProvider & { shutdown: ReturnType<typeof vi.fn> };
 		created.set(provider.id, provider);
 		return provider;
@@ -304,7 +304,7 @@ describe("/2api management", () => {
 				markShutdown();
 				await shutdownGate;
 			}),
-			getInternalState: () => ({ providerId: providerOptions.instance.id, modelCount: 1, generation: 0 }),
+			getInternalState: () => ({ providerId: providerOptions.instance.id, modelCount: 1, generation: 0, hasPending: false }),
 		}) as CompatProvider;
 		try {
 			const registration = registerCompatGateways(runtime.pi, agentDir, {

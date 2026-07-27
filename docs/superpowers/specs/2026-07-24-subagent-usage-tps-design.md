@@ -260,6 +260,8 @@ interface SubagentUsageRecord {
 | `LLMGATES_TPS_SUBAGENT` | 启用 | 设为 `0` / `false` / `no` 时跳过 bridge 与 meta 的 subagent 扩展解析 |
 | `LLMGATES_DEBUG` | 关 | 采集/解析失败时 `console.warn` |
 
+Bridge 注册时须传入 pi session `cwd` 作为 `workspaceRoot`；`status.json` / `session.jsonl` 文件系统兜底仅在路径位于该 workspace 内时读取，否则跳过（fail-closed）。
+
 ---
 
 ## 8. 错误处理

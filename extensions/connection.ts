@@ -4,7 +4,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { BlockList } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { join } from "node:path";
 import {
 	DEFAULT_BASE_URL,
@@ -112,6 +112,41 @@ export function isLoopbackHostname(hostname: string): boolean {
 	}
 }
 
+function isPrivateOrLinkLocalIpLiteral(hostname: string): boolean {
+	const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+	const version = isIP(host);
+	if (version === 4) {
+		const [a, b] = host.split(".").map((part) => Number.parseInt(part, 10));
+		if (a === 10) return true;
+		if (a === 172 && b >= 16 && b <= 31) return true;
+		if (a === 192 && b === 168) return true;
+		if (a === 169 && b === 254) return true;
+		if (a === 0) return true;
+		return false;
+	}
+	if (version === 6) {
+		if (host.startsWith("fe80:")) return true;
+		if (host.startsWith("fc") || host.startsWith("fd")) return true;
+		if (host.startsWith("::ffff:")) {
+			const mapped = host.slice("::ffff:".length);
+			if (isIP(mapped) === 4) {
+				return isPrivateOrLinkLocalIpLiteral(mapped);
+			}
+			const hexMapped = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(mapped);
+			if (hexMapped) {
+				const hi = Number.parseInt(hexMapped[1]!, 16);
+				const lo = Number.parseInt(hexMapped[2]!, 16);
+				const dotted = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+				if (isIP(dotted) === 4) {
+					return isPrivateOrLinkLocalIpLiteral(dotted);
+				}
+			}
+		}
+		return false;
+	}
+	return false;
+}
+
 export function assertUrlTransportAllowed(input: string): { ok: true; url: URL } | { ok: false; error: string } {
 	const trimmed = input.trim();
 	if (!trimmed) {
@@ -146,6 +181,14 @@ export function assertUrlTransportAllowed(input: string): { ok: true; url: URL }
 	const bareHost = hostname.replace(/^\[|\]$/g, "").toLowerCase();
 	if (bareHost === "0.0.0.0" || bareHost === "::") {
 		return { ok: false, error: "URL host is not allowed" };
+	}
+
+	if (
+		envFlag("LLMGATES_BLOCK_PRIVATE_URLS") === true &&
+		!isLoopbackHostname(hostname) &&
+		isPrivateOrLinkLocalIpLiteral(hostname)
+	) {
+		return { ok: false, error: "URL host is a private or link-local address" };
 	}
 
 	return { ok: true, url };

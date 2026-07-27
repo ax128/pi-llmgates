@@ -20,12 +20,8 @@ import {
 	toPiModel,
 } from "../extensions/catalog.js";
 import {
-	applyModelOverridesToMemory,
-	clearModelOverridesMemory,
+	createModelOverrideLookup,
 } from "../extensions/model-overrides.js";
-
-// Endpoint-override memory is module-global; keep tests hermetic across files.
-afterEach(() => clearModelOverridesMemory());
 
 describe("normalizeGatewayBaseUrl", () => {
 	it("trims and preserves explicit gateway hosts", () => {
@@ -93,7 +89,6 @@ describe("toPiApiType", () => {
 });
 
 describe("toPiModel", () => {
-	afterEach(() => clearModelOverridesMemory());
 	it("maps gateway model with vision and responses endpoint", () => {
 		const model = toPiModel({
 			id: "gpt-5.5",
@@ -333,14 +328,17 @@ describe("toPiModel", () => {
 	});
 
 	it("resolves endpoint overrides before selecting same-family metadata", () => {
-		applyModelOverridesToMemory({
+		const lookup = createModelOverrideLookup({
 			models: { "claude-opus-4-7": { endpoint: "messages" } },
 		});
-		const model = toPiModel({
-			id: "claude-opus-4-7",
-			provider_id: "anthropic",
-			web_chat_endpoint: "responses",
-		});
+		const model = toPiModel(
+			{
+				id: "claude-opus-4-7",
+				provider_id: "anthropic",
+				web_chat_endpoint: "responses",
+			},
+			lookup,
+		);
 
 		expect(model?.api).toBe("anthropic-messages");
 		expect(model?.compat).toEqual({ forceAdaptiveThinking: true, supportsTemperature: false });
@@ -348,14 +346,17 @@ describe("toPiModel", () => {
 	});
 
 	it("skips built-in metadata for a cross-family endpoint override", () => {
-		applyModelOverridesToMemory({
+		const lookup = createModelOverrideLookup({
 			models: { "claude-opus-4-7": { endpoint: "responses" } },
 		});
-		const model = toPiModel({
-			id: "claude-opus-4-7",
-			provider_id: "anthropic",
-			web_chat_endpoint: "messages",
-		});
+		const model = toPiModel(
+			{
+				id: "claude-opus-4-7",
+				provider_id: "anthropic",
+				web_chat_endpoint: "messages",
+			},
+			lookup,
+		);
 
 		expect(model?.api).toBe("openai-responses");
 		expect(model?.compat).toBeUndefined();
