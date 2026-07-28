@@ -142,7 +142,7 @@ describe("extension compat/core isolation", () => {
 			registerExtension(runtime.pi);
 
 			expect([...runtime.providers.keys()]).toEqual(["llmgates"]);
-			expect([...runtime.commands.keys()]).toEqual(["balance"]);
+			expect([...runtime.commands.keys()].sort()).toEqual(["balance", "endpoint"]);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(/compat initialization/i);
 		} finally {
 			cleanup();
