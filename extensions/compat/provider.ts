@@ -9,11 +9,21 @@ import type {
 	OAuthCredential,
 	Provider,
 	ProviderModelsStore,
+	ProviderStreams,
 	RefreshModelsContext,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/compat";
+import {
+	anthropicMessagesApi,
+	openAICompletionsApi,
+	openAIResponsesApi,
+} from "@earendil-works/pi-ai/compat";
 import { isOfflineMode, parseGatewayModelsPayload, type GatewayModel } from "../catalog.js";
+import {
+	createModelOverrideLookup,
+	reloadModelOverridesFromDisk,
+	type ModelOverrideLookup,
+} from "../model-overrides.js";
 import {
 	applyPricingCacheToResolver,
 	lookupMemoryContextWindow,
@@ -60,7 +70,23 @@ import {
 	type CompatScheme,
 } from "./types.js";
 
-const streams = openAICompletionsApi();
+/** Same shape as the core provider's API_STREAMS: one adapter per supported api. */
+const COMPAT_API_STREAMS: Record<string, ProviderStreams> = {
+	"openai-completions": openAICompletionsApi(),
+	"anthropic-messages": anthropicMessagesApi(),
+	"openai-responses": openAIResponsesApi(),
+};
+
+/** Store validation accepts exactly the apis that have an adapter — no more, no less. */
+const COMPAT_SUPPORTED_APIS = new Set(Object.keys(COMPAT_API_STREAMS));
+
+function compatStreamFor(model: Model<Api>): ProviderStreams {
+	const streams = COMPAT_API_STREAMS[model.api];
+	if (!streams) {
+		throw new Error(`No stream implementation for api ${model.api}`);
+	}
+	return streams;
+}
 
 interface CompatConnection {
 	apiKey: string;
@@ -286,7 +312,11 @@ function isStoredModelValid(model: unknown, providerId: string, baseUrl: string)
 		typeof value.name === "string" &&
 		value.provider === providerId &&
 		value.baseUrl === baseUrl &&
-		value.api === "openai-completions" &&
+		// Widened from the hardcoded openai-completions: without this, a model saved
+		// as messages/responses is rejected wholesale on restore, and the instance's
+		// entire model list disappears offline until the next successful refresh.
+		typeof value.api === "string" &&
+		COMPAT_SUPPORTED_APIS.has(value.api) &&
 		Array.isArray(value.input) &&
 		Boolean(value.cost) &&
 		typeof value.cost === "object" &&
@@ -330,6 +360,27 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 	const instanceLoginUi = () => compatInstanceLoginUi(currentInstance.name);
 
 	applyPricingCacheToResolver(readModelPricingFile(agentDir));
+
+	const overrideScope = { kind: "2api", instanceId: providerId } as const;
+	let endpointOverride: ModelOverrideLookup = createModelOverrideLookup(null);
+	function reloadEndpointOverride(): ModelOverrideLookup {
+		reloadModelOverridesFromDisk(
+			agentDir,
+			(file) => {
+				endpointOverride = createModelOverrideLookup(file);
+			},
+			overrideScope,
+		);
+		return endpointOverride;
+	}
+	try {
+		reloadEndpointOverride();
+	} catch (error) {
+		// A malformed instance id cannot reach here (it failed registry validation),
+		// so this is an fs-level problem: start without overrides rather than
+		// preventing the provider from being constructed at all.
+		logWarn(providerId, `Failed to read endpoint overrides: ${error instanceof Error ? error.message : String(error)}`);
+	}
 
 	function lifecycleMatches(expectedGeneration: number): boolean {
 		return !shutDown && generation === expectedGeneration;
@@ -469,6 +520,9 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		signal: AbortSignal | undefined,
 		fetchGeneration: number,
 	): Promise<CatalogResult> {
+		// Reload from disk on every fetch (same as core) so an externally edited
+		// override file takes effect without restarting pi.
+		const requestEndpointOverride = reloadEndpointOverride();
 		const payload = await requestLimitedJson({
 			url: compatModelsUrl(connection.baseUrl),
 			headers: {
@@ -486,6 +540,7 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		const mapped = mapCompatModelsPayload(payload, {
 			providerId,
 			inferenceBaseUrl: connection.baseUrl,
+			endpointOverride: requestEndpointOverride,
 		});
 		const result: CatalogResult = {
 			models: mapped.models,
@@ -751,10 +806,10 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		},
 		refreshModels,
 		stream<T extends Api>(model: Model<T>, context: Context, streamOptions?: ApiStreamOptions<T>) {
-			return streams.stream(model as Model<Api>, context, streamOptions as never);
+			return compatStreamFor(model as Model<Api>).stream(model as never, context, streamOptions as never);
 		},
 		streamSimple(model: Model<Api>, context: Context, streamOptions?: SimpleStreamOptions) {
-			return streams.streamSimple(model, context, streamOptions);
+			return compatStreamFor(model).streamSimple(model as never, context, streamOptions as never);
 		},
 		beginSession(_reason: string): void {
 			const restartingAfterShutdown = shutDown;

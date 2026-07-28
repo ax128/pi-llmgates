@@ -6,8 +6,8 @@ import {
 	extractReasoningEfforts,
 	parseGatewayModelsPayload,
 	resolveThinkingMetadata,
+	toPiApiType,
 	type GatewayModel,
-	type PiApiType,
 } from "../catalog.js";
 import {
 	KNOWN_UPSTREAM_VENDOR_IDS,
@@ -96,12 +96,20 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
 	};
 }
 
-/** Patch compat metadata onto gateway-routed Kimi models (including cached catalog entries). */
+/**
+ * Patch compat metadata onto gateway-routed Kimi models (including cached catalog
+ * entries). `moonshotKimiOpenAICompat()` returns an OpenAICompletionsCompat shape,
+ * so it must not be stamped onto a model routed to another API family — a Kimi
+ * model switched to `messages` would otherwise carry OpenAI-shaped compat.
+ */
 export function applyMoonshotKimiCompatModel<T extends Model<Api>>(
 	model: T,
 	vendor?: string,
 	applyK3ThinkingFallback = false,
 ): T {
+	if (model.api !== "openai-completions") {
+		return model;
+	}
 	if (!isMoonshotKimiCompatModel(model.id, vendor)) {
 		return model;
 	}
@@ -128,9 +136,16 @@ export function resolveCompatContextWindow(modelId: string, explicit?: number): 
 	return positiveNumber(explicit) ?? lookupMemoryContextWindow(modelId) ?? DEFAULT_CONTEXT_WINDOW;
 }
 
+export interface MapCompatModelsOptions {
+	providerId: string;
+	inferenceBaseUrl: string;
+	/** Per-model endpoint override for this instance's scope; undefined = no override. */
+	endpointOverride?: (modelId: string) => string | undefined;
+}
+
 export function mapCompatModelsPayload(
 	payload: unknown,
-	options: { providerId: string; inferenceBaseUrl: string },
+	options: MapCompatModelsOptions,
 ): { models: Model<Api>[]; catalogRefs: CatalogModelRef[] } {
 	const models: Model<Api>[] = [];
 	const catalogRefs: CatalogModelRef[] = [];
@@ -153,9 +168,12 @@ export function mapCompatModelsPayload(
 			? upstream.provider_id.trim().toLowerCase()
 			: undefined;
 
-		// 2API gateways expose only OpenAI Chat Completions (single stream adapter).
-		// Per-model endpoint override is intentionally core-LLMGates-only.
-		const api: PiApiType = "openai-completions";
+		// 2API's own semantics are "wrap upstream as OpenAI Chat Completions", so the
+		// default is the constant chat_completions — deliberately NOT core's
+		// resolveInferenceEndpoint() heuristic, which would map Claude-ish ids to
+		// `messages` and change behavior for users who configured no override at all.
+		const endpoint = options.endpointOverride?.(id) ?? "chat_completions";
+		const api = toPiApiType(endpoint, vendor ?? "");
 		const gatewayEfforts = extractReasoningEfforts(upstream);
 		const thinking = resolveThinkingMetadata(id, vendor, api, gatewayEfforts);
 
