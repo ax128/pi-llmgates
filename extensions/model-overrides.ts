@@ -144,9 +144,21 @@ export async function writeModelOverride(
 	try {
 		createFileIfMissingMode(path, "{}\n", SECRET_FILE_MODE);
 
+		let raw: string;
+		try {
+			raw = readFileSync(path, "utf8");
+		} catch (error) {
+			// Report the fs code (EACCES/EISDIR/...) rather than blaming JSON syntax,
+			// but never echo the underlying message, which can carry the full path.
+			const code = (error as NodeJS.ErrnoException).code;
+			throw new Error(
+				`Cannot read ${LLMGATES_MODELS_FILE}${code ? `: filesystem error (${code})` : ""}`,
+			);
+		}
+
 		let root: unknown;
 		try {
-			root = JSON.parse(readFileSync(path, "utf8"));
+			root = JSON.parse(raw);
 		} catch {
 			throw new Error(`Cannot update ${LLMGATES_MODELS_FILE}: file is malformed`);
 		}

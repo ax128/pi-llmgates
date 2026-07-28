@@ -913,6 +913,100 @@ describe("refreshEndpointForeground", () => {
 		}
 	});
 
+	it("offline foreground refresh invalidates an older in-flight background refresh", async () => {
+		let hits = 0;
+		let markBackgroundStarted!: () => void;
+		let releaseBackground!: () => void;
+		const backgroundStarted = new Promise<void>((resolve) => {
+			markBackgroundStarted = resolve;
+		});
+		const backgroundGate = new Promise<void>((resolve) => {
+			releaseBackground = resolve;
+		});
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				onRequest: () => {
+					hits += 1;
+					if (hits === 2) markBackgroundStarted();
+				},
+				body: async function* () {
+					if (hits === 1) {
+						yield Buffer.from(JSON.stringify([{ id: "cached", provider_id: "openai" }]));
+						return;
+					}
+					await backgroundGate;
+					yield Buffer.from(JSON.stringify([{ id: "stale", provider_id: "openai" }]));
+				},
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			await seed(provider, store, server.baseUrl);
+			provider.beginSession("startup");
+			const background = provider.startBackgroundRefresh({ force: true });
+			await backgroundStarted;
+
+			process.env.PI_OFFLINE = "1";
+			await expect(provider.refreshEndpointForeground()).resolves.toEqual({ status: "offline" });
+			releaseBackground();
+			await background;
+
+			expect(provider.getModels().map((model) => model.id)).toEqual(["cached"]);
+			expect(store.writes).toHaveLength(1);
+		} finally {
+			releaseBackground();
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("throws on override-file I/O failure before fetching or publishing", async () => {
+		let hits = 0;
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				onRequest: () => {
+					hits += 1;
+				},
+				body: JSON.stringify([{ id: "v1", provider_id: "openai" }]),
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			await seed(provider, store, server.baseUrl);
+			const baselineHits = hits;
+			mkdirSync(join(agentDir, "llmgates/models.json"));
+
+			await expect(provider.refreshEndpointForeground()).rejects.toMatchObject({ code: "EISDIR" });
+
+			expect(hits).toBe(baselineHits);
+			expect(provider.getModels().map((model) => model.id)).toEqual(["v1"]);
+			expect(store.writes).toHaveLength(1);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
 	it("throws on network failure and retains old models + store", async () => {
 		const server = await startLoopbackServer([
 			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "v1", provider_id: "openai" }]) },

@@ -356,7 +356,7 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与 LLMGa
 
 设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
 
-**`llmgates/models.json`** — 每模型出口（endpoint / `api`）覆盖，纯手动、无网络同步。详见 [模型出口](#模型出口-endpoint--api)。
+**`llmgates/models.json`** — 每模型出口（endpoint / `api`）覆盖，由 `/endpoint` 或手工编辑维护；文件本身不会从网关自动同步。详见 [模型出口](#模型出口-endpoint--api)。
 
 **`llmgates/pricing.json`** — 可编辑的 USD / **100 万 token** 单价（`input`、`output`、`cacheRead`、`cacheWrite`）。键为 `modelId` 或 `provider/modelId`（如 `openai/gpt-5.6-sol`）：
 

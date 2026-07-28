@@ -767,6 +767,10 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	}
 
 	async function runEndpointForeground(): Promise<EndpointRefreshResult> {
+		// Invalidate any older refresh before returning an offline/not-ready status;
+		// otherwise it could publish a catalog mapped from the pre-command override.
+		const requestId = nextRequestId++;
+		latestRequestId = requestId;
 		if (isOfflineMode()) {
 			return { status: "offline" };
 		}
@@ -776,8 +780,6 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			return { status: "not-ready" };
 		}
 		const gen = generation;
-		const requestId = nextRequestId++;
-		latestRequestId = requestId;
 		const requestConnection = connection;
 		const controller = sessionController ?? new AbortController();
 		const ownsController = sessionController === null;

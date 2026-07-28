@@ -1,4 +1,4 @@
-import type { Api, Model, OAuthCredential } from "@earendil-works/pi-ai";
+import type { Api, Context, Model, OAuthCredential } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -98,10 +98,25 @@ describe("compat instance provider", () => {
 				force: true,
 			});
 
-			expect(provider.getModels()[0]).toMatchObject({
+			const compatModel = provider.getModels()[0];
+			expect(compatModel).toMatchObject({
 				id: "compat-model",
 				api: "openai-completions",
 			});
+
+			let payload: Record<string, unknown> | undefined;
+			const context: Context = { messages: [] };
+			await provider
+				.streamSimple(compatModel!, context, {
+					apiKey: "test-key",
+					onPayload(next) {
+						payload = next as Record<string, unknown>;
+						throw new Error("payload captured");
+					},
+				})
+				.result();
+			expect(payload).toHaveProperty("messages");
+			expect(payload).not.toHaveProperty("input");
 		} finally {
 			cleanup();
 		}

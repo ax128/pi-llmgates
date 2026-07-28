@@ -12,11 +12,15 @@ import {
 	type EndpointModelLookup,
 	type EndpointRuntime,
 } from "../extensions/endpoint.js";
-import { writeModelOverride } from "../extensions/model-overrides.js";
+import { writeModelOverride, type ModelOverrideWrite } from "../extensions/model-overrides.js";
 import type { EndpointRefreshResult } from "../extensions/provider.js";
 
 const CORE = "llmgates";
 const TWO_API = "llmgates-2api";
+
+afterEach(() => {
+	delete process.env.LLMGATES_PROVIDER_ID;
+});
 
 function model(id: string, api: Api, provider: string = CORE): Model<Api> {
 	return {
@@ -66,17 +70,18 @@ interface RuntimeOpts {
 	coreProviderId?: string;
 	refresh?: EndpointRefreshResult | (() => Promise<EndpointRefreshResult>);
 	refreshThrows?: Error;
-	writeSpy?: boolean;
 }
 
-function makeRuntime(opts: RuntimeOpts): { runtime: EndpointRuntime; writes: number } {
+function makeRuntime(opts: RuntimeOpts) {
 	const coreProviderId = opts.coreProviderId ?? CORE;
-	let writes = 0;
 	const refreshFn =
 		typeof opts.refresh === "function"
 			? (opts.refresh as () => Promise<EndpointRefreshResult>)
 			: async () =>
 					(opts.refresh as EndpointRefreshResult) ?? { status: "ok", models: [] };
+	const writeOverride = vi.fn((id: string, write: ModelOverrideWrite) =>
+		writeModelOverride(opts.agentDir, id, write),
+	);
 	const runtime: EndpointRuntime = {
 		coreProviderId,
 		refreshEndpointForeground: opts.refreshThrows
@@ -84,12 +89,9 @@ function makeRuntime(opts: RuntimeOpts): { runtime: EndpointRuntime; writes: num
 					throw opts.refreshThrows;
 				}
 			: refreshFn,
-		writeOverride: async (id, w) => {
-			writes += 1;
-			await writeModelOverride(opts.agentDir, id, w);
-		},
+		writeOverride,
 	};
-	return { runtime, writes };
+	return { runtime, writeOverride };
 }
 
 function withDir() {
@@ -167,10 +169,10 @@ describe("/endpoint command", () => {
 		const { agentDir, cleanup } = withDir();
 		try {
 			const { ctx, notifications } = makeCtx({ registry: [] });
-			const { runtime, writes } = makeRuntime({ agentDir });
+			const { runtime, writeOverride } = makeRuntime({ agentDir });
 			await runEndpointCommand("chat", runtime, ctx);
 			expect(notifications[0]?.level).toBe("error");
-			expect(writes).toBe(0);
+			expect(writeOverride).not.toHaveBeenCalled();
 		} finally {
 			cleanup();
 		}
@@ -181,10 +183,10 @@ describe("/endpoint command", () => {
 		try {
 			const twoApiCurrent = model("gpt-5.6-sol", "openai-completions", TWO_API);
 			const { ctx, notifications } = makeCtx({ current: twoApiCurrent, registry: [twoApiCurrent] });
-			const { runtime, writes } = makeRuntime({ agentDir });
+			const { runtime, writeOverride } = makeRuntime({ agentDir });
 			await runEndpointCommand("messages", runtime, ctx);
 			expect(notifications[0]?.level).toBe("error");
-			expect(writes).toBe(0);
+			expect(writeOverride).not.toHaveBeenCalled();
 		} finally {
 			cleanup();
 		}
@@ -195,10 +197,10 @@ describe("/endpoint command", () => {
 		try {
 			const twoApiOnly = model("only-in-2api", "openai-completions", TWO_API);
 			const { ctx, notifications } = makeCtx({ current: twoApiOnly, registry: [twoApiOnly] });
-			const { runtime, writes } = makeRuntime({ agentDir });
+			const { runtime, writeOverride } = makeRuntime({ agentDir });
 			await runEndpointCommand(`messages only-in-2api`, runtime, ctx);
 			expect(notifications[0]?.level).toBe("error");
-			expect(writes).toBe(0);
+			expect(writeOverride).not.toHaveBeenCalled();
 		} finally {
 			cleanup();
 		}
@@ -229,11 +231,11 @@ describe("/endpoint command", () => {
 		try {
 			for (const bad of ["", "bogus", "chat a b"]) {
 				const { ctx, notifications } = makeCtx({ registry: [] });
-				const { runtime, writes } = makeRuntime({ agentDir });
+				const { runtime, writeOverride } = makeRuntime({ agentDir });
 				await runEndpointCommand(bad, runtime, ctx);
 				expect(notifications[0]?.message).toMatch(/Usage:/);
 				expect(notifications[0]?.level).toBe("error");
-				expect(writes).toBe(0);
+				expect(writeOverride).not.toHaveBeenCalled();
 			}
 		} finally {
 			cleanup();
@@ -250,7 +252,7 @@ describe("/endpoint command", () => {
 		try {
 			const target = model("m1", "openai-responses");
 			const refreshed = model("m1", "anthropic-messages");
-			const { runtime } = makeRuntime({
+			const { runtime, writeOverride } = makeRuntime({
 				agentDir,
 				refresh: async () => {
 					refreshCalls();
@@ -268,6 +270,33 @@ describe("/endpoint command", () => {
 			release();
 			await aPromise;
 			expect(a.notifications.some((n) => n.level === "info")).toBe(true);
+			expect(writeOverride).toHaveBeenCalledTimes(1);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("keeps the provider id captured at registration when the environment changes", async () => {
+		const { agentDir, cleanup } = withDir();
+		try {
+			const target = model("m1", "openai-responses", "registered-core");
+			const refreshed = model("m1", "anthropic-messages", "registered-core");
+			const find = vi.fn((provider: string, id: string) =>
+				provider === "registered-core" && id === "m1" ? refreshed : undefined,
+			);
+			const { ctx } = makeCtx({ current: target, findImpl: find });
+			const { runtime, writeOverride } = makeRuntime({
+				agentDir,
+				coreProviderId: "registered-core",
+				refresh: { status: "ok", models: [refreshed] },
+			});
+			process.env.LLMGATES_PROVIDER_ID = "changed-after-registration";
+
+			await runEndpointCommand("messages m1", runtime, ctx);
+
+			expect(find).toHaveBeenCalledWith("registered-core", "m1");
+			expect(find).not.toHaveBeenCalledWith("changed-after-registration", "m1");
+			expect(writeOverride).toHaveBeenCalledWith("m1", { kind: "set", endpoint: "messages" });
 		} finally {
 			cleanup();
 		}
@@ -313,6 +342,51 @@ describe("/endpoint command", () => {
 		}
 	});
 
+	it("writes the override before reporting offline partial", async () => {
+		const { agentDir, cleanup } = withDir();
+		try {
+			const { ctx, notifications } = makeCtx({
+				current: model("m1", "openai-responses"),
+				registry: [model("m1", "openai-responses")],
+			});
+			const { runtime } = makeRuntime({ agentDir, refresh: { status: "offline" } });
+
+			await runEndpointCommand("messages", runtime, ctx);
+
+			expect(notifications.some((n) => n.level === "warning")).toBe(true);
+			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/models.json"), "utf8"))).toEqual({
+				models: { m1: { endpoint: "messages" } },
+			});
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("verifies the registry only after the refresh publishes updated models", async () => {
+		const { agentDir, cleanup } = withDir();
+		try {
+			const original = model("m1", "openai-responses");
+			const updated = model("m1", "anthropic-messages");
+			let published = false;
+			const find = vi.fn(() => (published ? updated : original));
+			const { ctx, notifications } = makeCtx({ current: original, findImpl: find });
+			const { runtime } = makeRuntime({
+				agentDir,
+				refresh: async () => {
+					published = true;
+					return { status: "ok", models: [updated] };
+				},
+			});
+
+			await runEndpointCommand("messages m1", runtime, ctx);
+
+			expect(find).toHaveBeenCalledTimes(3);
+			expect(notifications.some((n) => n.level === "info")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("maps a registry verification mismatch to partial", async () => {
 		const { agentDir, cleanup } = withDir();
 		try {
@@ -335,15 +409,11 @@ describe("/endpoint command", () => {
 	it("maps find() returning undefined at verify to partial and skips setModel", async () => {
 		const { agentDir, cleanup } = withDir();
 		try {
-			const findImpl = vi.fn(() => undefined as unknown as Model<Api>);
-			// target resolution must succeed first, then verify sees undefined
-			let resolutionDone = false;
-			const find: EndpointModelLookup["find"] = (provider, id) => {
-				const m = resolutionDone ? undefined : model(id, "openai-responses");
-				resolutionDone = true; // ponytail: flip after first lookup used for resolution
-				return m as Model<Api> | undefined;
-			};
-			void findImpl;
+			// An explicit model id forces resolveTarget through find(); the model then
+			// disappears from the catalog, so the verify lookup must observe undefined.
+			const find = vi.fn((_provider: string, id: string) =>
+				find.mock.calls.length === 1 ? model(id, "openai-responses") : undefined,
+			);
 			const { ctx, notifications, setModel } = makeCtx({
 				current: model("m1", "openai-responses"),
 				findImpl: find,
@@ -352,8 +422,14 @@ describe("/endpoint command", () => {
 				agentDir,
 				refresh: { status: "ok", models: [] },
 			});
-			await runEndpointCommand("messages", runtime, ctx);
-			expect(notifications.some((n) => n.level === "warning" && /not fully active/i.test(n.message))).toBe(true);
+			await runEndpointCommand("messages m1", runtime, ctx);
+			expect(find.mock.calls.length).toBeGreaterThanOrEqual(2); // resolution, then verify
+			expect(find).toHaveLastReturnedWith(undefined);
+			expect(
+				notifications.some(
+					(n) => n.level === "warning" && /registry api: missing/i.test(n.message),
+				),
+			).toBe(true);
 			expect(setModel).not.toHaveBeenCalled();
 		} finally {
 			cleanup();
@@ -420,6 +496,27 @@ describe("/endpoint command", () => {
 			expect(after.defaults).toEqual({ endpoint: "responses" });
 			expect(after.models.m1).toBeUndefined();
 			expect(after.models.other).toEqual({ endpoint: "chat_completions" });
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("auto succeeds when the model already has no per-model endpoint", async () => {
+		const { agentDir, cleanup } = withDir();
+		try {
+			const current = model("m1", "openai-responses");
+			const { ctx, notifications } = makeCtx({ current, registry: [current] });
+			const { runtime } = makeRuntime({
+				agentDir,
+				refresh: { status: "ok", models: [current] },
+			});
+
+			await runEndpointCommand("auto", runtime, ctx);
+
+			expect(notifications.some((n) => n.level === "info")).toBe(true);
+			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/models.json"), "utf8"))).toEqual({
+				models: {},
+			});
 		} finally {
 			cleanup();
 		}

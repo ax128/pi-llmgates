@@ -218,12 +218,11 @@ describe("writeModelOverride", () => {
 		["chat", "chat_completions"],
 		["messages", "messages"],
 		["responses", "responses"],
-	] as const)("writes canonical value for %s", async (value, canonical) => {
+	] as const)("writes canonical value for %s", async (_value, canonical) => {
 		await writeModelOverride(dir, "gpt-5.6-sol", { kind: "set", endpoint: canonical });
 		expect(JSON.parse(readRaw())).toEqual({ models: { "gpt-5.6-sol": { endpoint: canonical } } });
 		// alias not widened: command only writes the canonical value
 		expect(readModelOverridesFile(dir)?.models?.["gpt-5.6-sol"]?.endpoint).toBe(canonical);
-		void value;
 	});
 
 	it("creates the file (0600) and dir (0700) when missing", async () => {
@@ -295,6 +294,15 @@ describe("writeModelOverride", () => {
 		writeFileSync(join(dir, "llmgates/models.json"), contents);
 		await expect(writeModelOverride(dir, "m1", { kind: "set", endpoint: "messages" })).rejects.toThrow();
 		expect(readRaw()).toBe(contents);
+	});
+
+	it("reports a read failure as a filesystem error, not as malformed JSON", async () => {
+		// A directory in place of the file yields EISDIR on read; the message must
+		// point at the fs code so users do not go hunting for a JSON syntax error.
+		mkdirSync(join(dir, "llmgates/models.json"), { recursive: true });
+		await expect(
+			writeModelOverride(dir, "m1", { kind: "set", endpoint: "messages" }),
+		).rejects.toThrow(/filesystem error \(EISDIR\)/);
 	});
 
 	it("writes a __proto__ model id as an own property without prototype pollution", async () => {
