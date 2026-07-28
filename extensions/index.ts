@@ -5,6 +5,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { registerBalanceCommand } from "./balance.js";
+import { createModelSelectReconciler, registerEndpointCommand } from "./endpoint.js";
 import { registerCompatGateways } from "./compat/index.js";
 import { detectLegacyApiKeyCredential, resolveProviderIdentity } from "./connection.js";
 import { createLLMGatesProvider, type LLMGatesProvider } from "./provider.js";
@@ -79,6 +80,15 @@ export default function (pi: ExtensionAPI): void {
 	// Native Provider overload (pi 0.81+)
 	pi.registerProvider(provider);
 	registerBalanceCommand(pi, identity.providerId);
+	// /endpoint is registered only after the core provider is live: it needs the
+	// foreground refresh path, which a legacy fail-closed branch cannot honor.
+	registerEndpointCommand(pi, agentDir, identity.providerId, provider);
+	// Reconcile stale scoped Model objects (old api) after a /endpoint change so
+	// Ctrl+P cycling rebinds to the registry's composed model. Self-guarded.
+	const reconcileModelSelect = createModelSelectReconciler(identity.providerId, (model) =>
+		pi.setModel(model),
+	);
+	pi.on("model_select", (event, ctx) => reconcileModelSelect(event, ctx));
 	logDebug(`Registered native provider ${identity.providerId}`);
 
 	pi.on("session_start", async (event) => {

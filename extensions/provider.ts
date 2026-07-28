@@ -100,10 +100,27 @@ interface PendingCatalog {
 	loginGeneration: number;
 }
 
+export type EndpointRefreshResult =
+	| { status: "offline" }
+	| { status: "not-ready" }
+	| { status: "superseded" }
+	| { status: "ok"; models: Model<Api>[] };
+
 export interface LLMGatesProvider extends Provider {
 	beginSession(reason: string): void;
 	shutdown(): Promise<void>;
 	startBackgroundRefresh(opts?: { force?: boolean }): Promise<void>;
+	/**
+	 * Foreground catalog refresh for the /endpoint command: bypasses the freshness
+	 * window, reloads per-model overrides from disk, re-fetches the catalog, and
+	 * commits+publishes synchronously. Resolves only after the store write and the
+	 * synchronous provider re-registration have completed.
+	 *
+	 * Returns offline/not-ready/superseded without throwing; THROWS on network,
+	 * override-file I/O, or store-write errors so the command can map them to
+	 * `partial`. Never awaits another commitChain task internally (no deadlock).
+	 */
+	refreshEndpointForeground(): Promise<EndpointRefreshResult>;
 	/** test helper */
 	getInternalState(): {
 		generation: number;
@@ -745,6 +762,67 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		}
 	}
 
+	function refreshEndpointForeground(): Promise<EndpointRefreshResult> {
+		return track(runEndpointForeground());
+	}
+
+	async function runEndpointForeground(): Promise<EndpointRefreshResult> {
+		// Invalidate any older refresh before returning an offline/not-ready status;
+		// otherwise it could publish a catalog mapped from the pre-command override.
+		const requestId = nextRequestId++;
+		latestRequestId = requestId;
+		if (isOfflineMode()) {
+			return { status: "offline" };
+		}
+		const store = scopedStore;
+		const connection = lastConnection ?? connectionFromAmbientEnv() ?? connectionFromConfigFile(agentDir);
+		if (!store || !connection) {
+			return { status: "not-ready" };
+		}
+		const gen = generation;
+		const requestConnection = connection;
+		const controller = sessionController ?? new AbortController();
+		const ownsController = sessionController === null;
+		if (ownsController) activeControllers.add(controller);
+
+		try {
+			// fetchCatalog reloads per-model overrides from disk and re-maps; it throws on
+			// network failure and on non-ENOENT override-file fs errors (EACCES/EIO/...).
+			const fetched = await fetchCatalog(requestConnection, controller.signal);
+
+			let committed = false;
+			await withCommit(async () => {
+				if (shutDown || gen !== generation || controller.signal.aborted) return;
+				if (requestId !== latestRequestId) return;
+				if (!connectionStillMatches(requestConnection)) return;
+				await store.write({ models: fetched, checkedAt: now() });
+				if (shutDown || gen !== generation || controller.signal.aborted) return;
+				if (requestId !== latestRequestId) return;
+				if (!connectionStillMatches(requestConnection)) return;
+				modelsAheadOfStore = false;
+				setModels(fetched, true);
+				lastConnection = requestConnection;
+				lastCheckedAt = now();
+				committed = true;
+			});
+			// Returning the mapped models lets the command derive the expected api for
+			// `auto` from the same mapping that produced them (spec rev 3).
+			return committed ? { status: "ok", models: fetched } : { status: "superseded" };
+		} catch (error) {
+			if (
+				controller.signal.aborted &&
+				(shutDown || gen !== generation) &&
+				error instanceof DOMException &&
+				error.name === "AbortError"
+			) {
+				return { status: "superseded" };
+			}
+			throw error;
+		} finally {
+			if (ownsController) activeControllers.delete(controller);
+		}
+	}
+
 	provider = {
 		id: providerId,
 		name: providerName,
@@ -780,6 +858,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			wantBackgroundRefresh = true;
 			await track(runBackgroundRefresh(opts));
 		},
+		refreshEndpointForeground,
 		async shutdown(): Promise<void> {
 			shutDown = true;
 			generation += 1;

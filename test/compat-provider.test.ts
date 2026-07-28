@@ -1,6 +1,6 @@
-import type { Api, Model, OAuthCredential } from "@earendil-works/pi-ai";
+import type { Api, Context, Model, OAuthCredential } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createCompatProvider } from "../extensions/compat/provider.js";
 import {
@@ -98,10 +98,25 @@ describe("compat instance provider", () => {
 				force: true,
 			});
 
-			expect(provider.getModels()[0]).toMatchObject({
+			const compatModel = provider.getModels()[0];
+			expect(compatModel).toMatchObject({
 				id: "compat-model",
 				api: "openai-completions",
 			});
+
+			let payload: Record<string, unknown> | undefined;
+			const context: Context = { messages: [] };
+			await provider
+				.streamSimple(compatModel!, context, {
+					apiKey: "test-key",
+					onPayload(next) {
+						payload = next as Record<string, unknown>;
+						throw new Error("payload captured");
+					},
+				})
+				.result();
+			expect(payload).toHaveProperty("messages");
+			expect(payload).not.toHaveProperty("input");
 		} finally {
 			cleanup();
 		}
@@ -1018,6 +1033,22 @@ describe("compat instance provider", () => {
 			release();
 			cleanup();
 			await server.close();
+		}
+	});
+});
+
+describe("2api isolation from per-model endpoint overrides", () => {
+	it("compat modules never import or read the core llmgates/models.json override", () => {
+		// The per-model endpoint override is read ONLY by the core provider path
+		// (model-overrides.ts → provider.ts). The 2api compatibility provider must
+		// never touch it, so a /endpoint change cannot leak into 2api routing.
+		const root = join(import.meta.dirname, "..", "extensions", "compat");
+		for (const file of ["index.ts", "provider.ts", "catalog.ts", "storage.ts", "types.ts"]) {
+			const src = readFileSync(join(root, file), "utf8");
+			expect(src, `${file} must not import model-overrides`).not.toMatch(/model-overrides/);
+			expect(src, `${file} must not reference llmgates/models.json`).not.toMatch(
+				/llmgates\/models\.json/,
+			);
 		}
 	});
 });

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createLLMGatesProvider } from "../extensions/provider.js";
 import {
@@ -8,6 +8,7 @@ import {
 	normalizeEndpointOverride,
 	readModelOverridesFile,
 	reloadModelOverridesFromDisk,
+	writeModelOverride,
 	type ModelOverrideFile,
 } from "../extensions/model-overrides.js";
 
@@ -196,5 +197,164 @@ describe("readModelOverridesFile", () => {
 		} finally {
 			warn.mockRestore();
 		}
+	});
+});
+
+describe("writeModelOverride", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "llmgates-write-"));
+		mkdirSync(join(dir, "llmgates"), { recursive: true });
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	function readRaw(): string {
+		return readFileSync(join(dir, "llmgates/models.json"), "utf8");
+	}
+
+	it.each([
+		["chat", "chat_completions"],
+		["messages", "messages"],
+		["responses", "responses"],
+	] as const)("writes canonical value for %s", async (_value, canonical) => {
+		await writeModelOverride(dir, "gpt-5.6-sol", { kind: "set", endpoint: canonical });
+		expect(JSON.parse(readRaw())).toEqual({ models: { "gpt-5.6-sol": { endpoint: canonical } } });
+		// alias not widened: command only writes the canonical value
+		expect(readModelOverridesFile(dir)?.models?.["gpt-5.6-sol"]?.endpoint).toBe(canonical);
+	});
+
+	it("creates the file (0600) and dir (0700) when missing", async () => {
+		rmSync(join(dir, "llmgates"), { recursive: true, force: true });
+		await writeModelOverride(dir, "m1", { kind: "set", endpoint: "messages" });
+		const fileMode = statSync(join(dir, "llmgates/models.json")).mode & 0o777;
+		const dirMode = statSync(join(dir, "llmgates")).mode & 0o777;
+		expect(fileMode).toBe(0o600);
+		expect(dirMode).toBe(0o700);
+	});
+
+	it("preserves defaults, other models, other fields on the target entry, and unknown top-level keys", async () => {
+		writeFileSync(
+			join(dir, "llmgates/models.json"),
+			JSON.stringify({
+				defaults: { endpoint: "responses" },
+				models: {
+					"gpt-5.6-sol": { endpoint: "chat_completions", note: "keep" },
+					"claude-sonnet-4-6": { endpoint: "messages" },
+				},
+				customTopLevel: { whatever: true },
+			}),
+		);
+		await writeModelOverride(dir, "gpt-5.6-sol", { kind: "set", endpoint: "messages" });
+		const after = JSON.parse(readRaw());
+		expect(after.defaults).toEqual({ endpoint: "responses" });
+		expect(after.models["claude-sonnet-4-6"]).toEqual({ endpoint: "messages" });
+		expect(after.models["gpt-5.6-sol"]).toEqual({ endpoint: "messages", note: "keep" });
+		expect(after.customTopLevel).toEqual({ whatever: true });
+	});
+
+	it("deletes the per-model endpoint and drops the entry when it becomes empty", async () => {
+		writeFileSync(
+			join(dir, "llmgates/models.json"),
+			JSON.stringify({ models: { "gpt-5.6-sol": { endpoint: "messages" } } }),
+		);
+		await writeModelOverride(dir, "gpt-5.6-sol", { kind: "delete" });
+		expect(JSON.parse(readRaw())).toEqual({ models: {} });
+	});
+
+	it("keeps the entry on delete when it still has other fields; leaves defaults untouched", async () => {
+		writeFileSync(
+			join(dir, "llmgates/models.json"),
+			JSON.stringify({
+				defaults: { endpoint: "responses" },
+				models: { "gpt-5.6-sol": { endpoint: "messages", note: "keep" } },
+			}),
+		);
+		await writeModelOverride(dir, "gpt-5.6-sol", { kind: "delete" });
+		const after = JSON.parse(readRaw());
+		expect(after.models["gpt-5.6-sol"]).toEqual({ note: "keep" });
+		expect(after.defaults).toEqual({ endpoint: "responses" });
+	});
+
+	it("delete is idempotent on a model without an override", async () => {
+		writeFileSync(join(dir, "llmgates/models.json"), JSON.stringify({ models: { other: { endpoint: "chat" } } }));
+		await expect(writeModelOverride(dir, "absent-model", { kind: "delete" })).resolves.toBeUndefined();
+		expect(JSON.parse(readRaw())).toEqual({ models: { other: { endpoint: "chat" } } });
+	});
+
+	it.each([
+		["malformed JSON", "{ secret-contents-here"],
+		["invalid root", JSON.stringify(["secret-contents-here"])],
+		["invalid models", JSON.stringify({ models: ["secret-contents-here"] })],
+		["scalar target entry", JSON.stringify({ models: { m1: "secret-contents-here" } })],
+		["null target entry", JSON.stringify({ models: { m1: null } })],
+		["array target entry", JSON.stringify({ models: { m1: ["secret-contents-here"] } })],
+	])("fails closed and does not overwrite on %s", async (_label, contents) => {
+		writeFileSync(join(dir, "llmgates/models.json"), contents);
+		await expect(writeModelOverride(dir, "m1", { kind: "set", endpoint: "messages" })).rejects.toThrow();
+		expect(readRaw()).toBe(contents);
+	});
+
+	it("reports a read failure as a filesystem error, not as malformed JSON", async () => {
+		// A directory in place of the file yields EISDIR on read; the message must
+		// point at the fs code so users do not go hunting for a JSON syntax error.
+		mkdirSync(join(dir, "llmgates/models.json"), { recursive: true });
+		await expect(
+			writeModelOverride(dir, "m1", { kind: "set", endpoint: "messages" }),
+		).rejects.toThrow(/filesystem error \(EISDIR\)/);
+	});
+
+	it("writes a __proto__ model id as an own property without prototype pollution", async () => {
+		writeFileSync(join(dir, "llmgates/models.json"), JSON.stringify({ models: {} }));
+		try {
+			await writeModelOverride(dir, "__proto__", { kind: "set", endpoint: "messages" });
+			const after = JSON.parse(readRaw()) as { models: Record<string, { endpoint?: string }> };
+			expect(Object.hasOwn(after.models, "__proto__")).toBe(true);
+			expect(after.models.__proto__?.endpoint).toBe("messages");
+			expect(Object.hasOwn(Object.prototype, "endpoint")).toBe(false);
+		} finally {
+			delete (Object.prototype as { endpoint?: unknown }).endpoint;
+		}
+	});
+
+	it("does not echo file contents in error messages", async () => {
+		writeFileSync(join(dir, "llmgates/models.json"), "{ super-secret-token");
+		await expect(
+			writeModelOverride(dir, "m1", { kind: "set", endpoint: "messages" }),
+		).rejects.toThrow(/malformed|invalid/i);
+		// re-assert by capturing the rejection message explicitly
+		try {
+			await writeModelOverride(dir, "m1", { kind: "set", endpoint: "chat_completions" });
+		} catch (error) {
+			expect(String((error as Error).message)).not.toContain("super-secret-token");
+		}
+	});
+
+	it("two concurrent non-overlapping writes both land", async () => {
+		await Promise.all([
+			writeModelOverride(dir, "m1", { kind: "set", endpoint: "messages" }),
+			writeModelOverride(dir, "m2", { kind: "set", endpoint: "chat_completions" }),
+		]);
+		const after = JSON.parse(readRaw()).models;
+		expect(after.m1).toEqual({ endpoint: "messages" });
+		expect(after.m2).toEqual({ endpoint: "chat_completions" });
+	});
+
+	it("NEVER writes the pi-owned <agentDir>/models.json", async () => {
+		// Pre-place a pi-owned models.json with user modelOverrides — the one path
+		// whose accidental overwrite means real user data loss.
+		const piModelsPath = join(dir, "models.json");
+		const original = {
+			providers: { llmgates: { modelOverrides: { "gpt-5.6-sol": { reasoning: true } } } },
+		};
+		writeFileSync(piModelsPath, JSON.stringify(original));
+		const before = { content: readFileSync(piModelsPath, "utf8"), mtimeMs: statSync(piModelsPath).mtimeMs };
+
+		await writeModelOverride(dir, "gpt-5.6-sol", { kind: "set", endpoint: "messages" });
+
+		expect(readFileSync(piModelsPath, "utf8")).toBe(before.content);
+		expect(statSync(piModelsPath).mtimeMs).toBe(before.mtimeMs);
+		expect(JSON.parse(readRaw())).toEqual({ models: { "gpt-5.6-sol": { endpoint: "messages" } } });
 	});
 });

@@ -1,3 +1,4 @@
+import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { createLLMGatesProvider } from "../extensions/provider.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
@@ -462,6 +463,59 @@ describe("native oauth login", () => {
 		} finally {
 			cleanup();
 			await server.close();
+		}
+	});
+});
+
+describe("endpoint stream adapter routing", () => {
+	it.each([
+		["openai-completions", "chat"],
+		["anthropic-messages", "messages"],
+		["openai-responses", "responses"],
+	] as const)("routes %s through the real %s adapter", async (api, family) => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const model: Model<Api> = {
+				id: "m1",
+				name: "M1",
+				provider: "llmgates",
+				api,
+				baseUrl: "https://example.invalid/v1",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 1024,
+			};
+			const context: Context = { messages: [] };
+			let payload: Record<string, unknown> | undefined;
+			await provider
+				.streamSimple(model, context, {
+					apiKey: "test-key",
+					onPayload(next) {
+						payload = next as Record<string, unknown>;
+						throw new Error("payload captured");
+					},
+				})
+				.result();
+
+			expect(payload?.model).toBe("m1");
+			if (family === "responses") {
+				expect(payload).toHaveProperty("input");
+				expect(payload).not.toHaveProperty("messages");
+			} else {
+				expect(payload).toHaveProperty("messages");
+				expect(payload).not.toHaveProperty("input");
+			}
+			if (family === "chat") expect(payload).toHaveProperty("stream_options");
+			if (family === "messages") expect(payload).toHaveProperty("max_tokens");
+		} finally {
+			cleanup();
 		}
 	});
 });

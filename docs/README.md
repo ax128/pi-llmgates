@@ -18,6 +18,7 @@
 
 | 文档 | 状态 |
 | --- | --- |
+| [endpoint-command-design.md](./superpowers/specs/2026-07-28-endpoint-command-design.md) | **当前有效** — `/endpoint` 单模型出口切换/清除、持久化与 runtime 生效规格 |
 | [pr12-thinking-level-fixes-design.md](./superpowers/specs/2026-07-26-pr12-thinking-level-fixes-design.md) | **当前有效** — thinking metadata、endpoint override 与 catalog 生命周期补充规格 |
 | [subagent-usage-tps-design.md](./superpowers/specs/2026-07-24-subagent-usage-tps-design.md) | **当前有效** — TPS 子代理全路径用量采集（含 async 旁路） |
 | [native-provider-security-hardening-design.md](./superpowers/specs/2026-07-22-native-provider-security-hardening-design.md) | **当前有效** — native Provider、认证边界、HTTP 客户端、缓存与测试验收 |
