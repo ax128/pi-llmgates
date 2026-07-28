@@ -163,6 +163,28 @@ describe("toPiModel", () => {
 		},
 	);
 
+	it("re-resolves thinking metadata and compat per endpoint family (not just api)", () => {
+		// The same gateway model, mapped under two different endpoint overrides,
+		// must get api-appropriate thinking metadata rather than carrying the old
+		// family's compat/thinkingLevelMap. This is why /endpoint re-maps instead
+		// of only patching model.api.
+		const gateway = { id: "claude-opus-4-7", provider_id: "anthropic" };
+		const asMessages = toPiModel(gateway, () => "messages");
+		const asResponses = toPiModel(gateway, () => "responses");
+
+		expect(asMessages?.api).toBe("anthropic-messages");
+		expect(asResponses?.api).toBe("openai-responses");
+
+		// Anthropic family: exact builtin metadata applies.
+		expect(asMessages?.compat).toEqual({ forceAdaptiveThinking: true, supportsTemperature: false });
+		expect(asMessages?.thinkingLevelMap).toEqual({ xhigh: "xhigh", max: "max" });
+
+		// Switched to the OpenAI family: not applicable → static-rule metadata, no compat.
+		expect(asResponses?.compat).toBeUndefined();
+		expect(asResponses?.thinkingLevelMap).not.toEqual(asMessages?.thinkingLevelMap);
+		expect(asResponses?.thinkingLevelMap?.off).toBe("none");
+	});
+
 	it("drives adaptive effort and omits unsupported temperature in Anthropic payloads", async () => {
 		const mapped = toPiModel({
 			id: "claude-opus-4-7",

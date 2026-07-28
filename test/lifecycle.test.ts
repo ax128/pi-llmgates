@@ -806,3 +806,275 @@ describe("lifecycle", () => {
 		}
 	});
 });
+
+describe("refreshEndpointForeground", () => {
+	function apiKeyCredential(baseUrl: string, key = "k") {
+		return {
+			type: "api_key" as const,
+			key,
+			env: {
+				LLMGATES_RESOLVED_BASE_URL: `${baseUrl}/v1`,
+				LLMGATES_RESOLVED_SOURCE: "env" as const,
+			},
+		};
+	}
+
+	async function seed(
+		provider: ReturnType<typeof createLLMGatesProvider>,
+		store: ReturnType<typeof createMemoryStore>,
+		baseUrl: string,
+	) {
+		await provider.refreshModels!({
+			store,
+			allowNetwork: true,
+			force: true,
+			credential: apiKeyCredential(baseUrl),
+		});
+	}
+
+	it("returns not-ready before the scoped store is injected", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createLLMGatesProvider({
+				agentDir,
+			providerId: "llmgates",
+			providerName: "LLMGates",
+			});
+			await expect(provider.refreshEndpointForeground()).resolves.toEqual({ status: "not-ready" });
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("bypasses the freshness window to re-fetch a changed catalog", async () => {
+		let catalogBody = JSON.stringify([{ id: "v1", provider_id: "openai" }]);
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				body: async function* () {
+					yield Buffer.from(catalogBody);
+				},
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+			providerId: "llmgates",
+			providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			await seed(provider, store, server.baseUrl);
+			expect(provider.getModels().map((m) => m.id)).toEqual(["v1"]);
+			// lastCheckedAt is now fresh; a background refresh would skip. Foreground must not.
+			catalogBody = JSON.stringify([{ id: "v2", provider_id: "openai" }]);
+			const result = await provider.refreshEndpointForeground();
+			expect(result.status).toBe("ok");
+			expect(provider.getModels().map((m) => m.id)).toEqual(["v2"]);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("returns offline under PI_OFFLINE without any request", async () => {
+		let hits = 0;
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				onRequest: () => {
+					hits += 1;
+				},
+				body: JSON.stringify([{ id: "v1", provider_id: "openai" }]),
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+			providerId: "llmgates",
+			providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			await seed(provider, store, server.baseUrl);
+			const baselineHits = hits;
+			process.env.PI_OFFLINE = "1";
+			await expect(provider.refreshEndpointForeground()).resolves.toEqual({ status: "offline" });
+			expect(hits).toBe(baselineHits);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("throws on network failure and retains old models + store", async () => {
+		const server = await startLoopbackServer([
+			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "v1", provider_id: "openai" }]) },
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+			providerId: "llmgates",
+			providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			await seed(provider, store, server.baseUrl);
+			await server.close();
+			await expect(provider.refreshEndpointForeground()).rejects.toThrow();
+			expect(provider.getModels().map((m) => m.id)).toEqual(["v1"]);
+			expect(store.writes).toHaveLength(1);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("throws on store write failure without publishing", async () => {
+		const server = await startLoopbackServer([
+			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "v1", provider_id: "openai" }]) },
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+			providerId: "llmgates",
+			providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			await seed(provider, store, server.baseUrl);
+			store.failNextWrite = new Error("disk full");
+			await expect(provider.refreshEndpointForeground()).rejects.toThrow("disk full");
+			expect(provider.getModels().map((m) => m.id)).toEqual(["v1"]);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("re-maps with a changed per-model override for each endpoint adapter", async () => {
+		const server = await startLoopbackServer([
+			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", provider_id: "openai" }]) },
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+			providerId: "llmgates",
+			providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			await seed(provider, store, server.baseUrl);
+			for (const [write, api] of [
+				["chat_completions", "openai-completions"],
+				["messages", "anthropic-messages"],
+				["responses", "openai-responses"],
+			] as const) {
+				writeJson(join(agentDir, "llmgates/models.json"), { models: { m1: { endpoint: write } } });
+				const result = await provider.refreshEndpointForeground();
+				expect(result.status).toBe("ok");
+				expect(provider.getModels()[0]?.api).toBe(api);
+			}
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("does not deadlock the commit chain across two consecutive calls", async () => {
+		const server = await startLoopbackServer([
+			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "v1", provider_id: "openai" }]) },
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+			providerId: "llmgates",
+			providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			await seed(provider, store, server.baseUrl);
+			const start = Date.now();
+			await provider.refreshEndpointForeground();
+			await provider.refreshEndpointForeground();
+			expect(Date.now() - start).toBeLessThan(10_000);
+			expect(provider.getModels().map((m) => m.id)).toEqual(["v1"]);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
+	it("reports superseded and does not publish when shutdown mid-refresh", async () => {
+		let release!: () => void;
+		let markStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let hits = 0;
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				onRequest: () => {
+					hits += 1;
+					if (hits === 2) markStarted();
+				},
+				body: async function* () {
+					if (hits === 1) {
+						yield Buffer.from(JSON.stringify([{ id: "v1", provider_id: "openai" }]));
+						return;
+					}
+					await gate;
+					yield Buffer.from(JSON.stringify([{ id: "after-shutdown", provider_id: "openai" }]));
+				},
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+			});
+			const store = createMemoryStore();
+			await seed(provider, store, server.baseUrl);
+			expect(provider.getModels().map((m) => m.id)).toEqual(["v1"]);
+			const refresh = provider.refreshEndpointForeground();
+			await started;
+			const shutdown = provider.shutdown();
+			release();
+			await shutdown;
+			await expect(refresh).resolves.toEqual({ status: "superseded" });
+			// not published as the post-shutdown catalog, and no extra store write
+			expect(provider.getModels().map((m) => m.id)).toEqual(["v1"]);
+			expect(store.writes).toHaveLength(1);
+		} finally {
+			release();
+			cleanup();
+			await server.close();
+		}
+	});
+});

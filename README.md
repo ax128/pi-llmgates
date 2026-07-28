@@ -101,6 +101,7 @@ pi
 | --- | --- |
 | `/login LLMGates` | 配置 baseUrl + API key |
 | `/balance` | 查看钱包、订阅余额 |
+| `/endpoint <chat\|messages\|responses\|auto> [model-id]` | 切换或清除一个 core 模型的推理出口 |
 | `/model` | 选择已注册的 LLMGates 模型 |
 | `/calls` | 查看本轮或本会话的 per-model 用量与费用明细 |
 | `/reload` | 安装或更新插件后重载扩展 |
@@ -304,7 +305,22 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
 
 ### 模型出口（endpoint / api）
 
-默认按上表自动解析。若需强制指定（例如把某个模型从 `responses` 改走 `messages`），在 `~/.pi/agent/llmgates/models.json` 配置：
+可在聊天框切换**一个** core LLMGates 模型的推理出口：
+
+```text
+/endpoint <chat|messages|responses|auto> [model-id]
+```
+
+- 省略 `model-id` 时只修改当前模型；当前模型不是 core LLMGates 时拒绝，需显式指定 core model ID。
+- 显式 ID 使用 core provider 精确匹配，不做 fuzzy match；同名 2API 模型不会被选中。
+- `chat` → `openai-completions`，`messages` → `anthropic-messages`，`responses` → `openai-responses`。
+- `auto` 只清除该模型的 per-model endpoint；若存在 `defaults.endpoint`，会回落到 defaults，而非跳过它直达网关值。
+- 命令先原子保存 `~/.pi/agent/llmgates/models.json`，再联网强制刷新 catalog、写入 provider store、发布并校验；目标是当前模型时还会重新绑定 registry 中的新对象。只有全部完成才显示成功。
+- `PI_OFFLINE`、网络失败、provider 尚未就绪、store 写入失败或当前模型重绑失败时显示 warning：配置已保存但未完全激活，可联网后重试命令；重绑失败也可用 `/model` 重新选择。
+- 命令进行中再次执行会被拒绝；不支持批量或当前 `/models` scope 语义，需要修改多个模型时逐个执行。
+- 仅 core provider 支持；2API 不读取该配置，始终使用 OpenAI Chat Completions。
+
+也可手工编辑 `~/.pi/agent/llmgates/models.json`：
 
 ```jsonc
 {
@@ -319,8 +335,8 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
 - 值接受别名：`responses` / `chat`·`chat_completions`·`completions` / `messages`·`anthropic`。
 - 优先级：**per-model > `defaults` > 网关 `inference_endpoint`/`web_chat_endpoint` > 按 id 启发式**。
 - 文件不存在（`ENOENT`）表示清空 override；有效 object 替换当前配置；JSON/根结构畸形时 warning 并继续使用该 core provider 实例的 last-known-good（首次加载则无 override，不与其他实例共享）。其他文件系统错误（如 `EACCES` / `EISDIR`）不会静默改路由：显式刷新在请求 catalog 前失败，后台刷新只 warning，并保留旧模型与缓存。warning 不输出 API key、文件原文或任意底层错误正文。
-- endpoint 与 thinking metadata 只会在**下一次成功的 core catalog refresh** 完成网络映射、cache 写入和内存发布后生效。cache-only、`PI_OFFLINE`、freshness-window skip 都不会重映射缓存模型；网络或 cache 写入失败也保留旧值。这里没有周期 timer 或“最长 5 分钟自动生效”保证。
-- 缓存保存写入时的 `api`、`thinkingLevelMap` 与 `compat`；恢复时 `api`/thinking map 不重映射，只有既有的旧 Kimi 条目可补 transport `compat`。因此 upgrade 或 rollback 后，旧 metadata 可跨版本滞留，直到一次成功 core catalog refresh 重写缓存。
+- 手工编辑后，endpoint 与 thinking metadata 只会在**下一次成功的 core catalog refresh** 完成网络映射、cache 写入和内存发布后生效。cache-only、`PI_OFFLINE`、freshness-window skip 都不会重映射缓存模型；网络或 cache 写入失败也保留旧值。这里没有周期 timer 或“最长 5 分钟自动生效”保证；优先使用 `/endpoint` 触发已验证的前台刷新。
+- 缓存保存写入时的 `api`、`thinkingLevelMap` 与 `compat`；恢复时 `api`/thinking map 不重映射，只有既有的旧 Kimi 条目可补 transport `compat`。代码回滚不会改写配置。若旧版需人工清除 per-model 设定，删除对应 `models.<id>.endpoint` 后重启；随后按剩余优先级解析（可能先回落到 `defaults.endpoint`，不一定直接使用网关值）。store 的 `checkedAt` 若仍在 5 分钟 freshness window 内，仍可能暂用旧 `api`，需等待窗口并触发一次成功 refresh。新版可直接用 `/endpoint auto [model-id]`。
 - 仅 **core `llmgates`** provider 支持（它注册了 3 个 stream adapter）；**2API 兼容层完全不读取 `llmgates/models.json`**，始终走 OpenAI Chat Completions。
 
 ## 定价与费用估算
