@@ -1,18 +1,28 @@
 /**
- * Per-model endpoint overrides (~/.pi/agent/llmgates/models.json).
+ * Per-model endpoint overrides for every scope this extension governs:
+ *   core  → ~/.pi/agent/llmgates/models.json
+ *   2api  → ~/.pi/agent/llmgates/2api-models/<instanceId>.json
  *
  * Manual config: force a model's inference endpoint (→ model.api) regardless of
  * gateway hints. No network, no auto-sync. Reloaded on every catalog refresh so
  * edits take effect without a restart.
+ *
+ * This module is the SINGLE owner of override file paths (spec rev 6 §6.1). The
+ * public API takes an `OverrideScope`, never a path: `overridePath()` is private
+ * and derives both branches from module constants, so no caller can steer a write
+ * at an arbitrary file. `atomicWriteJson` overwrites unconditionally, and a stray
+ * `join(agentDir, "models.json")` would silently destroy the user's pi-owned
+ * modelOverrides — that is the only user-data-loss path in this feature.
  *
  * Thinking-level tuning is intentionally NOT handled here — pi's native
  * `~/.pi/agent/models.json` `modelOverrides` is the dedicated hook for that
  * (provider-composer applies it as the topmost layer).
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as lockfile from "proper-lockfile";
+import { normalizeInstanceId } from "./compat/types.js";
 import {
 	atomicWriteJson,
 	createFileIfMissingMode,
@@ -24,6 +34,35 @@ import {
 } from "./util.js";
 
 export const LLMGATES_MODELS_FILE = "llmgates/models.json";
+export const LLMGATES_2API_MODELS_DIR = "llmgates/2api-models";
+
+export type OverrideScope = { kind: "core" } | { kind: "2api"; instanceId: string };
+
+const CORE_SCOPE: OverrideScope = { kind: "core" };
+
+/**
+ * The one and only place an override file path is constructed. Both branches are
+ * derived from the constants above; the 2api instance id must survive
+ * `normalizeInstanceId` (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, which excludes
+ * `..`, separators, and absolute paths) before it is allowed near a path, because
+ * llmgates/2api.json is hand-editable and its ids are therefore untrusted input.
+ */
+function overridePath(agentDir: string, scope: OverrideScope): string {
+	if (scope.kind === "core") {
+		return join(agentDir, LLMGATES_MODELS_FILE);
+	}
+	// Instance ids are unique case-insensitively in the registry, so lowercasing
+	// keeps the file name stable across `/2api remove` + same-id recreation.
+	const instanceId = normalizeInstanceId(scope.instanceId).toLowerCase();
+	return join(agentDir, LLMGATES_2API_MODELS_DIR, `${instanceId}.json`);
+}
+
+/** Human-readable scope label for error messages (never contains a full path). */
+function scopeLabel(scope: OverrideScope): string {
+	return scope.kind === "core"
+		? LLMGATES_MODELS_FILE
+		: `${LLMGATES_2API_MODELS_DIR}/${scope.instanceId}.json`;
+}
 
 export interface ModelOverrideEntry {
 	endpoint?: string;
@@ -68,8 +107,11 @@ export function createModelOverrideLookup(file: ModelOverrideFile | null): Model
 	return (modelId) => endpoints.get(modelId.trim()) ?? defaultEndpoint;
 }
 
-export function readModelOverridesFile(agentDir: string): ModelOverrideFile | null | undefined {
-	const path = join(agentDir, LLMGATES_MODELS_FILE);
+export function readModelOverridesFile(
+	agentDir: string,
+	scope: OverrideScope = CORE_SCOPE,
+): ModelOverrideFile | null | undefined {
+	const path = overridePath(agentDir, scope);
 	let raw: string;
 	try {
 		raw = readFileSync(path, "utf8");
@@ -119,26 +161,40 @@ export type ModelOverrideWrite =
 	| { kind: "set"; endpoint: ModelOverrideEndpointValue }
 	| { kind: "delete" };
 
+export interface ModelOverrideBatchWrite {
+	targetId: string;
+	write: ModelOverrideWrite;
+}
+
 /**
- * Locked, lossless read-modify-write of ONE per-model endpoint override.
+ * Locked, lossless read-modify-write of N per-model endpoint overrides in ONE
+ * scope — a single lock acquisition and a single atomic write, so a batch can
+ * never leave half a configuration behind (spec rev 6 §6.1/§7.1).
  *
- * Only ever touches <agentDir>/llmgates/models.json (via LLMGATES_MODELS_FILE).
- * NEVER writes <agentDir>/models.json — that file is pi-owned and an accidental
- * overwrite there destroys user modelOverrides. Preserves defaults, non-target
- * models, other fields on the target entry, and unknown top-level keys.
- * Fails closed (throws, no overwrite) on malformed JSON or invalid structure,
- * and never echoes file contents in error messages.
+ * Only ever touches the file `overridePath()` derives for `scope`. NEVER writes
+ * <agentDir>/models.json — that file is pi-owned and an accidental overwrite
+ * there destroys user modelOverrides. Preserves defaults, non-target models,
+ * other fields on target entries, and unknown top-level keys. Fails closed
+ * (throws, no overwrite) on a malformed instance id, malformed JSON, or invalid
+ * structure, and never echoes file contents in error messages.
  */
-export async function writeModelOverride(
+export async function writeModelOverrides(
 	agentDir: string,
-	targetId: string,
-	write: ModelOverrideWrite,
+	scope: OverrideScope,
+	writes: ReadonlyArray<ModelOverrideBatchWrite>,
 ): Promise<void> {
-	const trimmedId = targetId.trim();
-	if (!trimmedId) {
-		throw new Error("Model id is required");
-	}
-	const path = join(agentDir, LLMGATES_MODELS_FILE);
+	const normalized = writes.map((entry) => {
+		const trimmedId = entry.targetId.trim();
+		if (!trimmedId) {
+			throw new Error("Model id is required");
+		}
+		return { targetId: trimmedId, write: entry.write };
+	});
+	if (normalized.length === 0) return;
+
+	// Throws before any fs work when the instance id is malformed: nothing lands.
+	const path = overridePath(agentDir, scope);
+	const label = scopeLabel(scope);
 	ensureDirMode(dirname(path), SECRET_DIR_MODE);
 	const release = await lockfile.lock(path, LOCK_OPTIONS);
 	try {
@@ -151,53 +207,59 @@ export async function writeModelOverride(
 			// Report the fs code (EACCES/EISDIR/...) rather than blaming JSON syntax,
 			// but never echo the underlying message, which can carry the full path.
 			const code = (error as NodeJS.ErrnoException).code;
-			throw new Error(
-				`Cannot read ${LLMGATES_MODELS_FILE}${code ? `: filesystem error (${code})` : ""}`,
-			);
+			throw new Error(`Cannot read ${label}${code ? `: filesystem error (${code})` : ""}`);
 		}
 
 		let root: unknown;
 		try {
 			root = JSON.parse(raw);
 		} catch {
-			throw new Error(`Cannot update ${LLMGATES_MODELS_FILE}: file is malformed`);
+			throw new Error(`Cannot update ${label}: file is malformed`);
 		}
 		if (!isPlainObject(root)) {
-			throw new Error(`Cannot update ${LLMGATES_MODELS_FILE}: invalid root structure`);
+			throw new Error(`Cannot update ${label}: invalid root structure`);
 		}
 
 		const rootObject = root as Record<string, unknown>;
 		const hasModels = Object.hasOwn(rootObject, "models");
 		const modelsValue = hasModels ? rootObject.models : undefined;
 		if (hasModels && !isPlainObject(modelsValue)) {
-			throw new Error(`Cannot update ${LLMGATES_MODELS_FILE}: invalid models structure`);
+			throw new Error(`Cannot update ${label}: invalid models structure`);
 		}
 		const models = (modelsValue ?? {}) as Record<string, unknown>;
+
+		// Validate every target before mutating anything, so an invalid entry in the
+		// batch cannot leave earlier targets written and later ones dropped.
+		for (const { targetId } of normalized) {
+			const entryValue = Object.hasOwn(models, targetId) ? models[targetId] : undefined;
+			if (entryValue !== undefined && !isPlainObject(entryValue)) {
+				throw new Error(`Cannot update ${label}: invalid target model structure`);
+			}
+		}
 		if (!hasModels) rootObject.models = models;
 
-		const hasEntry = Object.hasOwn(models, trimmedId);
-		const entryValue = hasEntry ? models[trimmedId] : undefined;
-		if (hasEntry && !isPlainObject(entryValue)) {
-			throw new Error(`Cannot update ${LLMGATES_MODELS_FILE}: invalid target model structure`);
-		}
+		for (const { targetId, write } of normalized) {
+			const hasEntry = Object.hasOwn(models, targetId);
+			const entryValue = hasEntry ? (models[targetId] as Record<string, unknown>) : undefined;
 
-		if (write.kind === "set") {
-			const entry = (entryValue ?? Object.create(null)) as Record<string, unknown>;
-			entry.endpoint = write.endpoint;
-			if (!hasEntry) {
-				// Assignment to "__proto__" invokes Object.prototype's setter; define an
-				// own data property so remote model IDs cannot mutate object prototypes.
-				Object.defineProperty(models, trimmedId, {
-					value: entry,
-					enumerable: true,
-					configurable: true,
-					writable: true,
-				});
+			if (write.kind === "set") {
+				const entry = entryValue ?? (Object.create(null) as Record<string, unknown>);
+				entry.endpoint = write.endpoint;
+				if (!hasEntry) {
+					// Assignment to "__proto__" invokes Object.prototype's setter; define an
+					// own data property so remote model IDs cannot mutate object prototypes.
+					Object.defineProperty(models, targetId, {
+						value: entry,
+						enumerable: true,
+						configurable: true,
+						writable: true,
+					});
+				}
+			} else if (hasEntry) {
+				const entry = entryValue!;
+				delete entry.endpoint;
+				if (Object.keys(entry).length === 0) delete models[targetId];
 			}
-		} else if (hasEntry) {
-			const entry = entryValue as Record<string, unknown>;
-			delete entry.endpoint;
-			if (Object.keys(entry).length === 0) delete models[trimmedId];
 		}
 
 		atomicWriteJson(path, root, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
@@ -206,14 +268,34 @@ export async function writeModelOverride(
 	}
 }
 
+/** Single-target convenience wrapper — the shape `/endpoint` has always used. */
+export async function writeModelOverride(
+	agentDir: string,
+	targetId: string,
+	write: ModelOverrideWrite,
+	scope: OverrideScope = CORE_SCOPE,
+): Promise<void> {
+	await writeModelOverrides(agentDir, scope, [{ targetId, write }]);
+}
+
+/**
+ * Remove a 2api instance's override file entirely (`/2api remove`). A missing
+ * file is success. Without this, a removed id recreated under the same name
+ * would silently resurrect the old endpoints on a semantically new instance.
+ */
+export function deleteInstanceOverrides(agentDir: string, instanceId: string): void {
+	rmSync(overridePath(agentDir, { kind: "2api", instanceId }), { force: true });
+}
+
 export function reloadModelOverridesFromDisk(
 	agentDir: string,
 	apply: (file: ModelOverrideFile | null) => void,
+	scope: OverrideScope = CORE_SCOPE,
 ): ModelOverrideFile | null | undefined {
-	const file = readModelOverridesFile(agentDir);
+	const file = readModelOverridesFile(agentDir, scope);
 	if (file === undefined) {
 		console.warn(
-			`[pi-llmgates-provider] Invalid model overrides file: ${join(agentDir, LLMGATES_MODELS_FILE)}`,
+			`[pi-llmgates-provider] Invalid model overrides file: ${join(agentDir, scopeLabel(scope))}`,
 		);
 		return undefined;
 	}

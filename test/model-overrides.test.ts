@@ -1,14 +1,43 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
+
+/**
+ * Delegating wrapper around proper-lockfile: real locking semantics are kept for
+ * every test in this file, while `lockCalls` records the paths that were locked
+ * so a batch write can assert it acquires exactly one lock (spec rev 6 §7.1).
+ * ESM exports cannot be spied on directly, hence the module mock.
+ */
+const lockState = vi.hoisted(() => ({ calls: [] as string[], recording: false }));
+vi.mock("proper-lockfile", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("proper-lockfile")>();
+	return {
+		...actual,
+		lock: (path: string, opts?: unknown) => {
+			if (lockState.recording) lockState.calls.push(path);
+			return actual.lock(path, opts as never);
+		},
+	};
+});
+
 import { createLLMGatesProvider } from "../extensions/provider.js";
 import {
 	createModelOverrideLookup,
+	deleteInstanceOverrides,
 	normalizeEndpointOverride,
 	readModelOverridesFile,
 	reloadModelOverridesFromDisk,
 	writeModelOverride,
+	writeModelOverrides,
 	type ModelOverrideFile,
 } from "../extensions/model-overrides.js";
 
@@ -356,5 +385,236 @@ describe("writeModelOverride", () => {
 		expect(readFileSync(piModelsPath, "utf8")).toBe(before.content);
 		expect(statSync(piModelsPath).mtimeMs).toBe(before.mtimeMs);
 		expect(JSON.parse(readRaw())).toEqual({ models: { "gpt-5.6-sol": { endpoint: "messages" } } });
+	});
+});
+
+describe("scoped overrides (2api)", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "llmgates-scope-"));
+		mkdirSync(join(dir, "llmgates"), { recursive: true });
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	function instancePath(id: string): string {
+		return join(dir, "llmgates/2api-models", `${id}.json`);
+	}
+
+	it("writes a 2api instance to its own file, not the core file", async () => {
+		await writeModelOverrides(dir, { kind: "2api", instanceId: "cpa" }, [
+			{ targetId: "claude-sonnet-5", write: { kind: "set", endpoint: "messages" } },
+		]);
+
+		expect(JSON.parse(readFileSync(instancePath("cpa"), "utf8"))).toEqual({
+			models: { "claude-sonnet-5": { endpoint: "messages" } },
+		});
+		expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+	});
+
+	it("keeps instances isolated from each other and from core", async () => {
+		await writeModelOverrides(dir, { kind: "2api", instanceId: "cpa" }, [
+			{ targetId: "shared-id", write: { kind: "set", endpoint: "messages" } },
+		]);
+		await writeModelOverrides(dir, { kind: "2api", instanceId: "work-newapi" }, [
+			{ targetId: "shared-id", write: { kind: "set", endpoint: "responses" } },
+		]);
+		await writeModelOverrides(dir, { kind: "core" }, [
+			{ targetId: "shared-id", write: { kind: "set", endpoint: "chat_completions" } },
+		]);
+
+		expect(readModelOverridesFile(dir, { kind: "2api", instanceId: "cpa" })?.models?.["shared-id"]?.endpoint)
+			.toBe("messages");
+		expect(readModelOverridesFile(dir, { kind: "2api", instanceId: "work-newapi" })?.models?.["shared-id"]?.endpoint)
+			.toBe("responses");
+		expect(readModelOverridesFile(dir)?.models?.["shared-id"]?.endpoint).toBe("chat_completions");
+	});
+
+	it("resolves an instance id case-insensitively to one stable file", async () => {
+		await writeModelOverrides(dir, { kind: "2api", instanceId: "CPA" }, [
+			{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+		]);
+		expect(existsSync(instancePath("cpa"))).toBe(true);
+		expect(readModelOverridesFile(dir, { kind: "2api", instanceId: "cpa" })?.models?.m1?.endpoint)
+			.toBe("messages");
+	});
+
+	it("creates the 2api dir 0700 and the instance file 0600", async () => {
+		await writeModelOverrides(dir, { kind: "2api", instanceId: "cpa" }, [
+			{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+		]);
+		expect(statSync(instancePath("cpa")).mode & 0o777).toBe(0o600);
+		expect(statSync(join(dir, "llmgates/2api-models")).mode & 0o777).toBe(0o700);
+	});
+
+	it("returns null for a missing instance file", () => {
+		expect(readModelOverridesFile(dir, { kind: "2api", instanceId: "cpa" })).toBeNull();
+	});
+
+	it.each([
+		["path traversal", "../../evil"],
+		["separator", "a/b"],
+		["absolute", "/etc/passwd"],
+		["empty", ""],
+		["leading dot", ".hidden"],
+		["too long", "a".repeat(65)],
+	])("throws on a malformed instance id (%s) without writing anything", async (_label, id) => {
+		await expect(
+			writeModelOverrides(dir, { kind: "2api", instanceId: id }, [
+				{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+			]),
+		).rejects.toThrow();
+		expect(existsSync(join(dir, "llmgates/2api-models"))).toBe(false);
+		expect(existsSync(join(dir, "models.json"))).toBe(false);
+		expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+	});
+
+	it("NEVER writes the pi-owned <agentDir>/models.json for any scope", async () => {
+		const piModelsPath = join(dir, "models.json");
+		const original = { providers: { llmgates: { modelOverrides: { m1: { reasoning: true } } } } };
+		writeFileSync(piModelsPath, JSON.stringify(original));
+		const before = {
+			content: readFileSync(piModelsPath, "utf8"),
+			mtimeMs: statSync(piModelsPath).mtimeMs,
+		};
+
+		for (const scope of [
+			{ kind: "core" } as const,
+			{ kind: "2api", instanceId: "cpa" } as const,
+			{ kind: "2api", instanceId: "models" } as const,
+			{ kind: "2api", instanceId: "models.json" } as const,
+		]) {
+			await writeModelOverrides(dir, scope, [
+				{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+			]);
+		}
+
+		expect(readFileSync(piModelsPath, "utf8")).toBe(before.content);
+		expect(statSync(piModelsPath).mtimeMs).toBe(before.mtimeMs);
+	});
+
+	it("deleteInstanceOverrides removes the file and is idempotent when absent", () => {
+		mkdirSync(join(dir, "llmgates/2api-models"), { recursive: true });
+		writeFileSync(instancePath("cpa"), JSON.stringify({ models: { m1: { endpoint: "messages" } } }));
+
+		deleteInstanceOverrides(dir, "cpa");
+		expect(existsSync(instancePath("cpa"))).toBe(false);
+		expect(() => deleteInstanceOverrides(dir, "cpa")).not.toThrow();
+	});
+
+	it("deleteInstanceOverrides rejects a malformed id instead of deleting something else", () => {
+		writeFileSync(join(dir, "llmgates/models.json"), JSON.stringify({ models: {} }));
+		expect(() => deleteInstanceOverrides(dir, "../models")).toThrow();
+		expect(existsSync(join(dir, "llmgates/models.json"))).toBe(true);
+	});
+
+	it("a removed instance recreated with the same id starts with no overrides", () => {
+		mkdirSync(join(dir, "llmgates/2api-models"), { recursive: true });
+		writeFileSync(instancePath("cpa"), JSON.stringify({ models: { m1: { endpoint: "messages" } } }));
+
+		deleteInstanceOverrides(dir, "cpa");
+
+		expect(readModelOverridesFile(dir, { kind: "2api", instanceId: "cpa" })).toBeNull();
+	});
+
+	it("reload warns with the instance scope label and retains the last-known-good lookup", () => {
+		mkdirSync(join(dir, "llmgates/2api-models"), { recursive: true });
+		writeFileSync(instancePath("cpa"), "{ private-instance-contents");
+		let lookup = createModelOverrideLookup({ defaults: { endpoint: "messages" } });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(
+				reloadModelOverridesFromDisk(
+					dir,
+					(file) => {
+						lookup = createModelOverrideLookup(file);
+					},
+					{ kind: "2api", instanceId: "cpa" },
+				),
+			).toBeUndefined();
+			expect(lookup("x")).toBe("messages");
+			expect(warn.mock.calls.flat().join(" ")).toContain("2api-models/cpa.json");
+			expect(warn.mock.calls.flat().join(" ")).not.toContain("private-instance-contents");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
+describe("writeModelOverrides (batch)", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "llmgates-batch-"));
+		mkdirSync(join(dir, "llmgates"), { recursive: true });
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("applies N targets in one atomic write, preserving unrelated data", async () => {
+		writeFileSync(
+			join(dir, "llmgates/models.json"),
+			JSON.stringify({
+				defaults: { endpoint: "responses" },
+				models: { keep: { endpoint: "chat_completions" }, m1: { endpoint: "chat_completions", note: "n" } },
+				customTopLevel: 1,
+			}),
+		);
+
+		await writeModelOverrides(dir, { kind: "core" }, [
+			{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+			{ targetId: "m2", write: { kind: "set", endpoint: "responses" } },
+			{ targetId: "m3", write: { kind: "delete" } },
+		]);
+
+		const after = JSON.parse(readFileSync(join(dir, "llmgates/models.json"), "utf8"));
+		expect(after.models.m1).toEqual({ endpoint: "messages", note: "n" });
+		expect(after.models.m2).toEqual({ endpoint: "responses" });
+		expect(after.models.m3).toBeUndefined();
+		expect(after.models.keep).toEqual({ endpoint: "chat_completions" });
+		expect(after.defaults).toEqual({ endpoint: "responses" });
+		expect(after.customTopLevel).toBe(1);
+	});
+
+	it("takes the lock exactly once for the whole batch, not once per target", async () => {
+		lockState.calls = [];
+		lockState.recording = true;
+		try {
+			await writeModelOverrides(dir, { kind: "core" }, [
+				{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+				{ targetId: "m2", write: { kind: "set", endpoint: "messages" } },
+				{ targetId: "m3", write: { kind: "set", endpoint: "messages" } },
+			]);
+			expect(lockState.calls).toEqual([join(dir, "llmgates/models.json")]);
+		} finally {
+			lockState.recording = false;
+		}
+	});
+
+	it("writes nothing at all when one target in the batch is invalid", async () => {
+		const contents = JSON.stringify({ models: { good: { endpoint: "chat_completions" }, bad: "scalar" } });
+		writeFileSync(join(dir, "llmgates/models.json"), contents);
+
+		await expect(
+			writeModelOverrides(dir, { kind: "core" }, [
+				{ targetId: "good", write: { kind: "set", endpoint: "messages" } },
+				{ targetId: "bad", write: { kind: "set", endpoint: "messages" } },
+			]),
+		).rejects.toThrow();
+
+		expect(readFileSync(join(dir, "llmgates/models.json"), "utf8")).toBe(contents);
+	});
+
+	it("rejects a blank model id before touching the filesystem", async () => {
+		await expect(
+			writeModelOverrides(dir, { kind: "core" }, [{ targetId: "   ", write: { kind: "delete" } }]),
+		).rejects.toThrow(/model id/i);
+		expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+	});
+
+	it("an empty batch is a no-op that does not create the file", async () => {
+		await expect(writeModelOverrides(dir, { kind: "core" }, [])).resolves.toBeUndefined();
+		expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
 	});
 });
