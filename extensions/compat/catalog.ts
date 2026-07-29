@@ -1,5 +1,6 @@
 import type { Api, Model, OpenAICompletionsCompat } from "@earendil-works/pi-ai";
 import {
+	applyOptimisticExtendedThinkingToModel,
 	buildInputModalities,
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_MAX_TOKENS,
@@ -127,7 +128,7 @@ export function applyMoonshotKimiCompatModel<T extends Model<Api>>(
 		model.thinkingLevelMap = { ...MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP };
 	}
 
-	return model;
+	return applyOptimisticExtendedThinkingToModel(model);
 }
 
 function positiveNumber(value: unknown): number | undefined {

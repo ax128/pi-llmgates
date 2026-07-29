@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	applyGatewayModelCosts,
 	buildThinkingLevelMap,
+	ensureOptimisticExtendedThinking,
 	defaultInferenceEndpoint,
 	formatCreditsMessage,
 	isOfflineMode,
@@ -131,7 +132,7 @@ describe("toPiModel", () => {
 		});
 
 		expect(model?.reasoning).toBe(true);
-		expect(model?.thinkingLevelMap).toEqual({ off: "none", minimal: null, xhigh: "xhigh" });
+		expect(model?.thinkingLevelMap).toEqual({ off: "none", minimal: null, xhigh: "xhigh", max: "max" });
 		expect(Object.hasOwn(model?.thinkingLevelMap ?? {}, "low")).toBe(false);
 	});
 
@@ -145,11 +146,11 @@ describe("toPiModel", () => {
 	);
 
 	it.each(["claude-opus-4-6", "claude-sonnet-4-6"])(
-		"copies only adaptive compat and keeps xhigh absent for %s",
+		"copies adaptive compat and optimistically enables xhigh for %s",
 		(id) => {
 			const model = toPiModel({ id, provider_id: "anthropic", web_chat_endpoint: "messages" });
 			expect(model?.compat).toEqual({ forceAdaptiveThinking: true });
-			expect(model?.thinkingLevelMap).toEqual({ max: "max" });
+			expect(model?.thinkingLevelMap).toEqual({ max: "max", xhigh: "xhigh" });
 			expect(Object.hasOwn(model?.thinkingLevelMap ?? {}, "minimal")).toBe(false);
 		},
 	);
@@ -274,6 +275,22 @@ describe("toPiModel", () => {
 		}
 	});
 
+	it("optimistically enables xhigh/max even when the source map disables them", () => {
+		expect(
+			ensureOptimisticExtendedThinking({
+				off: "none",
+				low: "low",
+				xhigh: null,
+				max: null,
+			}),
+		).toEqual({
+			off: "none",
+			low: "low",
+			xhigh: "xhigh",
+			max: "max",
+		});
+	});
+
 	it("maps grok via the thinking knowledge base", () => {
 		const model = toPiModel({
 			id: "grok-4.5",
@@ -327,7 +344,7 @@ describe("toPiModel", () => {
 			supported_reasoning_levels: [{ effort: "low" }],
 		});
 
-		expect(model?.thinkingLevelMap).toEqual({ off: "none", minimal: null, xhigh: "xhigh" });
+		expect(model?.thinkingLevelMap).toEqual({ off: "none", minimal: null, xhigh: "xhigh", max: "max" });
 	});
 
 	it("requires a case-sensitive exact model ID match", () => {
@@ -350,8 +367,8 @@ describe("toPiModel", () => {
 			web_chat_endpoint: "responses",
 		});
 
-		expect(model?.reasoning).toBe(false);
-		expect(model?.thinkingLevelMap).toBeUndefined();
+		expect(model?.reasoning).toBe(true);
+		expect(model?.thinkingLevelMap).toEqual({ xhigh: "xhigh", max: "max" });
 	});
 
 	it("resolves endpoint overrides before selecting same-family metadata", () => {
@@ -419,7 +436,7 @@ describe("toPiModel", () => {
 			medium: "medium",
 			high: "high",
 			xhigh: "xhigh",
-			max: null,
+			max: "max",
 		});
 	});
 });

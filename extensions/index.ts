@@ -10,6 +10,10 @@ import {
 	registerEndpointSettingCommand,
 	type EndpointSettingRegistration,
 } from "./endpoint-setting.js";
+import {
+	registerCatalogReloadCommand,
+	type CatalogReloadRegistration,
+} from "./llmgates-reload.js";
 import { registerCompatGateways, type CompatGatewayRegistration } from "./compat/index.js";
 import { detectLegacyApiKeyCredential, resolveProviderIdentity } from "./connection.js";
 import { createLLMGatesProvider, type LLMGatesProvider } from "./provider.js";
@@ -57,8 +61,10 @@ export default function (pi: ExtensionAPI): void {
 	// whenever at least one instance provider exists. The bootstrap provider does
 	// not count — it has no catalog and no models.
 	let endpointSetting: EndpointSettingRegistration | undefined;
+	let catalogReload: CatalogReloadRegistration | undefined;
 	if (compat && compat.providers.size > 0) {
 		endpointSetting = registerEndpointSettingCommand(pi, agentDir, { compat });
+		catalogReload = registerCatalogReloadCommand(pi, { compat });
 	}
 
 	if (!identity) {
@@ -104,6 +110,8 @@ export default function (pi: ExtensionAPI): void {
 	const core = { providerId: identity.providerId, provider };
 	if (endpointSetting) endpointSetting.setCore(core);
 	else registerEndpointSettingCommand(pi, agentDir, { core, compat });
+	if (catalogReload) catalogReload.setCore(core);
+	else registerCatalogReloadCommand(pi, { core, compat });
 	// Reconcile stale scoped Model objects (old api) after a /endpoint change so
 	// Ctrl+P cycling rebinds to the registry's composed model. Self-guarded.
 	const reconcileModelSelect = createModelSelectReconciler(identity.providerId, (model) =>

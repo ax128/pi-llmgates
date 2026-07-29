@@ -221,7 +221,7 @@ describe("native oauth login", () => {
 				low: "low",
 				medium: null,
 				high: "high",
-				xhigh: null,
+				xhigh: "xhigh",
 				max: "max",
 			});
 			expect(gpt?.compat).toBeUndefined();

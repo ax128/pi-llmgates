@@ -18,7 +18,7 @@ import {
 	openAICompletionsApi,
 	openAIResponsesApi,
 } from "@earendil-works/pi-ai/compat";
-import { isOfflineMode, parseGatewayModelsPayload, type GatewayModel } from "../catalog.js";
+import { applyOptimisticExtendedThinkingToModel, isOfflineMode, parseGatewayModelsPayload, type GatewayModel } from "../catalog.js";
 import {
 	createModelOverrideLookup,
 	reloadModelOverridesFromDisk,
@@ -467,6 +467,7 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 	function patchCachedModels(cachedModels: readonly Model<Api>[]): void {
 		for (const model of cachedModels) {
 			applyMoonshotKimiCompatModel(model);
+			applyOptimisticExtendedThinkingToModel(model);
 			const cost = lookupMemoryPricingRates(model.id);
 			if (cost) model.cost = cost;
 			const contextWindow = lookupMemoryContextWindow(model.id);

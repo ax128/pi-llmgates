@@ -27,6 +27,7 @@ import {
 	openAIResponsesApi,
 } from "@earendil-works/pi-ai/compat";
 import {
+	applyOptimisticExtendedThinkingToModel,
 	applyGatewayModelCosts,
 	DEFAULT_BASE_URL,
 	extractReasoningEfforts,
@@ -340,11 +341,13 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			}
 			for (const model of bound) {
 				applyMoonshotKimiCompatModel(model);
+				applyOptimisticExtendedThinkingToModel(model);
 			}
 			setModels(bound as Model<Api>[]);
 		} else {
 			for (const model of valid) {
 				applyMoonshotKimiCompatModel(model);
+				applyOptimisticExtendedThinkingToModel(model);
 			}
 			setModels(valid as Model<Api>[]);
 		}

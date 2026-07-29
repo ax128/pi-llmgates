@@ -315,6 +315,40 @@ export function buildThinkingLevelMap(efforts: string[], _api?: PiApiType): Thin
 	return map;
 }
 
+/** Always expose xhigh/max in pi's selector; upstream incompatibility is handled at request time. */
+export function ensureOptimisticExtendedThinking(map: ThinkingLevelMap | undefined): ThinkingLevelMap {
+	const result: ThinkingLevelMap = { ...(map ?? {}) };
+	result.xhigh = "xhigh";
+	result.max = "max";
+	return result;
+}
+
+function withOptimisticExtendedThinking(metadata: ResolvedThinkingMetadata): ResolvedThinkingMetadata {
+	const thinkingLevelMap = ensureOptimisticExtendedThinking(metadata.thinkingLevelMap);
+	const hasThinking = Object.entries(thinkingLevelMap).some(
+		([level, value]) => level !== "off" && value !== null,
+	);
+	return {
+		...metadata,
+		thinkingLevelMap,
+		reasoning: metadata.reasoning || hasThinking,
+	};
+}
+
+export function applyOptimisticExtendedThinkingToModel<
+	T extends { reasoning?: boolean; thinkingLevelMap?: ThinkingLevelMap },
+>(model: T): T {
+	const thinkingLevelMap = ensureOptimisticExtendedThinking(model.thinkingLevelMap);
+	model.thinkingLevelMap = thinkingLevelMap;
+	const hasThinking = Object.entries(thinkingLevelMap).some(
+		([level, value]) => level !== "off" && value !== null,
+	);
+	if (hasThinking) {
+		model.reasoning = true;
+	}
+	return model;
+}
+
 export type ResolvedThinkingMetadata = ExactThinkingMetadata;
 
 export function resolveThinkingMetadata(
@@ -324,13 +358,13 @@ export function resolveThinkingMetadata(
 	gatewayEfforts: readonly string[] | undefined,
 ): ResolvedThinkingMetadata {
 	const exact = resolveExactThinkingMetadata(modelId, vendor, api);
-	if (exact) return exact;
+	if (exact) return withOptimisticExtendedThinking(exact);
 
 	const efforts = resolveThinkingLevels(modelId, vendor, api, gatewayEfforts);
-	return {
+	return withOptimisticExtendedThinking({
 		reasoning: efforts.some((effort) => effort !== "none"),
 		thinkingLevelMap: buildThinkingLevelMap(efforts, api),
-	};
+	});
 }
 
 export function buildInputModalities(model: GatewayModel): Array<"text" | "image"> {

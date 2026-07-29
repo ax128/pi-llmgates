@@ -113,7 +113,7 @@ describe("extension compat/core isolation", () => {
 			expect([...runtime.providers.keys()]).toEqual([BOOTSTRAP_PROVIDER_ID, "gateway-a"]);
 			// /endpoint-setting spans 2API too, so a healthy instance keeps it available
 			// even though core is blocked; /endpoint stays core-only and is absent.
-			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "balance", "endpoint-setting"]);
+			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "balance", "endpoint-setting", "llmgates-reload"]);
 			expect(runtime.providers.has("llmgates")).toBe(false);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(/legacy.*api_key/i);
 
@@ -150,6 +150,7 @@ describe("extension compat/core isolation", () => {
 				"balance",
 				"endpoint",
 				"endpoint-setting",
+				"llmgates-reload",
 			]);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(/compat initialization/i);
 		} finally {
@@ -193,7 +194,7 @@ describe("extension compat/core isolation", () => {
 			expect([...runtime.providers.keys()]).toEqual([BOOTSTRAP_PROVIDER_ID, "gateway-a"]);
 			expect(runtime.providers.has("llmgates")).toBe(false);
 			// /endpoint stays core-only and is absent; /balance needs core identity too.
-			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "endpoint-setting"]);
+			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "endpoint-setting", "llmgates-reload"]);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(/llmgates\/config\.json.*providerId/i);
 		} finally {
 			cleanup();
