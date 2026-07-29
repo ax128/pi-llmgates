@@ -1,10 +1,25 @@
 # `/endpoint-setting` 交互式端点配置 + 2API 多出口支持
 
-**状态**: 定稿 rev 6
+**状态**: 定稿 rev 7
 **日期**: 2026-07-29
 **前置**: `2026-07-28-endpoint-command-design.md` (rev 3) — 本文档扩展它，不取代它
 **目标版本**: 0.2.0
 **基线**: 0.1.12 (`893f687`)
+
+**rev 7 修订摘要**（实现后回写，对应 PR #21）：
+
+1. **§4.2 第一步在 tui 改走 §4.1 路径 (b)**：`ui.custom` + 零 import 的结构化 `Component`
+   （`extensions/endpoint-picker.ts`），交互收敛为「只能勾行」，不再由文本解析还原选择。
+   rpc 无组件通道（`rpc-mode.js:151` 返回 `undefined`），**保留** rev 6 的 `ui.editor` 清单路径，
+   由 `ctx.mode` 分流（§3.3 守卫不变）。取消（`undefined`）与零选中（`[]`）在两条路径下保持区分。
+2. **主题色硬约束（实机结论）**：自绘组件只能用 `ThemeColor` 联合类型内的颜色名——
+   `Theme.fg` 对未知颜色直接 throw，而 pi-tui 的 `doRender()` 在定时器回调中执行、无 try/catch，
+   渲染期抛错 = pi 进程崩溃。`"muted"` 存在于内置 dark/light JSON 但**不在联合类型内**，
+   自定义主题无回退（`withThemeColorFallbacks` 仅补 `thinkingMax`），故禁用。测试以
+   tracking theme 断言所用颜色 ⊆ 联合成员。
+3. **组操作作用域**：`Tab` / `Ctrl+A` / `Ctrl+D` 均作用于**当前过滤结果**（visible 行），
+   不过滤时退化为整组/全量；选择集本身跨过滤持久。
+4. rev 6 其余规定（写入/加锁/刷新/三态、注册矩阵、editor 清单解析）不变。
 
 **rev 6 修订摘要**（第三轮只读复核后）：
 

@@ -1,7 +1,7 @@
 /**
  * /endpoint-setting step 1 — interactive checkbox picker (tui only).
  *
- * Spec: docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md §4.
+ * Spec: docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md §4 (rev 7).
  * rev 6 rendered the checklist into `ui.editor`, which made the step a free-text
  * buffer: the user could type anything and the model ids had to be re-resolved by
  * parsing. This module replaces that step in tui mode with a real component shown
@@ -22,7 +22,13 @@ import type {
 	SelectorSnapshot,
 } from "./endpoint-selector.js";
 
-/** Subset of pi's `Theme` this component uses. */
+/**
+ * Subset of pi's `Theme` this component uses.
+ * `color` must stay a member of pi's ThemeColor union: Theme.fg throws on
+ * unknown colors and pi-tui renders without try/catch, so an off-union name
+ * (e.g. "muted", present in the bundled theme JSONs but not in the union) is a
+ * process crash under custom themes, not a style issue.
+ */
 export interface PickerTheme {
 	fg(color: string, text: string): string;
 	bold(text: string): string;
@@ -224,14 +230,14 @@ export function createEndpointPicker(options: PickerOptions): PickerComponent {
 			);
 			lines.push(
 				theme.fg(
-					"muted",
+					"dim",
 					clip(`搜索: ${query || "（直接输入以过滤）"}`, width),
 				),
 			);
 			lines.push("");
 
 			if (visible.length === 0) {
-				lines.push(theme.fg("muted", "  没有匹配的模型"));
+				lines.push(theme.fg("dim", "  没有匹配的模型"));
 			} else {
 				const start = Math.max(
 					0,
@@ -248,7 +254,7 @@ export function createEndpointPicker(options: PickerOptions): PickerComponent {
 						lastProvider = row.providerId;
 						lines.push(
 							theme.fg(
-								"muted",
+								"dim",
 								clip(`── ${row.providerId} · ${row.groupLabel} ──`, width),
 							),
 						);
@@ -256,7 +262,7 @@ export function createEndpointPicker(options: PickerOptions): PickerComponent {
 					lines.push(renderRow(row, index === cursor, width));
 				}
 				if (start > 0 || end < visible.length) {
-					lines.push(theme.fg("muted", `  (${cursor + 1}/${visible.length})`));
+					lines.push(theme.fg("dim", `  (${cursor + 1}/${visible.length})`));
 				}
 			}
 

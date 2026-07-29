@@ -153,7 +153,8 @@ export async function runEndpointSettingCommand(
 		return;
 	}
 	try {
-		// editor()/select() are real dialogs in tui and rpc, and no-ops elsewhere.
+		// custom() is a real component surface only in tui; editor()/select() are
+		// real dialogs in tui and rpc, and no-ops elsewhere.
 		// ctx.ui always exists and ctx.hasUI is true under rpc, so neither can be
 		// used to detect availability — only the run mode can.
 		if (ctx.mode !== "tui" && ctx.mode !== "rpc") {

@@ -22,6 +22,8 @@ const KEY = {
 	ctrlD: "\u0004",
 	ctrlU: "\u0015",
 	backspace: "\u007f",
+	pageUp: "\u001b[5~",
+	pageDown: "\u001b[6~",
 } as const;
 
 /** Mirrors pi's default tui.select bindings closely enough for these tests. */
@@ -37,9 +39,9 @@ const keys: PickerKeys = {
 			case "tui.select.cancel":
 				return data === KEY.escape;
 			case "tui.select.pageUp":
-				return data === "\u001b[5~";
+				return data === KEY.pageUp;
 			case "tui.select.pageDown":
-				return data === "\u001b[6~";
+				return data === KEY.pageDown;
 			default:
 				return false;
 		}
@@ -90,10 +92,10 @@ function snapshot(): SelectorSnapshot {
 	};
 }
 
-function picker(options?: { maxVisible?: number }) {
+function picker(options?: { maxVisible?: number; snap?: SelectorSnapshot }) {
 	const done = vi.fn<(result: SelectorSelection[] | undefined) => void>();
 	const component = createEndpointPicker({
-		snapshot: snapshot(),
+		snapshot: options?.snap ?? snapshot(),
 		theme,
 		keys,
 		done,
@@ -146,6 +148,77 @@ describe("endpoint picker rendering", () => {
 		send(KEY.down);
 		expect(text()).toMatch(/→ \[ ] gpt-5\.6-sol/);
 	});
+
+	it("moves the cursor by one window with pageUp / pageDown", () => {
+		const snap: SelectorSnapshot = {
+			groups: [
+				{
+					providerId: "llmgates",
+					label: "core",
+					models: Array.from({ length: 10 }, (_, index) => ({
+						id: `m${index}`,
+						name: `M${index}`,
+						endpoint: "chat",
+						hasOverride: false,
+					})),
+				},
+			],
+			unmanaged: { total: 0, byProvider: [] },
+		};
+		const { send, text } = picker({ snap, maxVisible: 4 });
+
+		expect(text()).toMatch(/→ \[ ] m0/);
+		send(KEY.pageDown);
+		expect(text()).toMatch(/→ \[ ] m4/);
+		send(KEY.pageDown, KEY.pageDown); // 8 → wraps to 2
+		expect(text()).toMatch(/→ \[ ] m2/);
+		send(KEY.pageUp);
+		expect(text()).toMatch(/→ \[ ] m8/);
+	});
+
+	it("only uses colors that exist in pi's ThemeColor union", () => {
+		// pi's Theme.fg throws on an unknown color and render runs inside a timer
+		// without try/catch, so an off-union name (e.g. the former "muted") is a
+		// process crash, not a style bug. Every entry here must stay a member of
+		// pi's ThemeColor union (dist/modes/interactive/theme/theme.d.ts).
+		const PI_THEME_COLORS = new Set([
+			"accent",
+			"dim",
+			"success",
+			"error",
+			"warning",
+			"text",
+		]);
+		const used = new Set<string>();
+		const trackingTheme: PickerTheme = {
+			fg: (color, text) => {
+				used.add(color);
+				return text;
+			},
+			bold: (text) => text,
+		};
+		const component = createEndpointPicker({
+			snapshot: snapshot(),
+			theme: trackingTheme,
+			keys,
+			done: () => {},
+			maxVisible: 2,
+		});
+
+		component.render(120); // default + unmanaged disclosure + scrolled window
+		component.handleInput(KEY.space);
+		component.render(120); // selected row / non-zero counter
+		component.handleInput("z");
+		component.handleInput("z");
+		component.render(120); // empty-match state
+
+		expect(used.size).toBeGreaterThan(0);
+		for (const color of used) {
+			expect(PI_THEME_COLORS.has(color), `unknown theme color: ${color}`).toBe(
+				true,
+			);
+		}
+	});
 });
 
 describe("endpoint picker selection", () => {
@@ -187,6 +260,29 @@ describe("endpoint picker selection", () => {
 		send(KEY.tab, KEY.tab, KEY.enter);
 
 		expect(done).toHaveBeenCalledWith([]);
+	});
+
+	it("scopes tab to the group rows visible under the current filter", () => {
+		const { send, done } = picker();
+
+		send("s", "o", "l"); // only gpt-5.6-sol of the llmgates group stays visible
+		send(KEY.tab, KEY.enter);
+
+		expect(done).toHaveBeenCalledWith([
+			{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
+		]);
+	});
+
+	it("scopes ctrl+d to the current filter, keeping off-filter selections", () => {
+		const { send, done } = picker();
+
+		send(KEY.ctrlA); // select all 3
+		send("c", "p", "a", KEY.ctrlD, KEY.enter); // clear only the cpa row
+
+		expect(done).toHaveBeenCalledWith([
+			{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
+			{ modelId: "claude-opus-4-8", providerId: "llmgates" },
+		]);
 	});
 
 	it("selects and clears everything with ctrl+a / ctrl+d", () => {
