@@ -7,6 +7,7 @@ import {
 	type CatalogReloadTarget,
 } from "../extensions/llmgates-reload.js";
 import { acquireEndpointInFlight, releaseEndpointInFlight, runEndpointCommand } from "../extensions/endpoint.js";
+import { runEndpointSettingCommand } from "../extensions/endpoint-setting.js";
 import type { EndpointRefreshResult } from "../extensions/provider.js";
 
 const CORE = "llmgates";
@@ -174,6 +175,49 @@ describe("catalog reload in-flight guard", () => {
 		releaseEndpointInFlight();
 		expect(notifications[0]?.level).toBe("error");
 		expect(notifications[0]?.message).toMatch(/already running/i);
+	});
+
+	it("is refused while /endpoint-setting holds the guard", async () => {
+		releaseEndpointInFlight();
+		expect(acquireEndpointInFlight()).toBe(true);
+		const { ctx, notifications } = makeCtx();
+		await runCatalogReloadCommand(
+			() => [{ providerId: CORE, label: "core", refreshEndpointForeground: async () => okRefresh([]) }],
+			ctx,
+		);
+		releaseEndpointInFlight();
+		expect(notifications[0]?.level).toBe("error");
+		expect(notifications[0]?.message).toMatch(/catalog refresh command is already running/i);
+	});
+
+	it("refuses /endpoint-setting while reload holds the guard", async () => {
+		releaseEndpointInFlight();
+		expect(acquireEndpointInFlight()).toBe(true);
+		const notifications: Array<{ message: string; level: string }> = [];
+		await runEndpointSettingCommand(
+			{
+				agentDir: "/tmp/unused",
+				targets: () => [
+					{ providerId: CORE, label: "core", scope: { kind: "core" }, refreshEndpointForeground: async () => okRefresh([]) },
+				],
+				writeOverrides: async () => {},
+			},
+			{
+				mode: "tui",
+				waitForIdle: async () => {},
+				getModel: () => undefined,
+				getAllModels: () => [],
+				find: () => undefined,
+				setModel: async () => true,
+				notify: (message, level) => notifications.push({ message, level }),
+				pick: async () => undefined,
+				editor: async () => undefined,
+				select: async () => undefined,
+			},
+		);
+		releaseEndpointInFlight();
+		expect(notifications[0]?.level).toBe("error");
+		expect(notifications[0]?.message).toMatch(/catalog refresh command is already running/i);
 	});
 
 	it("refuses /endpoint while reload holds the guard", async () => {

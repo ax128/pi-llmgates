@@ -338,14 +338,28 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
 /endpoint-setting
 ```
 
-- 两步交互：第一步在文本清单中把要修改的模型前的 `[ ]` 改成 `[x]`（支持跨 provider 多选），第二步选择 `chat` / `messages` / `responses` / `auto`。
+- 两步交互：第一步勾选要修改的模型（支持跨 provider 多选），第二步选择 `chat` / `messages` / `responses` / `auto`。
+- 第一步在 TUI 下是交互式勾选列表：`↑↓` 移动、空格勾选、`Tab` 整组勾选、`Ctrl+A` 全选、`Ctrl+D` 清空（这三个操作在过滤时只作用于当前过滤结果）、直接输入即过滤（`Backspace` / `Ctrl+U` 清除搜索）、`Enter` 确认、`Esc` 取消。RPC 模式没有组件通道，回退为文本清单：把要修改的模型前的 `[ ]` 改成 `[x]`。
 - 覆盖 **core + 全部 2API 实例**的模型；两步中任意一步取消或零选中都不会写入任何文件。
-- 清单按 provider 分组，显示「model-id · 名字 · 当前出口」，`*` 表示已有 override。第三方扩展与 pi 内置 provider 的模型没有 `api` 写入通道，因此以汇总注释行披露、不可勾选；手工写入这些 id 会被明确拒绝并说明原因。
+- 列表按 provider 分组，显示「model-id · 名字 · 当前出口」，`*` 表示已有 override。第三方扩展与 pi 内置 provider 的模型没有 `api` 写入通道，因此只作汇总披露、不可勾选；在文本清单中手工写入这些 id 会被明确拒绝并说明原因。
 - 需要交互式界面：TUI 与 RPC 模式可用；`print` / `json` 模式会提示改用 `/endpoint`，不会报错也不会写文件。
 - 每个 provider 只加一次锁、写一次文件、刷新一次，分组串行执行。
 - 三态结果：全部成功为 info；**文件已写入但未激活（离线 / provider 未就绪 / 被更新的刷新取代 / 部分模型未生效 / 当前模型重绑失败）一律为 warning**，不会误报成功；只有**所有** provider 都写入失败才是 error。跨 provider 部分成功时逐 provider 说明状态，已成功的部分保持生效，不回滚。
 - 与 `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 共用同一把 in-flight 锁：任一命令执行期间，其余命令会被拒绝。
 - 2API 的上游是否支持 `messages` / `responses` 取决于你自己的中转部署，本扩展不探测、不拦截；选错了用 `/endpoint-setting` 选 `auto`，或对 core 模型用 `/endpoint chat <model-id>` 回退。
+
+#### 强制刷新 catalog：`/llmgates-reload`
+
+```text
+/llmgates-reload
+```
+
+- 强制刷新 **core + 全部 2API 实例**的模型 catalog，绕过 background freshness window；会联网拉取 `/v1/models` 并写入各 provider store（含 thinking 档位等 metadata）。
+- 不接受参数；与 `/reload` 不同——`/reload` 只重载扩展代码，不刷新 catalog。
+- 每个 provider 串行执行一次 `refreshEndpointForeground()`；执行前会 `waitForIdle()`。
+- 三态结果：全部刷新成功为 **info**；至少一个 provider 成功、其余 offline / 未就绪 / 被取代 / 抛错为 **warning**（文案含 *partial*）；**零** provider 刷新成功且并非全部 hard-fail 时为 **warning**（*did not update any provider*，不含 *partial*）；全部 provider hard-fail 为 **error**。
+- 与 `/endpoint`、`/endpoint-setting` 共用 in-flight 锁；任一命令执行期间会被拒绝。
+- 若当前模型的 provider 刷新成功但该 model id 已不在新 catalog 中，追加 **warning** 提示用 `/model` 重选（不会 silent 保留 stale binding）。
 
 也可手工编辑 `~/.pi/agent/llmgates/models.json`：
 

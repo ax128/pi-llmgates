@@ -1,10 +1,11 @@
 /**
  * /endpoint-setting selector rendering + parsing (pure functions, no UI, no I/O).
  *
- * Spec: docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md (rev 6) §4.3/§4.4.
+ * Spec: docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md (rev 7) §4.3/§4.4.
  *
- * Step 1 is a checklist rendered into `ui.editor`; the user flips `[ ]` to `[x]`
- * and the edited text comes back here to be parsed. Model IDs are resolved against
+ * TUI step 1 uses `endpoint-picker.ts` (structured selection, no parsing). RPC step 1
+ * still renders a checklist into `ui.editor`; the user flips `[ ]` to `[x]` and the
+ * edited text comes back here via `parseSelectorList`. Model IDs are resolved against
  * the SAME snapshot that produced the text (frozen id→provider map), never by
  * prefix or fuzzy matching, so a hand-edited ID can only ever be rejected — it can
  * never silently retarget a different model.
