@@ -47,7 +47,7 @@ pi
 
 ```bash
 pi install npm:@llmgates_api/pi-llmgates-provider          # 最新版
-pi install npm:@llmgates_api/pi-llmgates-provider@0.2.4   # 指定版本
+pi install npm:@llmgates_api/pi-llmgates-provider@0.2.5   # 指定版本
 pi install -l npm:@llmgates_api/pi-llmgates-provider      # 仅当前项目（否则装到 ~/.pi/agent/）
 ```
 
@@ -55,7 +55,7 @@ pi install -l npm:@llmgates_api/pi-llmgates-provider      # 仅当前项目（�
 
 ```bash
 pi install git:github.com/ax128/pi-llmgates               # 跟踪 main
-pi install git:github.com/ax128/pi-llmgates@v0.2.4        # 固定 tag（发布后可用）
+pi install git:github.com/ax128/pi-llmgates@v0.2.5        # 固定 tag（发布后可用）
 pi install git:git@github.com:ax128/pi-llmgates.git       # SSH
 pi install -l git:github.com/ax128/pi-llmgates            # 仅当前项目
 ```
@@ -472,8 +472,11 @@ pi install .
 
 ## 发布（维护者）
 
-Agent / 维护者完整流程（**要认证链接 → 等用户回复 → 发布 → 给安装命令**）见：
+**发布前必须先过本地门禁**（`npm run gate` → 安装 `.tgz` → 功能验证 → `gate-record-pass.sh`），见 [docs/pre-publish-gate.md](docs/pre-publish-gate.md)。
 
+Agent / 维护者完整 npm 流程（**要认证链接 → 等用户回复 → 发布 → 给安装命令**）见：
+
+- [docs/pre-publish-gate.md](docs/pre-publish-gate.md)（门禁，不可跳过）
 - [docs/npm-package.md](docs/npm-package.md)（开头「Agent 标准发布对话」）
 - [AGENTS.md](AGENTS.md)
 

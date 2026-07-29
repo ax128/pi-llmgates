@@ -7,6 +7,7 @@ import {
 	formatCreditsMessage,
 	isOfflineMode,
 	isPiSelectableModel,
+	modelForInferenceRequest,
 	normalizeGatewayBaseUrl,
 	parseCreditsPayload,
 	parseGatewayModelsPayload,
@@ -404,6 +405,40 @@ describe("credits helpers", () => {
 		expect(message).toContain("Available: 55.34 USD");
 		expect(message).toContain("wallet 10.34");
 		expect(message).toContain("subscription used 10.00 / 50.00 (20%)");
+	});
+});
+
+describe("modelForInferenceRequest", () => {
+	it("strips trailing /v1 for anthropic-messages after pi auth baseUrl overwrite", () => {
+		const model: Model<"anthropic-messages"> = {
+			id: "claude-opus-4-8",
+			name: "claude-opus-4-8",
+			provider: "cpa",
+			baseUrl: "http://127.0.0.1:8317/v1",
+			api: "anthropic-messages",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		};
+		expect(modelForInferenceRequest(model).baseUrl).toBe("http://127.0.0.1:8317");
+	});
+
+	it("keeps /v1 for openai-completions", () => {
+		const model: Model<"openai-completions"> = {
+			id: "gpt-test",
+			name: "gpt-test",
+			provider: "cpa",
+			baseUrl: "http://127.0.0.1:8317/v1",
+			api: "openai-completions",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		};
+		expect(modelForInferenceRequest(model).baseUrl).toBe("http://127.0.0.1:8317/v1");
 	});
 });
 

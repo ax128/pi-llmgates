@@ -1,6 +1,6 @@
 {
   "name": "@llmgates_api/pi-llmgates-provider",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Pi provider extension for LLMGates: dynamic models from /v1/models and /login setup",
   "type": "module",
   "keywords": [
@@ -29,6 +29,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run test",
+    "gate": "bash ./scripts/pre-publish-gate.sh",
+    "gate:record": "bash ./scripts/gate-record-pass.sh",
     "prepublishOnly": "npm run check",
     "publish:npm": "bash ./scripts/publish-npm.sh"
   },

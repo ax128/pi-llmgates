@@ -12,16 +12,20 @@ Pi coding agent 扩展包：`@llmgates_api/pi-llmgates-provider`。
 
 ## npm 发布（下次照此）
 
+**门禁（必做，不可跳过）：** **[docs/pre-publish-gate.md](./docs/pre-publish-gate.md)**  
+新功能合并 push 后，须 **`npm run gate`**（或 `./scripts/pre-publish-gate.sh`）→ **`pi install` 该 tgz** → 功能验证 → **`./scripts/gate-record-pass.sh`** 生成 `.gate/pre-publish-pass.json` 与 §5 对话回执，**然后才能**进入下方 npm 流程。`publish-npm.sh` 会硬校验 gate 文件。
+
 完整手册：**[docs/npm-package.md](./docs/npm-package.md)**（开头「Agent 标准发布对话」）。
 
 固定节奏：
 
-1. 升版本 → `npm run check` → push 代码 / tag  
-2. 运行 `node ./scripts/npm-publish-auth-link.mjs`  
-3. **把打印出的 `https://www.npmjs.com/login/...` 链接发给用户**  
-4. 等用户回复 OTP / 验证码  
-5. `npm publish --access public --ignore-scripts --otp=<回复>`  
-6. **发布成功后立刻给出安装示例命令**（latest / 钉版本 / `-l` / git tag）
+1. **门禁** → `npm run gate` → `pi install ./llmgates_api-pi-llmgates-provider-<ver>.tgz` → §4 功能清单 → `gate-record-pass.sh` + §5 PASS 回执  
+2. 升版本 → `npm run check` → push 代码 / tag  
+3. 运行 `node ./scripts/npm-publish-auth-link.mjs`  
+4. **把打印出的 `https://www.npmjs.com/login/...` 链接发给用户**  
+5. 等用户回复 OTP / 验证码  
+6. `./scripts/publish-npm.sh --otp=<回复>`（内部校验 gate；bump 后自动 re-pack）  
+7. **发布成功后立刻给出安装示例命令**（latest / 钉版本 / `-l` / git tag）
 
 密钥：只在本地 `.env` 的 `NPM_TOKEN`；禁止提交或粘贴 token。
 
@@ -36,6 +40,8 @@ node ./scripts/npm-publish-auth-link.mjs          # → 把链接给用户
 ```bash
 npm install
 npm run check
+npm run gate                      # 发布前 §2：check + pack + tarball 校验
+npm run gate:record -- --tests "login,smoke-reload"   # §4 通过后
 npm pack --dry-run
 ./scripts/publish-npm.sh --otp=...
 ```

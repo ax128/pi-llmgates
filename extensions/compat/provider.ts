@@ -18,7 +18,7 @@ import {
 	openAICompletionsApi,
 	openAIResponsesApi,
 } from "@earendil-works/pi-ai/compat";
-import { applyUniversalThinkingLevelMapToModel, applyInferenceBaseUrlToModel, isOfflineMode, parseGatewayModelsPayload, storedModelBaseUrlMatches, type GatewayModel } from "../catalog.js";
+import { applyUniversalThinkingLevelMapToModel, applyInferenceBaseUrlToModel, isOfflineMode, modelForInferenceRequest, parseGatewayModelsPayload, storedModelBaseUrlMatches, type GatewayModel } from "../catalog.js";
 import {
 	createModelOverrideLookup,
 	reloadModelOverridesFromDisk,
@@ -890,10 +890,18 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		},
 		refreshModels,
 		stream<T extends Api>(model: Model<T>, context: Context, streamOptions?: ApiStreamOptions<T>) {
-			return compatStreamFor(model as Model<Api>).stream(model as never, context, streamOptions as never);
+			return compatStreamFor(model as Model<Api>).stream(
+				modelForInferenceRequest(model as Model<Api>) as never,
+				context,
+				streamOptions as never,
+			);
 		},
 		streamSimple(model: Model<Api>, context: Context, streamOptions?: SimpleStreamOptions) {
-			return compatStreamFor(model).streamSimple(model as never, context, streamOptions as never);
+			return compatStreamFor(model).streamSimple(
+				modelForInferenceRequest(model) as never,
+				context,
+				streamOptions as never,
+			);
 		},
 		beginSession(_reason: string): void {
 			const restartingAfterShutdown = shutDown;

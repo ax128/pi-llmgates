@@ -32,6 +32,7 @@ import {
 	applyInferenceBaseUrlToModel,
 	DEFAULT_BASE_URL,
 	isOfflineMode,
+	modelForInferenceRequest,
 	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
 	storedModelBaseUrlMatches,
@@ -848,10 +849,18 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		},
 		refreshModels,
 		stream<T extends Api>(model: Model<T>, context: Context, streamOptions?: ApiStreamOptions<T>) {
-			return streamFor(model as Model<Api>).stream(model as never, context, streamOptions as never);
+			return streamFor(model as Model<Api>).stream(
+				modelForInferenceRequest(model as Model<Api>) as never,
+				context,
+				streamOptions as never,
+			);
 		},
 		streamSimple(model: Model<Api>, context: Context, streamOptions?: SimpleStreamOptions) {
-			return streamFor(model).streamSimple(model as never, context, streamOptions as never);
+			return streamFor(model).streamSimple(
+				modelForInferenceRequest(model) as never,
+				context,
+				streamOptions as never,
+			);
 		},
 		beginSession(_reason: string): void {
 			if (sessionController) {

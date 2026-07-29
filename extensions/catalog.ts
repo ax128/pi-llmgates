@@ -488,6 +488,14 @@ export function inferenceBaseUrlForApi(inferenceBaseUrl: string, api: PiApiType)
 	return stripped || inferenceBaseUrl;
 }
 
+/** pi prepareRequest overwrites model.baseUrl with auth baseUrl (…/v1). Normalize again before streaming. */
+export function modelForInferenceRequest<T extends Model<Api>>(model: T): T {
+	return {
+		...model,
+		baseUrl: inferenceBaseUrlForApi(model.baseUrl, model.api as PiApiType),
+	};
+}
+
 /** Accept registry/cache baseUrl before or after anthropic `/v1` normalization. */
 export function storedModelBaseUrlMatches(
 	model: { baseUrl: unknown; api: unknown },

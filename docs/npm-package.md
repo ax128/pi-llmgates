@@ -12,12 +12,21 @@
 
 用户说「发布 / publish」时，**严格按下面顺序**，不要跳步、不要在对话里粘贴 `.env` 或 token。
 
+### 0. 发布前门禁（Agent 必须先确认）
+
+**完整清单：** [pre-publish-gate.md](./pre-publish-gate.md)
+
+- 无 `.gate/pre-publish-pass.json` 且 commit 与 `HEAD` 一致时，`./scripts/publish-npm.sh` **会拒绝 publish**。
+- 无 gate 文件 / 无对话回执 → 先执行：`npm run gate` → `pi install ./llmgates_api-pi-llmgates-provider-<ver>.tgz` → §4 功能验证 → `./scripts/gate-record-pass.sh --tests "..."` → 贴 §5 回执。
+- `npm run check` 通过 **不能** 代替本地 npm 包（`.tgz`）安装与 pi 功能验证。
+
 ### A. 准备（Agent 自己做）
 
-1. 确认或升版本：`package.json`、`package-lock.json`、README 中的 `@x.y.z` / `@vX.Y.Z`
-2. `npm run check` 通过
-3. commit + `git push origin HEAD`
-4. 打 tag（可先本地）：`VERSION=$(node -p "require('./package.json').version")` → `git tag "v$VERSION"`
+1. 确认 §0 门禁已通过（`.gate/pre-publish-pass.json` + 对话 PASS 回执）
+2. 确认或升版本：`package.json`、`package-lock.json`、README 中的 `@x.y.z` / `@vX.Y.Z`
+3. `npm run check` 通过
+4. commit + `git push origin HEAD`
+5. 打 tag（可先本地）：`VERSION=$(node -p "require('./package.json').version")` → `git tag "v$VERSION"`
 
 ### B. 要认证链接（Agent → 用户）
 
@@ -74,7 +83,7 @@ pi install git:github.com/ax128/pi-llmgates@vVERSION
 
 ### 对话节奏（一句话）
 
-`升版本 → check → 推代码/tag → 跑 auth-link 脚本 → 把链接给用户 → 等回复 → publish --otp → 给出安装命令`
+`门禁(构建+本地测+回执) → 升版本 → check → 推代码/tag → 跑 auth-link 脚本 → 把链接给用户 → 等回复 → publish --otp → 给出安装命令`
 
 ---
 
@@ -162,9 +171,10 @@ npm pack --dry-run
 
 | 脚本 | 用途 |
 | --- | --- |
+| `./scripts/pre-publish-gate.sh` / `npm run gate` | **发布前门禁（§2）**：`check` + `npm pack` + tarball 断言 + `.gate/pre-publish-build.json` |
+| `./scripts/gate-record-pass.sh` / `npm run gate:record` | §4 通过后写入 `.gate/pre-publish-pass.json` |
 | `node ./scripts/npm-publish-auth-link.mjs` | 取出浏览器认证链接（给用户） |
-| `./scripts/publish-npm.sh` | check + publish（可跟 `--otp=...`） |
-| `./scripts/publish-npm.sh --otp=...` | 用户回复验证码后一键发布 |
+| `./scripts/publish-npm.sh` | 校验 gate + check + publish（可跟 `--otp=...`；bump 后 re-pack） |
 
 ```bash
 ./scripts/publish-npm.sh --otp="<用户验证码>"
@@ -207,7 +217,7 @@ git push origin "v$VERSION"
 | --- | --- |
 | 安装 / 试用 | §1；勿 publish |
 | 更新 | §2 |
-| **发布** | **顶部「Agent 标准发布对话」A→B→C→D** |
+| **发布** | **先 [pre-publish-gate.md](./pre-publish-gate.md)（含 `gate-record-pass.sh`），再「Agent 标准发布对话」A→B→C→D** |
 | EOTP / 要链接 | 跑 `npm-publish-auth-link.mjs`，把链接给用户，等回复 |
 | 用户回了验证码 | `npm publish --ignore-scripts --otp=...`，再给安装命令 |
 
