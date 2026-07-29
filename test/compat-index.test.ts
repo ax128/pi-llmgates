@@ -111,7 +111,9 @@ describe("extension compat/core isolation", () => {
 			registerExtension(runtime.pi);
 
 			expect([...runtime.providers.keys()]).toEqual([BOOTSTRAP_PROVIDER_ID, "gateway-a"]);
-			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "balance"]);
+			// /endpoint-setting spans 2API too, so a healthy instance keeps it available
+			// even though core is blocked; /endpoint stays core-only and is absent.
+			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "balance", "endpoint-setting"]);
 			expect(runtime.providers.has("llmgates")).toBe(false);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(/legacy.*api_key/i);
 
@@ -142,7 +144,13 @@ describe("extension compat/core isolation", () => {
 			registerExtension(runtime.pi);
 
 			expect([...runtime.providers.keys()]).toEqual(["llmgates"]);
-			expect([...runtime.commands.keys()].sort()).toEqual(["balance", "endpoint"]);
+			// No 2API instance exists, so /endpoint-setting is registered in the late
+			// phase off the core provider alone.
+			expect([...runtime.commands.keys()].sort()).toEqual([
+				"balance",
+				"endpoint",
+				"endpoint-setting",
+			]);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(/compat initialization/i);
 		} finally {
 			cleanup();
@@ -159,6 +167,8 @@ describe("extension compat/core isolation", () => {
 			registerExtension(runtime.pi);
 
 			expect([...runtime.providers.keys()]).toEqual([BOOTSTRAP_PROVIDER_ID]);
+			// Bootstrap alone is not an instance: it has no catalog and no models, so
+			// there is nothing for the selector to configure.
 			expect([...runtime.commands.keys()]).toEqual(["2api"]);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(/llmgates\/config\.json.*providerId/i);
 		} finally {
@@ -200,6 +210,8 @@ describe("extension compat/core isolation", () => {
 
 			expect(runtime.providers.has("llmgates")).toBe(false);
 			expect(runtime.providers.has(BOOTSTRAP_PROVIDER_ID)).toBe(true);
+			// Malformed auth blocks core and there is no 2API instance, so neither
+			// endpoint command has anything to operate on.
 			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "balance"]);
 			const warning = warn.mock.calls.flat().join(" ");
 			expect(warning).toMatch(/malformed.*auth\.json/i);

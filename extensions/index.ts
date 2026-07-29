@@ -6,7 +6,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { registerBalanceCommand } from "./balance.js";
 import { createModelSelectReconciler, registerEndpointCommand } from "./endpoint.js";
-import { registerCompatGateways } from "./compat/index.js";
+import {
+	registerEndpointSettingCommand,
+	type EndpointSettingRegistration,
+} from "./endpoint-setting.js";
+import { registerCompatGateways, type CompatGatewayRegistration } from "./compat/index.js";
 import { detectLegacyApiKeyCredential, resolveProviderIdentity } from "./connection.js";
 import { createLLMGatesProvider, type LLMGatesProvider } from "./provider.js";
 import { envFlag, migrateLegacyConfigFiles } from "./util.js";
@@ -38,12 +42,23 @@ export default function (pi: ExtensionAPI): void {
 		identityError = error;
 	}
 
+	let compat: CompatGatewayRegistration | undefined;
 	try {
-		registerCompatGateways(pi, agentDir, {
+		compat = registerCompatGateways(pi, agentDir, {
 			reservedProviderIds: ["llmgates", ...(identity ? [identity.providerId] : [])],
 		});
 	} catch (error) {
 		logWarn(error instanceof Error ? error.message : String(error));
+	}
+
+	// /endpoint-setting spans core AND 2API, so it must not be tied to the core
+	// provider's lifecycle: a 2API-only user (or one whose core is fail-closed)
+	// still has models to configure. Register it here, ahead of the returns below,
+	// whenever at least one instance provider exists. The bootstrap provider does
+	// not count — it has no catalog and no models.
+	let endpointSetting: EndpointSettingRegistration | undefined;
+	if (compat && compat.providers.size > 0) {
+		endpointSetting = registerEndpointSettingCommand(pi, agentDir, { compat });
 	}
 
 	if (!identity) {
@@ -83,6 +98,12 @@ export default function (pi: ExtensionAPI): void {
 	// /endpoint is registered only after the core provider is live: it needs the
 	// foreground refresh path, which a legacy fail-closed branch cannot honor.
 	registerEndpointCommand(pi, agentDir, identity.providerId, provider);
+	// Core is only ready now. Attach it to an existing registration, or register
+	// for the first time when there were no 2API instances — otherwise a core-only
+	// user would never see the command.
+	const core = { providerId: identity.providerId, provider };
+	if (endpointSetting) endpointSetting.setCore(core);
+	else registerEndpointSettingCommand(pi, agentDir, { core, compat });
 	// Reconcile stale scoped Model objects (old api) after a /endpoint change so
 	// Ctrl+P cycling rebinds to the registry's composed model. Self-guarded.
 	const reconcileModelSelect = createModelSelectReconciler(identity.providerId, (model) =>

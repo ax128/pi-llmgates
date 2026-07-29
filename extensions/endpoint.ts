@@ -88,6 +88,24 @@ function describeChange(value: EndpointValue): string {
 let inFlight = false;
 
 /**
+ * Endpoint mutations share ONE in-flight guard across `/endpoint` and
+ * `/endpoint-setting`. They write the same override files and drive the same
+ * foreground refresh, so letting a single-model change land while the batch
+ * selector is open would interleave two read-modify-write cycles.
+ *
+ * Returns false when another endpoint command already holds the guard.
+ */
+export function acquireEndpointInFlight(): boolean {
+	if (inFlight) return false;
+	inFlight = true;
+	return true;
+}
+
+export function releaseEndpointInFlight(): void {
+	inFlight = false;
+}
+
+/**
  * Core command logic, separated from ctx wiring for testing. Always resolves with
  * a tri-state notification and never throws (every path goes through notify + the
  * `finally` that clears the in-flight guard).
@@ -97,11 +115,10 @@ export async function runEndpointCommand(
 	runtime: EndpointRuntime,
 	ctx: EndpointCommandContext,
 ): Promise<void> {
-	if (inFlight) {
-		ctx.notify("/endpoint is already running; wait for it to finish.", "error");
+	if (!acquireEndpointInFlight()) {
+		ctx.notify("Another endpoint command is already running; wait for it to finish.", "error");
 		return;
 	}
-	inFlight = true;
 	let fileWritten = false;
 	try {
 		const parsed = parseEndpointArgs(args);
@@ -211,7 +228,7 @@ export async function runEndpointCommand(
 			fileWritten ? "warning" : "error",
 		);
 	} finally {
-		inFlight = false;
+		releaseEndpointInFlight();
 	}
 }
 
