@@ -24,7 +24,7 @@ export const DEFAULT_MAX_TOKENS = 16384;
 export const DEFAULT_CONTEXT_WINDOW = 128000;
 
 const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-/** Default efforts when gateway/static/exact metadata do not apply. */
+/** Shared effort list for Google/xAI/DeepSeek static rules and the final fallback (exact metadata bypasses this). */
 export const DEFAULT_THINKING_EFFORTS = [
 	"none",
 	"low",

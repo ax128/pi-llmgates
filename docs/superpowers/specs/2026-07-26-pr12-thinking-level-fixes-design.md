@@ -117,3 +117,16 @@ The suite also updates old assertions that expected synthetic `xhigh/max` for un
 The change does not modify or delete user configuration. Rolling back the code restores the prior resolver, but does not rewrite existing cache: offline/cache-only/fresh sessions may continue using routing and thinking metadata written by the newer version. One successful core catalog refresh under the rolled-back version rewrites and publishes the old resolver's metadata.
 
 A malformed endpoint file is intentionally not auto-deleted or rewritten. Last-known-good state is process memory, so relying on it through a rollback/restart is risky; fix or remove the malformed file first. Removing `llmgates/models.json` selects the missing-file state, and one successful core catalog refresh then restores gateway/heuristic routing and rewrites the cross-version cache. No manual cache migration is required.
+
+## Amendment (PR #19, 2026-07-29)
+
+PR #19 supersedes the conservative fallback described above for static family rules and the final fallback only. The priority chain is unchanged:
+
+`applicable exact OpenAI/Anthropic metadata > gateway-reported levels > Google/xAI/DeepSeek static rule or Kimi K3 transport fallback > full fallback`.
+
+When gateway levels are absent and no Kimi K3 transport map applies:
+
+- Google / xAI / DeepSeek static rules and the final fallback now expose `off` (`none`), `low`, `medium`, `high`, `xhigh`, and `max` via shared `DEFAULT_THINKING_EFFORTS`.
+- `minimal` remains disabled (not synthesized).
+- Exact built-in metadata, gateway-reported levels, sparse maps, explicit `null` disables, and Kimi K3 transport fallback behavior are unchanged.
+- 2API (CPA etc.) models without gateway-reported levels use the same full fallback; Anthropic adaptive compat is still not carried through 2API.
