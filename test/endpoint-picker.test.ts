@@ -177,10 +177,10 @@ describe("endpoint picker rendering", () => {
 	});
 
 	it("only uses colors that exist in pi's ThemeColor union", () => {
-		// pi's Theme.fg throws on an unknown color and render runs inside a timer
-		// without try/catch, so an off-union name (e.g. the former "muted") is a
-		// process crash, not a style bug. Every entry here must stay a member of
-		// pi's ThemeColor union (dist/modes/interactive/theme/theme.d.ts).
+		// pi's Theme.fg throws on an unknown color name and render runs inside a
+		// timer without try/catch, so a typo is a process crash, not a style bug.
+		// Every entry here must stay a member of pi's ThemeColor union
+		// (dist/modes/interactive/theme/theme.d.ts).
 		const PI_THEME_COLORS = new Set([
 			"accent",
 			"dim",

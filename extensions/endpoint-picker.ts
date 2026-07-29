@@ -25,9 +25,8 @@ import type {
 /**
  * Subset of pi's `Theme` this component uses.
  * `color` must stay a member of pi's ThemeColor union: Theme.fg throws on
- * unknown colors and pi-tui renders without try/catch, so an off-union name
- * (e.g. "muted", present in the bundled theme JSONs but not in the union) is a
- * process crash under custom themes, not a style issue.
+ * unknown names and pi-tui renders without try/catch, so a typo or a key missing
+ * from the active theme JSON is a process crash, not a style issue.
  */
 export interface PickerTheme {
 	fg(color: string, text: string): string;

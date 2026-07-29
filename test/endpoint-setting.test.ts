@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -22,7 +29,10 @@ import {
 	type ModelOverrideWrite,
 	type OverrideScope,
 } from "../extensions/model-overrides.js";
-import { parseSelectorList, type SelectorSelection } from "../extensions/endpoint-selector.js";
+import {
+	parseSelectorList,
+	type SelectorSelection,
+} from "../extensions/endpoint-selector.js";
 import type { EndpointRefreshResult } from "../extensions/provider.js";
 
 const CORE = "llmgates";
@@ -74,7 +84,10 @@ interface HarnessOptions {
 	 * the snapshot the picker was handed, so one fixture drives both step-1
 	 * surfaces.
 	 */
-	pick?: SelectorSelection[] | undefined | (() => Promise<SelectorSelection[] | undefined>);
+	pick?:
+		| SelectorSelection[]
+		| undefined
+		| (() => Promise<SelectorSelection[] | undefined>);
 	editor?: string | undefined | (() => Promise<string | undefined>);
 	select?: string | undefined;
 	setModelImpl?: (model: Model<Api>) => Promise<boolean>;
@@ -106,7 +119,10 @@ function harness(options: HarnessOptions) {
 			refreshCalls.push(spec.providerId);
 			// A successful refresh is what makes the post-change registry visible.
 			registry = options.registry;
-			const refresh = spec.refresh ?? { status: "ok", models: options.registry };
+			const refresh = spec.refresh ?? {
+				status: "ok",
+				models: options.registry,
+			};
 			return typeof refresh === "function" ? refresh() : refresh;
 		},
 	}));
@@ -134,7 +150,9 @@ function harness(options: HarnessOptions) {
 		getModel: () => current,
 		getAllModels: () => registry,
 		find: (providerId, modelId) =>
-			registry.find((entry) => entry.provider === providerId && entry.id === modelId),
+			registry.find(
+				(entry) => entry.provider === providerId && entry.id === modelId,
+			),
 		setModel,
 		pick: async (snapshot) => {
 			if ("pick" in options) {
@@ -143,7 +161,9 @@ function harness(options: HarnessOptions) {
 			}
 			const value = options.editor;
 			const text = typeof value === "function" ? await value() : value;
-			return text === undefined ? undefined : parseSelectorList(text, snapshot).selected;
+			return text === undefined
+				? undefined
+				: parseSelectorList(text, snapshot).selected;
 		},
 		editor: async (_title, prefill) => {
 			editorCalls += 1;
@@ -176,8 +196,18 @@ function checkAll(text: string): string {
 describe("buildSelectorSnapshot", () => {
 	it("groups managed providers and summarizes everything else", () => {
 		const targets: EndpointSettingTarget[] = [
-			{ providerId: CORE, label: "core", scope: { kind: "core" }, refreshEndpointForeground: async () => ({ status: "not-ready" }) },
-			{ providerId: TWO_API, label: "2API/cpa", scope: { kind: "2api", instanceId: TWO_API }, refreshEndpointForeground: async () => ({ status: "not-ready" }) },
+			{
+				providerId: CORE,
+				label: "core",
+				scope: { kind: "core" },
+				refreshEndpointForeground: async () => ({ status: "not-ready" }),
+			},
+			{
+				providerId: TWO_API,
+				label: "2API/cpa",
+				scope: { kind: "2api", instanceId: TWO_API },
+				refreshEndpointForeground: async () => ({ status: "not-ready" }),
+			},
 		];
 		const snapshot = buildSelectorSnapshot(
 			targets,
@@ -192,7 +222,10 @@ describe("buildSelectorSnapshot", () => {
 			(target, modelId) => target.providerId === CORE && modelId === "core-b",
 		);
 
-		expect(snapshot.groups.map((group) => group.providerId)).toEqual([CORE, TWO_API]);
+		expect(snapshot.groups.map((group) => group.providerId)).toEqual([
+			CORE,
+			TWO_API,
+		]);
 		expect(snapshot.groups[0]!.models).toEqual([
 			{ id: "core-a", name: "core-a", endpoint: "chat", hasOverride: false },
 			{ id: "core-b", name: "core-b", endpoint: "messages", hasOverride: true },
@@ -208,7 +241,14 @@ describe("buildSelectorSnapshot", () => {
 
 	it("omits a managed provider that currently has no models", () => {
 		const snapshot = buildSelectorSnapshot(
-			[{ providerId: CORE, label: "core", scope: { kind: "core" }, refreshEndpointForeground: async () => ({ status: "not-ready" }) }],
+			[
+				{
+					providerId: CORE,
+					label: "core",
+					scope: { kind: "core" },
+					refreshEndpointForeground: async () => ({ status: "not-ready" }),
+				},
+			],
 			[],
 			() => false,
 		);
@@ -217,29 +257,32 @@ describe("buildSelectorSnapshot", () => {
 });
 
 describe("/endpoint-setting mode guard", () => {
-	it.each(["print", "json"])("refuses in %s mode and points at /endpoint", async (mode) => {
-		const { dir, cleanup } = tempDir();
-		try {
-			const h = harness({
-				agentDir: dir,
-				mode,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
-				registry: [model("m1", "openai-completions")],
-				editor: "[x] m1",
-				select: "messages   → anthropic-messages",
-			});
+	it.each(["print", "json"])(
+		"refuses in %s mode and points at /endpoint",
+		async (mode) => {
+			const { dir, cleanup } = tempDir();
+			try {
+				const h = harness({
+					agentDir: dir,
+					mode,
+					targets: [{ providerId: CORE, scope: { kind: "core" } }],
+					registry: [model("m1", "openai-completions")],
+					editor: "[x] m1",
+					select: "messages   → anthropic-messages",
+				});
 
-			await runEndpointSettingCommand(h.runtime, h.ctx);
+				await runEndpointSettingCommand(h.runtime, h.ctx);
 
-			expect(h.notifications).toEqual([
-				{ message: expect.stringMatching(/\/endpoint </), level: "error" },
-			]);
-			expect(h.writeCalls).toEqual([]);
-			expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
-		} finally {
-			cleanup();
-		}
-	});
+				expect(h.notifications).toEqual([
+					{ message: expect.stringMatching(/\/endpoint </), level: "error" },
+				]);
+				expect(h.writeCalls).toEqual([]);
+				expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+			} finally {
+				cleanup();
+			}
+		},
+	);
 
 	it.each(["tui", "rpc"])("runs normally in %s mode", async (mode) => {
 		const { dir, cleanup } = tempDir();
@@ -257,7 +300,9 @@ describe("/endpoint-setting mode guard", () => {
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
 			expect(h.notifications[0]?.level).toBe("info");
-			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe("messages");
+			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe(
+				"messages",
+			);
 		} finally {
 			cleanup();
 		}
@@ -293,9 +338,15 @@ describe("/endpoint-setting mode guard", () => {
 
 describe("/endpoint-setting cancellation", () => {
 	it.each([
-		["editor dismissed", { editor: undefined, select: "messages   → anthropic-messages" }],
-		["nothing selected", { editor: "[ ] m1", select: "messages   → anthropic-messages" }],
-		["endpoint dismissed", { editor: "[x] m1", select: undefined }],
+		[
+			"step 1 cancelled",
+			{ editor: undefined, select: "messages   → anthropic-messages" },
+		],
+		[
+			"nothing selected",
+			{ editor: "[ ] m1", select: "messages   → anthropic-messages" },
+		],
+		["step 2 cancelled", { editor: "[x] m1", select: undefined }],
 	])("writes nothing when %s", async (_label, overrides) => {
 		const { dir, cleanup } = tempDir();
 		const piModels = join(dir, "models.json");
@@ -353,9 +404,17 @@ describe("/endpoint-setting batch write", () => {
 
 			expect(h.writeCalls).toHaveLength(2);
 			expect(h.writeCalls[0]!.scope).toEqual({ kind: "core" });
-			expect(h.writeCalls[0]!.writes.map((entry) => entry.targetId)).toEqual(["c1", "c2"]);
-			expect(h.writeCalls[1]!.scope).toEqual({ kind: "2api", instanceId: TWO_API });
-			expect(h.writeCalls[1]!.writes.map((entry) => entry.targetId)).toEqual(["p1"]);
+			expect(h.writeCalls[0]!.writes.map((entry) => entry.targetId)).toEqual([
+				"c1",
+				"c2",
+			]);
+			expect(h.writeCalls[1]!.scope).toEqual({
+				kind: "2api",
+				instanceId: TWO_API,
+			});
+			expect(h.writeCalls[1]!.writes.map((entry) => entry.targetId)).toEqual([
+				"p1",
+			]);
 			expect(h.refreshCalls).toEqual([CORE, TWO_API]);
 			expect(h.notifications).toEqual([
 				{ message: expect.stringMatching(/3 model/), level: "info" },
@@ -385,7 +444,12 @@ describe("/endpoint-setting batch write", () => {
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
 			// No interleaving: core's lock is released before the 2API lock is taken.
-			expect(h.order).toEqual(["write:core", "refresh:llmgates", "write:cpa", "refresh:cpa"]);
+			expect(h.order).toEqual([
+				"write:core",
+				"refresh:llmgates",
+				"write:cpa",
+				"refresh:cpa",
+			]);
 		} finally {
 			cleanup();
 		}
@@ -410,9 +474,12 @@ describe("/endpoint-setting batch write", () => {
 
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
-			expect(readModelOverridesFile(dir)?.models).toEqual({ c1: { endpoint: "messages" } });
+			expect(readModelOverridesFile(dir)?.models).toEqual({
+				c1: { endpoint: "messages" },
+			});
 			expect(
-				readModelOverridesFile(dir, { kind: "2api", instanceId: TWO_API })?.models,
+				readModelOverridesFile(dir, { kind: "2api", instanceId: TWO_API })
+					?.models,
 			).toEqual({ p1: { endpoint: "messages" } });
 		} finally {
 			cleanup();
@@ -430,7 +497,11 @@ describe("/endpoint-setting batch write", () => {
 				mode: "rpc",
 				targets: [
 					{ providerId: CORE, label: "core", scope: { kind: "core" } },
-					{ providerId: TWO_API, label: "2API/cpa", scope: { kind: "2api", instanceId: TWO_API } },
+					{
+						providerId: TWO_API,
+						label: "2API/cpa",
+						scope: { kind: "2api", instanceId: TWO_API },
+					},
 				],
 				// A 2API relay re-exporting the same upstream id core already serves: the
 				// two rendered rows are visually identical, so only the group header can
@@ -459,9 +530,12 @@ describe("/endpoint-setting batch write", () => {
 				{ kind: "core" },
 				{ kind: "2api", instanceId: TWO_API },
 			]);
-			expect(readModelOverridesFile(dir)?.models?.shared?.endpoint).toBe("messages");
+			expect(readModelOverridesFile(dir)?.models?.shared?.endpoint).toBe(
+				"messages",
+			);
 			expect(
-				readModelOverridesFile(dir, { kind: "2api", instanceId: TWO_API })?.models?.shared?.endpoint,
+				readModelOverridesFile(dir, { kind: "2api", instanceId: TWO_API })
+					?.models?.shared?.endpoint,
 			).toBe("messages");
 		} finally {
 			cleanup();
@@ -497,7 +571,10 @@ describe("/endpoint-setting batch write", () => {
 
 describe("/endpoint-setting tri-state", () => {
 	async function runWith(
-		options: Partial<HarnessOptions> & { agentDir: string; targets: TargetSpec[] },
+		options: Partial<HarnessOptions> & {
+			agentDir: string;
+			targets: TargetSpec[];
+		},
 	) {
 		const h = harness({
 			registry: [model("m1", "anthropic-messages")],
@@ -514,23 +591,28 @@ describe("/endpoint-setting tri-state", () => {
 		["offline", { status: "offline" } as const, /offline/i],
 		["not-ready", { status: "not-ready" } as const, /not ready/i],
 		["superseded", { status: "superseded" } as const, /superseded/i],
-	])("reports partial when the refresh is %s", async (_label, refresh, pattern) => {
-		const { dir, cleanup } = tempDir();
-		try {
-			const h = await runWith({
-				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" }, refresh }],
-			});
+	])(
+		"reports partial when the refresh is %s",
+		async (_label, refresh, pattern) => {
+			const { dir, cleanup } = tempDir();
+			try {
+				const h = await runWith({
+					agentDir: dir,
+					targets: [{ providerId: CORE, scope: { kind: "core" }, refresh }],
+				});
 
-			expect(h.notifications).toEqual([
-				{ message: expect.stringMatching(pattern), level: "warning" },
-			]);
-			// The file was still written: partial, never ok, never failed.
-			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe("messages");
-		} finally {
-			cleanup();
-		}
-	});
+				expect(h.notifications).toEqual([
+					{ message: expect.stringMatching(pattern), level: "warning" },
+				]);
+				// The file was still written: partial, never ok, never failed.
+				expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe(
+					"messages",
+				);
+			} finally {
+				cleanup();
+			}
+		},
+	);
 
 	it("reports partial when the refresh throws", async () => {
 		const { dir, cleanup } = tempDir();
@@ -551,7 +633,9 @@ describe("/endpoint-setting tri-state", () => {
 			expect(h.notifications).toEqual([
 				{ message: expect.stringMatching(/network down/), level: "warning" },
 			]);
-			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe("messages");
+			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe(
+				"messages",
+			);
 		} finally {
 			cleanup();
 		}
@@ -564,8 +648,14 @@ describe("/endpoint-setting tri-state", () => {
 				agentDir: dir,
 				targets: [{ providerId: CORE, scope: { kind: "core" } }],
 				// m2 stayed on the old api after the refresh.
-				registry: [model("m1", "anthropic-messages"), model("m2", "openai-completions")],
-				initialRegistry: [model("m1", "openai-completions"), model("m2", "openai-completions")],
+				registry: [
+					model("m1", "anthropic-messages"),
+					model("m2", "openai-completions"),
+				],
+				initialRegistry: [
+					model("m1", "openai-completions"),
+					model("m2", "openai-completions"),
+				],
 				editor: "[x] m1\n[x] m2",
 			});
 
@@ -579,26 +669,32 @@ describe("/endpoint-setting tri-state", () => {
 
 	it.each([
 		["setModel returns false", async () => false],
-		["setModel throws", async () => {
-			throw new Error("rebind exploded");
-		}],
-	])("reports partial when %s for the current model", async (_label, setModelImpl) => {
-		const { dir, cleanup } = tempDir();
-		try {
-			const h = await runWith({
-				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
-				current: model("m1", "openai-completions"),
-				setModelImpl: setModelImpl as (model: Model<Api>) => Promise<boolean>,
-			});
+		[
+			"setModel throws",
+			async () => {
+				throw new Error("rebind exploded");
+			},
+		],
+	])(
+		"reports partial when %s for the current model",
+		async (_label, setModelImpl) => {
+			const { dir, cleanup } = tempDir();
+			try {
+				const h = await runWith({
+					agentDir: dir,
+					targets: [{ providerId: CORE, scope: { kind: "core" } }],
+					current: model("m1", "openai-completions"),
+					setModelImpl: setModelImpl as (model: Model<Api>) => Promise<boolean>,
+				});
 
-			expect(h.notifications).toEqual([
-				{ message: expect.stringMatching(/\/model/), level: "warning" },
-			]);
-		} finally {
-			cleanup();
-		}
-	});
+				expect(h.notifications).toEqual([
+					{ message: expect.stringMatching(/\/model/), level: "warning" },
+				]);
+			} finally {
+				cleanup();
+			}
+		},
+	);
 
 	it("rebinds the current model when it is part of the selection", async () => {
 		const { dir, cleanup } = tempDir();
@@ -662,7 +758,9 @@ describe("/endpoint-setting tri-state", () => {
 			// Each provider's state is spelled out; the successful half stays applied.
 			expect(h.notifications[0]?.message).toMatch(/llmgates.*applied/s);
 			expect(h.notifications[0]?.message).toMatch(/cpa.*disk full/s);
-			expect(readModelOverridesFile(dir)?.models?.c1?.endpoint).toBe("messages");
+			expect(readModelOverridesFile(dir)?.models?.c1?.endpoint).toBe(
+				"messages",
+			);
 		} finally {
 			cleanup();
 		}
@@ -714,7 +812,9 @@ describe("/endpoint-setting tri-state", () => {
 				select: "messages   → anthropic-messages",
 			});
 
-			await expect(runEndpointSettingCommand(h.runtime, h.ctx)).resolves.toBeUndefined();
+			await expect(
+				runEndpointSettingCommand(h.runtime, h.ctx),
+			).resolves.toBeUndefined();
 			expect(h.notifications).toEqual([
 				{ message: expect.stringMatching(/editor exploded/), level: "error" },
 			]);
@@ -736,7 +836,11 @@ describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 				mode: "rpc",
 				targets: [
 					{ providerId: CORE, label: "core", scope: { kind: "core" } },
-					{ providerId: TWO_API, label: "2API/cpa", scope: { kind: "2api", instanceId: TWO_API } },
+					{
+						providerId: TWO_API,
+						label: "2API/cpa",
+						scope: { kind: "2api", instanceId: TWO_API },
+					},
 				],
 				registry: [
 					model("c1", "anthropic-messages", CORE, "Core One"),
@@ -781,7 +885,9 @@ describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 			expect(h.notifications[0]?.message).toMatch(/not-a-model/);
 			expect(h.notifications[0]?.message).toMatch(/nonsense line/);
 			// The rejections do not stop the valid selection from being applied.
-			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe("messages");
+			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe(
+				"messages",
+			);
 		} finally {
 			cleanup();
 		}
@@ -819,10 +925,9 @@ describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
-			expect(h.writeCalls.map((call) => call.writes.map((entry) => entry.targetId))).toEqual([
-				["c1"],
-				["p1"],
-			]);
+			expect(
+				h.writeCalls.map((call) => call.writes.map((entry) => entry.targetId)),
+			).toEqual([["c1"], ["p1"]]);
 			expect(h.notifications[0]?.level).toBe("info");
 		} finally {
 			cleanup();

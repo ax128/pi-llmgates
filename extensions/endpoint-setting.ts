@@ -2,14 +2,15 @@
  * /endpoint-setting — interactive, multi-select endpoint configuration across the
  * core provider and every 2API instance this extension governs.
  *
- * Spec: docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md (rev 6).
+ * Spec: docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md (rev 7).
  *
  * `/endpoint` is deliberately untouched: this is a separate command sharing only
  * the in-flight guard, so the single-model path has no new code in it at all.
  *
  * Flow (spec §7.1):
- *   in-flight guard → mode guard → render checklist (frozen id→provider map) →
- *   ui.editor → parse → ui.select → waitForIdle → group by provider →
+ *   in-flight guard → mode guard → step 1 (frozen id→provider snapshot) →
+ *   tui: ui.custom checkbox picker · rpc: ui.editor checklist + parse →
+ *   ui.select → waitForIdle → group by provider →
  *   per group: one locked batch write, then one foreground refresh →
  *   verify each api → rebind current model → merge tri-state → notify.
  *

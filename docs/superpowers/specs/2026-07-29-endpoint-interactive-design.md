@@ -13,10 +13,9 @@
    rpc 无组件通道（`rpc-mode.js:151` 返回 `undefined`），**保留** rev 6 的 `ui.editor` 清单路径，
    由 `ctx.mode` 分流（§3.3 守卫不变）。取消（`undefined`）与零选中（`[]`）在两条路径下保持区分。
 2. **主题色硬约束（实机结论）**：自绘组件只能用 `ThemeColor` 联合类型内的颜色名——
-   `Theme.fg` 对未知颜色直接 throw，而 pi-tui 的 `doRender()` 在定时器回调中执行、无 try/catch，
-   渲染期抛错 = pi 进程崩溃。`"muted"` 存在于内置 dark/light JSON 但**不在联合类型内**，
-   自定义主题无回退（`withThemeColorFallbacks` 仅补 `thinkingMax`），故禁用。测试以
-   tracking theme 断言所用颜色 ⊆ 联合成员。
+   `Theme.fg` 对未知名直接 throw，而 pi-tui 的 `doRender()` 在定时器回调中执行、无 try/catch，
+   渲染期抛错 = pi 进程崩溃。自定义主题 JSON 可能缺少内置主题里的某些 key（`withThemeColorFallbacks`
+   仅补 `thinkingMax`），故实现只用 `accent` / `dim` / `success` 等经 tracking theme 断言过的成员。
 3. **组操作作用域**：`Tab` / `Ctrl+A` / `Ctrl+D` 均作用于**当前过滤结果**（visible 行），
    不过滤时退化为整组/全量；选择集本身跨过滤持久。
 4. rev 6 其余规定（写入/加锁/刷新/三态、注册矩阵、editor 清单解析）不变。
@@ -294,7 +293,7 @@ rev 3 写「检测：`ctx.ui` 存在性 + try/catch」。**两条都不成立**�
 
 > `mode: ExtensionMode;` — Current run mode. Use `"tui"` to guard terminal-only UI such as custom components.
 
-**rev 5 规定**：按 §4 选定的 `ui.editor` + `ui.select` 方案，二者在 **tui 与 rpc 两种模式下均有真实实现**
+**rev 5 规定**（rev 7 扩展：step 1 在 tui 改 `ui.custom`，见 §4.2）：`editor` / `select` 在 **tui 与 rpc 两种模式下均有真实实现**
 （`interactive-mode.js:1681` / `rpc-mode.js:173` / `rpc-mode.js:83`），因此守卫条件为：
 
 ```ts
@@ -344,32 +343,50 @@ MODULE_NOT_FOUND
 rev 3 §10 已自认「自绘 TUI 是本方案最大的不确定性…单测覆盖不到」，
 而它对应全方案约 28% 的代码量。**为一个未做过取舍的实现方式承担最大风险，不合理。**
 
-#### 4.2 选定方案：`ui.editor` + `ui.select`
+#### 4.2 选定方案：Step 1 按 mode 分流 + `ui.select`
 
-两者均为 `ExtensionUIContext` 公开成员，且在 **tui 与 rpc 下都有真实实现**：
+rev 7 在 rev 6 的 `ui.editor` + `ui.select` 基础上，把 **TUI 第一步**改回 §4.1 路径 (b)——
+零 import 的结构化 `Component`（`extensions/endpoint-picker.ts`，经 `ui.custom` 展示）；
+**RPC 第一步**仍走 rev 6 的 `ui.editor` 清单 + `parseSelectorList`（rpc 下 `ui.custom` 为 no-op）。
+**Step 2** 两种 mode 均用 `ui.select` 四个出口选项。
+
+| Step | TUI (`ctx.mode === "tui"`) | RPC (`ctx.mode === "rpc"`) |
+| --- | --- | --- |
+| 1 多选 | `ui.custom` → `endpoint-picker.ts`（只能勾行） | `ui.editor` 预填清单 → `parseSelectorList` |
+| 2 单选 | `ui.select` | `ui.select` |
+
+分流由 `endpoint-setting.ts` 在 snapshot 构建后执行；§3.3 mode 守卫不变。
+
+`editor` / `select` 在 **tui 与 rpc 下都有真实实现**；`custom` 仅在 tui 下有组件面（rpc：`rpc-mode.js:151` 返回 `undefined`）。
 
 ```ts
+custom<T>(factory: ...): Promise<T>;                                         // tui only
 editor(title: string, prefill?: string): Promise<string | undefined>;      // types.d.ts:~136
 select(title: string, options: string[], opts?): Promise<string | undefined>;  // types.d.ts:69
 ```
 
-- **Step 1 多选** → `ui.editor` 预填一份带 `[ ]` / `[x]` 标记的清单文本，用户编辑后解析回来
-- **Step 2 单选** → `ui.select` 四个出口选项（这正是 `ui.select` 的设计用途）
+收益（相对 rev 3 自绘 TUI）：
 
-收益：
-
-| 维度 | 自绘 TUI (rev 3) | `ui.editor` + `ui.select` (rev 4) |
+| 维度 | 自绘 TUI (rev 3) | rev 7（tui 组件 + rpc editor） |
 | --- | --- | --- |
-| 新增依赖 | 需要 `pi-tui`（或 250 行手写） | **无** |
-| 代码量 | ~250 行 TUI | ~120 行纯字符串 format/parse |
-| 可测性 | 主题/尺寸/焦点单测覆盖不到 | **纯函数，字符串 in / 结构 out，100% 可测** |
-| 模式覆盖 | 仅 tui | **tui + rpc** |
-| 风险 | rev 3 §10 列为最大不确定性 | 消除 |
+| 新增依赖 | 需要 `pi-tui`（或 250 行手写） | **无**（结构体 `Component`，零 import） |
+| TUI 交互 | 自绘或 editor 文本 | **真勾选组件**，model-id 不可被改写 |
+| RPC | 仅 tui 或不可用 | **editor 清单回退**，与 rev 6 一致 |
+| 可测性 | 主题/尺寸/焦点单测覆盖不到 | picker 纯逻辑 + selector 纯 parse 均可单测 |
+| 风险 | rev 3 §10 列为最大不确定性 | §4.1 硬阻断已通过路径 (b) 闭合 |
 
-代价：不是可视化勾选，而是文本勾选。对「多选模型 → 选出口」这一诉求，
-文本清单完整满足需求 6 对**管辖模型**的要求（§1 rev 5 解读）；非管辖模型见 §2.3 汇总披露。
+TUI 下非管辖模型只作汇总披露、不可勾选；RPC 下手工写入非管辖 id 仍由 §4.3.2 解析规则拒绝。
 
-#### 4.3 Step 1 — 模型多选（`ui.editor` 预填文本）
+#### 4.3 Step 1 — 模型多选
+
+##### 4.3.1 TUI — 交互式勾选（`ui.custom` + `endpoint-picker.ts`）
+
+- `↑↓` 移动（首尾回绕）· 空格勾选 · `Tab` 整组勾选 · `Ctrl+A` / `Ctrl+D` 全选/清空（**作用于当前过滤结果**）· 直接输入过滤 · `Enter` 确认 · `Esc` 取消
+- 按 provider 分组：`model-id · 名字 · 当前出口`；`*` = 已有 override；不管辖 provider 以汇总行披露
+- 返回 `SelectorSelection[]`；`Esc` → `undefined`（取消）；全不选后 `Enter` → `[]`（零选中）——二者在 command 层区分，均不写文件
+- 实现见 `extensions/endpoint-picker.ts`；主题色只用经单测断言的 `ThemeColor` 成员（rev 7 摘要 §2）
+
+##### 4.3.2 RPC — 文本清单（`ui.editor` 预填 + `parseSelectorList`）
 
 ```text
 # /endpoint-setting · 在要修改的模型前把 [ ] 改成 [x]，保存后进入下一步
@@ -396,7 +413,7 @@ select(title: string, options: string[], opts?): Promise<string | undefined>;  /
 - 不管辖的模型以**汇总注释行**披露（§2.3 rev 4 收敛），不逐条渲染
 - 数据源 `ctx.modelRegistry.getAll()`；2API 实例列表来自 §3.2 传入的 `compat.providers`
 
-**解析规则**（`endpoint-selector.ts`，纯函数）：
+**解析规则**（`endpoint-selector.ts`，纯函数；仅 RPC step 1 使用）：
 
 | 输入行 | 处理 |
 | --- | --- |
@@ -1064,7 +1081,7 @@ P2 是「行为不变」的纯基础设施阶段，P3 之前**任何用户可见
 | 不管辖的 provider | **汇总披露，不逐条渲染；手工写入时显式拒绝** | 无写入通道；逐条渲染三位数条目不可用（§2.1 / §2.3） |
 | 2API 协议兼容 | 放行不拦，用户自负 | 用户「选择了出错我们不管」 |
 | 预警置灰 | 全部删除 | 同上 |
-| **多选实现** | **`ui.editor` 文本清单 + `ui.select`** | **`pi-tui` 不可解析；自绘为 rev 3 自认最大风险（§4.1/§4.2）** |
+| **多选实现** | **tui: `ui.custom` 勾选组件 + `ui.select`；rpc: `ui.editor` 清单 + `ui.select`（§4.2 rev 7）** | **`pi-tui` 不可解析；自绘为 rev 3 自认最大风险（§4.1/§4.2）** |
 | **UI 可用性检测** | **`ctx.mode`** | **`ctx.ui` 存在性与 `hasUI` 均永不触发（§3.3）** |
 | 2API 配置布局 | 每实例独立文件 | 删除清理最简 + 故障隔离；**「无锁竞争」理由已撤回（§6.2）** |
 | **存储参数化** | **参数化 scope，不参数化 path** | **rev 3 的 path 参数化重开唯一数据丢失通道（§6.1）** |
