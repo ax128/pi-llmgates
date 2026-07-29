@@ -38,7 +38,7 @@ import {
 	type GatewayModel,
 	type PiProviderModel,
 } from "./catalog.js";
-import { applyMoonshotKimiCompatModel } from "./compat/catalog.js";
+import { applyMoonshotKimiCompatModel, isMoonshotKimiCompatModel } from "./compat/catalog.js";
 import {
 	createModelOverrideLookup,
 	reloadModelOverridesFromDisk,
@@ -341,13 +341,17 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			}
 			for (const model of bound) {
 				applyMoonshotKimiCompatModel(model);
-				applyOptimisticExtendedThinkingToModel(model);
+				if (!isMoonshotKimiCompatModel(model.id)) {
+					applyOptimisticExtendedThinkingToModel(model);
+				}
 			}
 			setModels(bound as Model<Api>[]);
 		} else {
 			for (const model of valid) {
 				applyMoonshotKimiCompatModel(model);
-				applyOptimisticExtendedThinkingToModel(model);
+				if (!isMoonshotKimiCompatModel(model.id)) {
+					applyOptimisticExtendedThinkingToModel(model);
+				}
 			}
 			setModels(valid as Model<Api>[]);
 		}

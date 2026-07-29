@@ -6,7 +6,7 @@ import {
 	type CatalogReloadContext,
 	type CatalogReloadTarget,
 } from "../extensions/llmgates-reload.js";
-import { acquireEndpointInFlight, releaseEndpointInFlight } from "../extensions/endpoint.js";
+import { acquireEndpointInFlight, releaseEndpointInFlight, runEndpointCommand } from "../extensions/endpoint.js";
 import type { EndpointRefreshResult } from "../extensions/provider.js";
 
 const CORE = "llmgates";
@@ -125,5 +125,46 @@ describe("runCatalogReloadCommand", () => {
 			level: "warning",
 			message: "Catalog refresh was partial:\ncore: offline mode",
 		});
+	});
+});
+
+describe("catalog reload in-flight guard", () => {
+	it("is refused while /endpoint holds the guard", async () => {
+		releaseEndpointInFlight();
+		expect(acquireEndpointInFlight()).toBe(true);
+		const { ctx, notifications } = makeCtx();
+		await runCatalogReloadCommand(
+			() => [{ providerId: CORE, label: "core", refreshEndpointForeground: async () => okRefresh([]) }],
+			ctx,
+		);
+		releaseEndpointInFlight();
+		expect(notifications[0]?.level).toBe("error");
+		expect(notifications[0]?.message).toMatch(/already running/i);
+	});
+
+	it("refuses /endpoint while reload holds the guard", async () => {
+		releaseEndpointInFlight();
+		expect(acquireEndpointInFlight()).toBe(true);
+		const notifications: Array<{ message: string; level: string }> = [];
+		await runEndpointCommand(
+			"messages m1",
+			{
+				coreProviderId: CORE,
+				refreshEndpointForeground: async () => ({ status: "ok", models: [] }),
+				writeOverride: async () => {
+					throw new Error("must not write");
+				},
+			},
+			{
+				waitForIdle: async () => {},
+				getModel: () => undefined,
+				modelRegistry: { find: () => undefined },
+				setModel: async () => true,
+				notify: (message, level) => notifications.push({ message, level }),
+			},
+		);
+		releaseEndpointInFlight();
+		expect(notifications[0]?.level).toBe("error");
+		expect(notifications[0]?.message).toMatch(/already running/i);
 	});
 });

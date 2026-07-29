@@ -275,7 +275,7 @@ describe("toPiModel", () => {
 		}
 	});
 
-	it("optimistically enables xhigh/max even when the source map disables them", () => {
+	it("optimistically enables xhigh/max when missing or null but preserves effort strings", () => {
 		expect(
 			ensureOptimisticExtendedThinking({
 				off: "none",
@@ -288,6 +288,16 @@ describe("toPiModel", () => {
 			low: "low",
 			xhigh: "xhigh",
 			max: "max",
+		});
+		expect(
+			ensureOptimisticExtendedThinking({
+				off: "cached-off",
+				max: "cached-max",
+			}),
+		).toEqual({
+			off: "cached-off",
+			max: "cached-max",
+			xhigh: "xhigh",
 		});
 	});
 
@@ -367,7 +377,7 @@ describe("toPiModel", () => {
 			web_chat_endpoint: "responses",
 		});
 
-		expect(model?.reasoning).toBe(true);
+		expect(model?.reasoning).toBe(false);
 		expect(model?.thinkingLevelMap).toEqual({ xhigh: "xhigh", max: "max" });
 	});
 

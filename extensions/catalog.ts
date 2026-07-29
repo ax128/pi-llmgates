@@ -315,37 +315,33 @@ export function buildThinkingLevelMap(efforts: string[], _api?: PiApiType): Thin
 	return map;
 }
 
-/** Always expose xhigh/max in pi's selector; upstream incompatibility is handled at request time. */
+/**
+ * Expose xhigh/max in pi's selector when missing or explicitly disabled (null).
+ * Preserves existing non-null effort strings (e.g. cached remaps) and does not
+ * touch the model's reasoning flag — upstream incompatibility is handled at request time.
+ */
 export function ensureOptimisticExtendedThinking(map: ThinkingLevelMap | undefined): ThinkingLevelMap {
 	const result: ThinkingLevelMap = { ...(map ?? {}) };
-	result.xhigh = "xhigh";
-	result.max = "max";
+	if (result.xhigh === undefined || result.xhigh === null) {
+		result.xhigh = "xhigh";
+	}
+	if (result.max === undefined || result.max === null) {
+		result.max = "max";
+	}
 	return result;
 }
 
 function withOptimisticExtendedThinking(metadata: ResolvedThinkingMetadata): ResolvedThinkingMetadata {
-	const thinkingLevelMap = ensureOptimisticExtendedThinking(metadata.thinkingLevelMap);
-	const hasThinking = Object.entries(thinkingLevelMap).some(
-		([level, value]) => level !== "off" && value !== null,
-	);
 	return {
 		...metadata,
-		thinkingLevelMap,
-		reasoning: metadata.reasoning || hasThinking,
+		thinkingLevelMap: ensureOptimisticExtendedThinking(metadata.thinkingLevelMap),
 	};
 }
 
 export function applyOptimisticExtendedThinkingToModel<
-	T extends { reasoning?: boolean; thinkingLevelMap?: ThinkingLevelMap },
+	T extends { thinkingLevelMap?: ThinkingLevelMap },
 >(model: T): T {
-	const thinkingLevelMap = ensureOptimisticExtendedThinking(model.thinkingLevelMap);
-	model.thinkingLevelMap = thinkingLevelMap;
-	const hasThinking = Object.entries(thinkingLevelMap).some(
-		([level, value]) => level !== "off" && value !== null,
-	);
-	if (hasThinking) {
-		model.reasoning = true;
-	}
+	model.thinkingLevelMap = ensureOptimisticExtendedThinking(model.thinkingLevelMap);
 	return model;
 }
 

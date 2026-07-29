@@ -132,3 +132,27 @@ When gateway levels are absent and no Kimi K3 transport map applies:
 - `minimal` remains disabled (not synthesized).
 - Exact built-in metadata, gateway-reported levels, sparse maps, explicit `null` disables, and Kimi K3 transport fallback behavior are unchanged.
 - 2API (CPA etc.) models without gateway-reported levels use the same full fallback; Anthropic adaptive compat is still not carried through 2API.
+
+## Amendment (PR #20, 2026-07-29)
+
+PR #20 adds an optimistic overlay for extended thinking levels and a catalog reload command.
+
+### Optimistic xhigh / max overlay
+
+After the existing resolution chain produces a `thinkingLevelMap`, apply a final overlay:
+
+- Enable `xhigh` and `max` when each key is **missing** or explicitly **`null`**.
+- **Preserve** existing non-null effort strings (including cached remaps such as `max: "high"`).
+- **Do not change** the resolved `reasoning` boolean; exact built-in `reasoning: false` stays false even when extended keys are added.
+- **Exception:** Kimi K3 transport fallback (`MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP`) is authoritative and receives **no** overlay — its explicit `xhigh: null` remains disabled.
+
+The overlay runs on live catalog mapping and on in-memory cache restore (patch only missing/null extended keys; do not rewrite stored effort strings on disk until the next successful refresh).
+
+Priority chain and PR #19 fallback behavior are otherwise unchanged.
+
+### `/llmgates-reload`
+
+- Force-refresh core LLMGates and all 2API instance catalogs via each provider's `refreshEndpointForeground()` (bypasses freshness window).
+- Shares the endpoint in-flight guard with `/endpoint` and `/endpoint-setting`.
+- Registration mirrors `/endpoint-setting`: available when core is ready **or** at least one 2API instance exists.
+- Serial per-provider refresh; partial failures report warning; rebinds current model when its provider refreshed successfully.

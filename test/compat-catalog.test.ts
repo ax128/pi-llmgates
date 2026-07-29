@@ -226,7 +226,7 @@ describe("mapCompatModelsPayload", () => {
 		);
 
 		expect(models[0]).toMatchObject({
-			reasoning: true,
+			reasoning: false,
 			input: ["text", "image"],
 			thinkingLevelMap: { off: "none", xhigh: "xhigh", max: "max" },
 		});
@@ -328,10 +328,7 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(models[0]?.compat).toEqual(moonshotKimiOpenAICompat("kimi-k2.7-code-highspeed"));
 		expect(models[1]?.compat).toEqual(moonshotKimiOpenAICompat("k3"));
-		expect(models[1]?.thinkingLevelMap).toEqual({
-			...MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP,
-			xhigh: "xhigh",
-		});
+		expect(models[1]?.thinkingLevelMap).toEqual({ ...MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP });
 		expect(models[2]?.compat).toEqual(moonshotKimiOpenAICompat("moonshot/kimi-k2.5"));
 		expect(models[3]?.compat).toBeUndefined();
 	});
@@ -387,7 +384,7 @@ describe("mapCompatModelsPayload", () => {
 		applyMoonshotKimiCompatModel(cached);
 
 		expect(cached.compat).toEqual(moonshotKimiOpenAICompat("k3"));
-		expect(cached.thinkingLevelMap).toEqual({ off: "cached-off", max: "max", xhigh: "xhigh" });
+		expect(cached.thinkingLevelMap).toEqual({ off: "cached-off", max: "cached-max", xhigh: "xhigh" });
 		expect(isMoonshotKimiK3Model("k3")).toBe(true);
 	});
 

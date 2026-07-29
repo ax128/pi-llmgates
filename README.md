@@ -279,16 +279,16 @@ pi
 
 ### 思考等级（reasoning effort）
 
-pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展按以下顺序解析，并在最终 map 上**始终乐观启用 `xhigh` / `max`**（上游不支持时可能 400，降档即可）：
+pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展按以下顺序解析，并在最终 map 上对 **`xhigh` / `max` 做乐观补齐**（缺失或 `null` 时启用；已有非 null effort 字符串如缓存 remap 则保留；上游不支持时可能 400，降档即可）：
 
 1. **运行时 pi-ai 的 OpenAI / Anthropic 精确 metadata**：`provider_id`、模型 ID 和最终 `api` family 都匹配时，直接采用当前运行时 pi-ai catalog 的 `reasoning` 与 `thinkingLevelMap`。
 2. **网关**：没有适用的精确 metadata、但网关上报了非空 `supported_reasoning_levels` 时，原样采用网关值。
 3. **静态规则**：网关未上报时，Google / xAI / DeepSeek 使用内置 family 规则（`off` / `low` / `medium` / `high` / `xhigh` / `max`）；现有 Kimi K3 transport compat 也只在无网关 levels 时补其固定 map（覆盖上述静态结果）。
 4. **兜底**：其余未知模型启用 `off`（发送 `none`）/ `low` / `medium` / `high` / `xhigh` / `max`；2API（CPA 等）未上报 levels 的模型同样走此兜底。
 
-无论走哪条路径（含 Kimi K3 transport compat 与磁盘缓存恢复），最终都会强制保留 `xhigh` / `max` 档位。精确 metadata 的稀疏语义对其余 key 仍成立：缺失 key 仍缺失，显式 `null` 仍禁用；仅 `xhigh` / `max` 会被乐观补齐。适用的 Anthropic metadata 还会保留 `forceAdaptiveThinking`，由 adapter 使用 adaptive thinking 与 `output_config.effort`；明确不支持 temperature 的模型也不会发送该参数。endpoint override 先决定最终 `api`；跨 OpenAI / Anthropic family 时不会套用不兼容的精确 metadata。
+除 **Kimi K3 transport fallback**（固定 map 含 `xhigh: null`，不再叠加乐观层）外，其余路径均补齐 `xhigh` / `max`。**`reasoning` 标志不被乐观层改写**——精确 metadata 的 `reasoning: false` 保持 false，即使 map 上新增了扩展档。精确 metadata 的稀疏语义对其余 key 仍成立：缺失 key 仍缺失，显式 `null` 仍禁用（K3 的 `xhigh: null` 亦同）。适用的 Anthropic metadata 还会保留 `forceAdaptiveThinking`，由 adapter 使用 adaptive thinking 与 `output_config.effort`；明确不支持 temperature 的模型也不会发送该参数。endpoint override 先决定最终 `api`；跨 OpenAI / Anthropic family 时不会套用不兼容的精确 metadata。
 
-新档位或 policy 变更后需刷新 catalog 才会写入缓存（推荐 `/llmgates-reload`）；`/reload` 只重载扩展代码。启动时旧缓存也会在内存中补齐 `xhigh` / `max`，但完整重映射仍需一次成功的联网 refresh。
+新档位或 policy 变更后需刷新 catalog 才会写入缓存（推荐 `/llmgates-reload`）；`/reload` 只重载扩展代码。启动时旧缓存也会在内存中补齐缺失/`null` 的 `xhigh` / `max`（不覆盖已有 effort 字符串），但完整重映射仍需一次成功的联网 refresh。
 
 **用户级微调（pi 原生钩子）**：在 `~/.pi/agent/models.json` 用 `providers.<实际 providerId>.modelOverrides` 覆盖单个模型的思考等级（默认 provider ID 为 `llmgates`；最顶层，合并语义，只覆盖你写的 key）：
 
@@ -330,14 +330,13 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
 /endpoint-setting
 ```
 
-- 两步交互：第一步勾选要修改的模型（支持跨 provider 多选），第二步选择 `chat` / `messages` / `responses` / `auto`。
-- 第一步在 TUI 下是交互式勾选列表：`↑↓` 移动、空格勾选、`Tab` 整组勾选、`Ctrl+A` 全选、`Ctrl+D` 清空、直接输入即过滤（`Backspace` / `Ctrl+U` 清除搜索）、`Enter` 确认、`Esc` 取消。RPC 模式没有组件通道，回退为文本清单：把要修改的模型前的 `[ ]` 改成 `[x]`。
+- 两步交互：第一步在文本清单中把要修改的模型前的 `[ ]` 改成 `[x]`（支持跨 provider 多选），第二步选择 `chat` / `messages` / `responses` / `auto`。
 - 覆盖 **core + 全部 2API 实例**的模型；两步中任意一步取消或零选中都不会写入任何文件。
-- 列表按 provider 分组，显示「model-id · 名字 · 当前出口」，`*` 表示已有 override。第三方扩展与 pi 内置 provider 的模型没有 `api` 写入通道，因此只作汇总披露、不可勾选；在文本清单中手工写入这些 id 会被明确拒绝并说明原因。
+- 清单按 provider 分组，显示「model-id · 名字 · 当前出口」，`*` 表示已有 override。第三方扩展与 pi 内置 provider 的模型没有 `api` 写入通道，因此以汇总注释行披露、不可勾选；手工写入这些 id 会被明确拒绝并说明原因。
 - 需要交互式界面：TUI 与 RPC 模式可用；`print` / `json` 模式会提示改用 `/endpoint`，不会报错也不会写文件。
 - 每个 provider 只加一次锁、写一次文件、刷新一次，分组串行执行。
 - 三态结果：全部成功为 info；**文件已写入但未激活（离线 / provider 未就绪 / 被更新的刷新取代 / 部分模型未生效 / 当前模型重绑失败）一律为 warning**，不会误报成功；只有**所有** provider 都写入失败才是 error。跨 provider 部分成功时逐 provider 说明状态，已成功的部分保持生效，不回滚。
-- 与 `/endpoint` 共用同一把 in-flight 锁：选择器打开期间执行 `/endpoint` 会被拒绝，反之亦然。
+- 与 `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 共用同一把 in-flight 锁：任一命令执行期间，其余命令会被拒绝。
 - 2API 的上游是否支持 `messages` / `responses` 取决于你自己的中转部署，本扩展不探测、不拦截；选错了用 `/endpoint-setting` 选 `auto`，或对 core 模型用 `/endpoint chat <model-id>` 回退。
 
 也可手工编辑 `~/.pi/agent/llmgates/models.json`：

@@ -92,12 +92,12 @@ function describeChange(value: EndpointValue): string {
 let inFlight = false;
 
 /**
- * Endpoint mutations share ONE in-flight guard across `/endpoint` and
- * `/endpoint-setting`. They write the same override files and drive the same
- * foreground refresh, so letting a single-model change land while the batch
- * selector is open would interleave two read-modify-write cycles.
+ * Endpoint and catalog refresh commands share ONE in-flight guard across
+ * `/endpoint`, `/endpoint-setting`, and `/llmgates-reload`. They drive the same
+ * foreground refresh path (or interleave read-modify-write cycles for endpoint
+ * overrides), so concurrent commands would race.
  *
- * Returns false when another endpoint command already holds the guard.
+ * Returns false when another command already holds the guard.
  */
 export function acquireEndpointInFlight(): boolean {
 	if (inFlight) return false;
@@ -120,7 +120,7 @@ export async function runEndpointCommand(
 	ctx: EndpointCommandContext,
 ): Promise<void> {
 	if (!acquireEndpointInFlight()) {
-		ctx.notify("Another endpoint command is already running; wait for it to finish.", "error");
+		ctx.notify("Another endpoint or catalog refresh command is already running; wait for it to finish.", "error");
 		return;
 	}
 	let fileWritten = false;

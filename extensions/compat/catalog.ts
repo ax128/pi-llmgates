@@ -126,6 +126,7 @@ export function applyMoonshotKimiCompatModel<T extends Model<Api>>(
 	model.compat = moonshotKimiOpenAICompat(model.id);
 	if (applyK3ThinkingFallback && isMoonshotKimiK3Model(model.id)) {
 		model.thinkingLevelMap = { ...MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP };
+		return model;
 	}
 
 	return applyOptimisticExtendedThinkingToModel(model);
