@@ -54,6 +54,7 @@ describe("extension entrypoints", () => {
 		expect(entrypoint).toMatch(/registerCompatGateways/);
 		expect(entrypoint).toMatch(/registerEndpointCommand/);
 		expect(entrypoint).toMatch(/registerEndpointSettingCommand/);
+		expect(entrypoint).toMatch(/registerCatalogReloadCommand/);
 		expect(entrypoint).toMatch(/model_select/);
 		expect(entrypoint).not.toMatch(/modelCount > 0/);
 	});
@@ -65,9 +66,10 @@ describe("extension entrypoints", () => {
 		try {
 			extensionFactory(pi);
 			expect(commands.has("endpoint")).toBe(true);
-			// No 2API instances here: the late phase must still register the selector,
-			// or a core-only user would never see it.
+			// No 2API instances here: the late phase must still register the selector
+			// and the catalog reload, or a core-only user would never see them.
 			expect(commands.has("endpoint-setting")).toBe(true);
+			expect(commands.has("llmgates-reload")).toBe(true);
 			expect(commands.has("balance")).toBe(true);
 			expect(providers.some((p) => (p as { id?: string })?.id === "llmgates")).toBe(true); // core provider
 			expect(events.get("model_select")).toBe(1); // reconciliation mounted
@@ -93,8 +95,9 @@ describe("extension entrypoints", () => {
 			extensionFactory(pi);
 			expect(commands.has("balance")).toBe(true);
 			expect(commands.has("endpoint")).toBe(false);
-			// No 2API instance either, so there is nothing to configure.
+			// No 2API instance either, so there is nothing to configure or refresh.
 			expect(commands.has("endpoint-setting")).toBe(false);
+			expect(commands.has("llmgates-reload")).toBe(false);
 			expect(providers.some((p) => (p as { id?: string })?.id === "llmgates")).toBe(false); // core never registered
 			expect(events.get("model_select")).toBeUndefined();
 		} finally {

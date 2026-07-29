@@ -106,6 +106,7 @@ pi
 | `/model` | 选择已注册的 LLMGates 模型 |
 | `/calls` | 查看本轮或本会话的 per-model 用量与费用明细 |
 | `/reload` | 安装或更新插件后重载扩展 |
+| `/llmgates-reload` | 强制刷新 core 与全部 2API 的模型 catalog（绕过 freshness window，重写 thinking 档位等缓存） |
 
 重新配置：随时再跑 `/login LLMGates`。`/logout` 清除 `auth.json` 登录凭证后，env / `llmgates/config.json` 中的 ambient 配置才会重新生效。交互式登录**不会**写入新的 API Key，也**不会**删除文件中已有的 ambient `apiKey`。
 
@@ -278,16 +279,24 @@ pi
 
 ### 思考等级（reasoning effort）
 
-pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展按以下顺序解析：
+pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展按以下顺序解析，并在最终 map 上对 **`xhigh` / `max` 做乐观补齐**（缺失或 `null` 时启用；已有非 null effort 字符串如缓存 remap 则保留）：
 
 1. **运行时 pi-ai 的 OpenAI / Anthropic 精确 metadata**：`provider_id`、模型 ID 和最终 `api` family 都匹配时，直接采用当前运行时 pi-ai catalog 的 `reasoning` 与 `thinkingLevelMap`。
 2. **网关**：没有适用的精确 metadata、但网关上报了非空 `supported_reasoning_levels` 时，原样采用网关值。
 3. **静态规则**：网关未上报时，Google / xAI / DeepSeek 使用内置 family 规则（`off` / `low` / `medium` / `high` / `xhigh` / `max`）；现有 Kimi K3 transport compat 也只在无网关 levels 时补其固定 map（覆盖上述静态结果）。
 4. **兜底**：其余未知模型启用 `off`（发送 `none`）/ `low` / `medium` / `high` / `xhigh` / `max`；2API（CPA 等）未上报 levels 的模型同样走此兜底。
 
-网关未上报 levels 时，`xhigh` / `max` 是乐观暴露：OpenAI 形状 API 会把所选档位原样写入 `reasoning_effort`；若上游不支持该枚举值，可能返回 400，降档即可。新档位需一次成功的 core catalog refresh 后才会写入缓存并可见（可用 `/endpoint` 或强制刷新触发）；freshness window / cache-only / `PI_OFFLINE` 下仍使用写入时的旧 map。
+**所有模型**（含 Kimi K3 transport fallback 与磁盘缓存恢复）在最终 map 上均补齐缺失/`null` 的 `xhigh` / `max`，无例外。**`reasoning` 标志不被乐观层改写**——精确 metadata 的 `reasoning: false` 保持 false，即使 map 上新增了扩展档。精确 metadata 的稀疏语义对其余 key 仍成立：缺失 key 仍缺失；`xhigh` / `max` 若为 `null` 或缺失则乐观启用。适用的 Anthropic metadata 还会保留 `forceAdaptiveThinking`，由 adapter 使用 adaptive thinking 与 `output_config.effort`；明确不支持 temperature 的模型也不会发送该参数。endpoint override 先决定最终 `api`；跨 OpenAI / Anthropic family 时不会套用不兼容的精确 metadata。
 
-精确 metadata 的 `thinkingLevelMap` 保持稀疏语义：缺失 key 仍缺失，显式 `null` 仍禁用，对 `xhigh` / `max` 不降级或补齐。适用的 Anthropic metadata 还会保留 `forceAdaptiveThinking`，由 adapter 使用 adaptive thinking 与 `output_config.effort`；明确不支持 temperature 的模型也不会发送该参数。endpoint override 先决定最终 `api`；跨 OpenAI / Anthropic family 时不会套用不兼容的精确 metadata。
+新档位或 policy 变更后需刷新 catalog 才会写入缓存（推荐 `/llmgates-reload`）；`/reload` 只重载扩展代码。启动时旧缓存也会在内存中补齐缺失/`null` 的 `xhigh` / `max`（不覆盖已有 effort 字符串），但完整重映射仍需一次成功的联网 refresh。
+
+**乐观补齐是「暴露档位」，不是「保证生效」**，选到 `xhigh` / `max` 后实际行为分三种：
+
+- **原样透传**：OpenAI 形状 API 把所选档位写入 `reasoning_effort`；上游不认该枚举值时可能返回 400，降档即可。
+- **静默按 `high` 处理**：Anthropic budget-based 思考模型（未标记 `forceAdaptiveThinking`，如 `claude-sonnet-4-5` / `claude-opus-4-5` / `claude-haiku-4-5`）由 pi-ai 把 `xhigh` / `max` clamp 成 `high` 再换算 thinking budget——**不报错，但与 `high` 等价**。
+- **真实扩展档**：Anthropic adaptive thinking 模型（`forceAdaptiveThinking`）通过 `output_config.effort` 发送，`max` 全系可用，原生 `xhigh` 仅部分模型支持。
+
+若想对具体模型关掉这两档，用下方 `modelOverrides` 写 `"xhigh": null` / `"max": null`。
 
 **用户级微调（pi 原生钩子）**：在 `~/.pi/agent/models.json` 用 `providers.<实际 providerId>.modelOverrides` 覆盖单个模型的思考等级（默认 provider ID 为 `llmgates`；最顶层，合并语义，只覆盖你写的 key）：
 
@@ -336,8 +345,21 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
 - 需要交互式界面：TUI 与 RPC 模式可用；`print` / `json` 模式会提示改用 `/endpoint`，不会报错也不会写文件。
 - 每个 provider 只加一次锁、写一次文件、刷新一次，分组串行执行。
 - 三态结果：全部成功为 info；**文件已写入但未激活（离线 / provider 未就绪 / 被更新的刷新取代 / 部分模型未生效 / 当前模型重绑失败）一律为 warning**，不会误报成功；只有**所有** provider 都写入失败才是 error。跨 provider 部分成功时逐 provider 说明状态，已成功的部分保持生效，不回滚。
-- 与 `/endpoint` 共用同一把 in-flight 锁：选择器打开期间执行 `/endpoint` 会被拒绝，反之亦然。
+- 与 `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 共用同一把 in-flight 锁：任一命令执行期间，其余命令会被拒绝。
 - 2API 的上游是否支持 `messages` / `responses` 取决于你自己的中转部署，本扩展不探测、不拦截；选错了用 `/endpoint-setting` 选 `auto`，或对 core 模型用 `/endpoint chat <model-id>` 回退。
+
+#### 强制刷新 catalog：`/llmgates-reload`
+
+```text
+/llmgates-reload
+```
+
+- 强制刷新 **core + 全部 2API 实例**的模型 catalog，绕过 background freshness window；会联网拉取 `/v1/models` 并写入各 provider store（含 thinking 档位等 metadata）。
+- 不接受参数；与 `/reload` 不同——`/reload` 只重载扩展代码，不刷新 catalog。
+- 每个 provider 串行执行一次 `refreshEndpointForeground()`；执行前会 `waitForIdle()`。
+- 三态结果：全部刷新成功为 **info**；至少一个 provider 成功、其余 offline / 未就绪 / 被取代 / 抛错为 **warning**（文案含 *partial*）；**零** provider 刷新成功且并非全部 hard-fail 时为 **warning**（*did not update any provider*，不含 *partial*）；全部 provider hard-fail 为 **error**。
+- 与 `/endpoint`、`/endpoint-setting` 共用 in-flight 锁；任一命令执行期间会被拒绝。
+- 若当前模型的 provider 刷新成功但该 model id 已不在新 catalog 中，追加 **warning** 提示用 `/model` 重选（不会 silent 保留 stale binding）。
 
 也可手工编辑 `~/.pi/agent/llmgates/models.json`：
 

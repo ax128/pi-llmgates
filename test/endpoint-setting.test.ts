@@ -34,6 +34,7 @@ import {
 	type SelectorSelection,
 } from "../extensions/endpoint-selector.js";
 import type { EndpointRefreshResult } from "../extensions/provider.js";
+import { runCatalogReloadCommand } from "../extensions/llmgates-reload.js";
 
 const CORE = "llmgates";
 const TWO_API = "cpa";
@@ -968,6 +969,37 @@ describe("endpoint in-flight guard", () => {
 		} finally {
 			releaseEndpointInFlight();
 			cleanup();
+		}
+	});
+
+	it("is shared: /llmgates-reload is refused while the selector holds it", async () => {
+		try {
+			expect(acquireEndpointInFlight()).toBe(true);
+			const notifications: Array<{ message: string; level: string }> = [];
+			await runCatalogReloadCommand(
+				() => [
+					{
+						providerId: CORE,
+						label: "core",
+						refreshEndpointForeground: async () => ({ status: "ok", models: [] }),
+					},
+				],
+				{
+					waitForIdle: async () => {},
+					getModel: () => undefined,
+					find: () => undefined,
+					setModel: async () => true,
+					notify: (message, level) => notifications.push({ message, level }),
+				},
+			);
+			expect(notifications).toEqual([
+				{
+					message: expect.stringMatching(/catalog refresh command is already running/i),
+					level: "error",
+				},
+			]);
+		} finally {
+			releaseEndpointInFlight();
 		}
 	});
 

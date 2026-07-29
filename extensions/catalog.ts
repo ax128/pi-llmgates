@@ -315,6 +315,36 @@ export function buildThinkingLevelMap(efforts: string[], _api?: PiApiType): Thin
 	return map;
 }
 
+/**
+ * Expose xhigh/max in pi's selector when missing or explicitly disabled (null).
+ * Preserves existing non-null effort strings (e.g. cached remaps) and does not
+ * touch the model's reasoning flag — upstream incompatibility is handled at request time.
+ */
+export function ensureOptimisticExtendedThinking(map: ThinkingLevelMap | undefined): ThinkingLevelMap {
+	const result: ThinkingLevelMap = { ...(map ?? {}) };
+	if (result.xhigh === undefined || result.xhigh === null) {
+		result.xhigh = "xhigh";
+	}
+	if (result.max === undefined || result.max === null) {
+		result.max = "max";
+	}
+	return result;
+}
+
+function withOptimisticExtendedThinking(metadata: ResolvedThinkingMetadata): ResolvedThinkingMetadata {
+	return {
+		...metadata,
+		thinkingLevelMap: ensureOptimisticExtendedThinking(metadata.thinkingLevelMap),
+	};
+}
+
+export function applyOptimisticExtendedThinkingToModel<
+	T extends { thinkingLevelMap?: ThinkingLevelMap },
+>(model: T): T {
+	model.thinkingLevelMap = ensureOptimisticExtendedThinking(model.thinkingLevelMap);
+	return model;
+}
+
 export type ResolvedThinkingMetadata = ExactThinkingMetadata;
 
 export function resolveThinkingMetadata(
@@ -324,13 +354,13 @@ export function resolveThinkingMetadata(
 	gatewayEfforts: readonly string[] | undefined,
 ): ResolvedThinkingMetadata {
 	const exact = resolveExactThinkingMetadata(modelId, vendor, api);
-	if (exact) return exact;
+	if (exact) return withOptimisticExtendedThinking(exact);
 
 	const efforts = resolveThinkingLevels(modelId, vendor, api, gatewayEfforts);
-	return {
+	return withOptimisticExtendedThinking({
 		reasoning: efforts.some((effort) => effort !== "none"),
 		thinkingLevelMap: buildThinkingLevelMap(efforts, api),
-	};
+	});
 }
 
 export function buildInputModalities(model: GatewayModel): Array<"text" | "image"> {

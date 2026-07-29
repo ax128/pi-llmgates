@@ -27,6 +27,7 @@ import {
 	openAIResponsesApi,
 } from "@earendil-works/pi-ai/compat";
 import {
+	applyOptimisticExtendedThinkingToModel,
 	applyGatewayModelCosts,
 	DEFAULT_BASE_URL,
 	extractReasoningEfforts,
@@ -312,6 +313,16 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		);
 	}
 
+	/**
+	 * Patch a cache-restored model in place. The optimistic overlay is applied to
+	 * EVERY model with no exceptions — including Kimi ids and models routed to
+	 * `anthropic-messages`, which `applyMoonshotKimiCompatModel` returns early for.
+	 */
+	function patchCachedModel(model: Model<Api>): void {
+		applyMoonshotKimiCompatModel(model);
+		applyOptimisticExtendedThinkingToModel(model);
+	}
+
 	function restoreFromStoreEntry(
 		entry: { models: readonly Model<Api>[]; checkedAt?: number } | undefined,
 		connection: CanonicalConnection | null,
@@ -339,12 +350,12 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 				return;
 			}
 			for (const model of bound) {
-				applyMoonshotKimiCompatModel(model);
+				patchCachedModel(model);
 			}
 			setModels(bound as Model<Api>[]);
 		} else {
 			for (const model of valid) {
-				applyMoonshotKimiCompatModel(model);
+				patchCachedModel(model);
 			}
 			setModels(valid as Model<Api>[]);
 		}
@@ -416,7 +427,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		scopedStore = context.store;
 
 		const credential = context.credential;
-		let connection =
+		const connection =
 			connectionFromCredential(credential) ??
 			connectionFromAmbientEnv() ??
 			connectionFromConfigFile(agentDir);

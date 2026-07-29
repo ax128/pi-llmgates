@@ -390,6 +390,73 @@ describe("compat instance provider", () => {
 		}
 	});
 
+	it("applies the optimistic xhigh/max overlay to every cache-restored model", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		process.env.PI_OFFLINE = "1";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			// A Kimi id routed to anthropic-messages is exactly the case
+			// applyMoonshotKimiCompatModel returns early for, so the overlay must not be
+			// gated behind an isMoonshotKimiCompatModel check.
+			const kimiMessages: Model<Api> = {
+				...model("k3"),
+				api: "anthropic-messages",
+				reasoning: true,
+				thinkingLevelMap: { off: null, low: "cached-low", xhigh: null },
+			};
+			const kimiCompletions: Model<Api> = {
+				...model("kimi-k2.5"),
+				reasoning: true,
+				thinkingLevelMap: { off: "none", max: "cached-max" },
+			};
+			const plain: Model<Api> = {
+				...model("plain-model"),
+				reasoning: true,
+				thinkingLevelMap: { off: "none" },
+			};
+
+			const provider = createCompatProvider({
+				agentDir,
+				instance: INSTANCE,
+				fetchImpl: async () => {
+					throw new Error("offline network access");
+				},
+			});
+
+			await provider.refreshModels!({
+				credential: credential("key", INSTANCE.baseUrl),
+				store: createMemoryStore({
+					models: [kimiMessages, kimiCompletions, plain],
+					checkedAt: 1,
+				}),
+				allowNetwork: true,
+				force: true,
+			});
+
+			const byId = new Map(provider.getModels().map((entry) => [entry.id, entry]));
+			expect(byId.get("k3")?.thinkingLevelMap).toEqual({
+				off: null,
+				low: "cached-low",
+				xhigh: "xhigh",
+				max: "max",
+			});
+			// A messages-routed Kimi model still must not receive OpenAI-shaped compat.
+			expect(byId.get("k3")?.compat).toBeUndefined();
+			expect(byId.get("kimi-k2.5")?.thinkingLevelMap).toEqual({
+				off: "none",
+				max: "cached-max",
+				xhigh: "xhigh",
+			});
+			expect(byId.get("plain-model")?.thinkingLevelMap).toEqual({
+				off: "none",
+				xhigh: "xhigh",
+				max: "max",
+			});
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("restores persisted pricing and context into cached models while offline", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {

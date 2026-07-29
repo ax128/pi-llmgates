@@ -132,3 +132,32 @@ When gateway levels are absent and no Kimi K3 transport map applies:
 - `minimal` remains disabled (not synthesized).
 - Exact built-in metadata, gateway-reported levels, sparse maps, explicit `null` disables, and Kimi K3 transport fallback behavior are unchanged.
 - 2API (CPA etc.) models without gateway-reported levels use the same full fallback; Anthropic adaptive compat is still not carried through 2API.
+
+## Amendment (PR #20, 2026-07-29)
+
+PR #20 adds an optimistic overlay for extended thinking levels and a catalog reload command.
+
+### Optimistic xhigh / max overlay
+
+After the existing resolution chain produces a `thinkingLevelMap`, apply a final overlay:
+
+- Enable `xhigh` and `max` when each key is **missing** or explicitly **`null`** — **all models**, including Kimi K3 transport fallback; no exceptions.
+- **Preserve** existing non-null effort strings (including cached remaps such as `max: "high"`).
+- **Do not change** the resolved `reasoning` boolean; exact built-in `reasoning: false` stays false even when extended keys are added.
+
+The overlay runs on live catalog mapping and on in-memory cache restore (patch only missing/null extended keys; do not rewrite stored effort strings on disk until the next successful refresh).
+
+On the cache-restore path the overlay must be applied **unconditionally**, independently of `applyMoonshotKimiCompatModel()`. That helper returns early for `anthropic-messages` models (which must not receive OpenAI-shaped compat) and for non-Kimi ids, so gating the overlay behind it would silently skip Kimi models routed to `messages`. Both patches are idempotent, so the restore path simply calls compat patching and then the overlay for every model.
+
+Exposing a level is not a guarantee that the upstream honors it. OpenAI-shaped APIs forward the selected effort verbatim (a 400 is possible); Anthropic budget-based models clamp `xhigh`/`max` down to `high` inside pi-ai, so those levels are accepted but behave identically to `high`. Users who want a level truly disabled use pi's native `modelOverrides`.
+
+Priority chain and PR #19 fallback behavior are otherwise unchanged.
+
+### `/llmgates-reload`
+
+- Force-refresh core LLMGates and all 2API instance catalogs via each provider's `refreshEndpointForeground()` (bypasses freshness window).
+- Shares the endpoint in-flight guard with `/endpoint` and `/endpoint-setting`.
+- Registration mirrors `/endpoint-setting`: available when core is ready **or** at least one 2API instance exists.
+- Serial per-provider refresh; partial failures report warning; rebinds current model when its provider refreshed successfully.
+- Result wording distinguishes three cases: every provider refreshed (info), some refreshed (warning, "partial"), and none refreshed while not every provider hard-failed (warning, "did not update any provider"). Only an all-`failed` run is an error.
+- When the current model's provider refreshed but the model is gone from the new catalog, report a warning pointing at `/model`, matching `/endpoint-setting` rather than silently leaving a stale binding.

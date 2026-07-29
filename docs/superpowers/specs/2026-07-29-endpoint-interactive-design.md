@@ -189,9 +189,8 @@ contextWindow / maxTokens / headers / compat
 - **真零回归**：`endpoint.ts` 现有路径不被新代码介入，零回归是结构性保证而非测试保证
 - **语义清晰**：`/endpoint` 单次精确操作（可脚本化）；`/endpoint-setting` 交互批量配置
 - **发现性**：两命令均出现在斜杠补全，各有独立 description
-- **guard 互斥**：两命令**共享同一 in-flight guard**（`endpoint.ts` 导出
-  `acquireEndpointInFlight()` / `releaseEndpointInFlight()`，`/endpoint-setting` 与现有
-  `/endpoint` handler 均调用），防止选择器打开期间另一命令并发写入
+- **guard 互斥**：`/endpoint`、`/endpoint-setting`、`/llmgates-reload`（PR #20）**共享同一 in-flight guard**（`endpoint.ts` 导出
+  `acquireEndpointInFlight()` / `releaseEndpointInFlight()`，三命令 handler 均调用），防止并发 refresh / 写入竞态
 
 #### 3.2 注册条件（rev 6 闭合）
 
@@ -1092,5 +1091,12 @@ P2 是「行为不变」的纯基础设施阶段，P3 之前**任何用户可见
 | `auto` 对 2API | 清除后按 `defaults.endpoint` → `openai-completions` 回落 | 与 core `auto` 语义一致（**rev 3 §12 漏了 defaults 层**） |
 | **跨 provider 写入失败** | **部分成功 → partial；全部失败 → failed** | **§7.2 / §7.3 rev 6** |
 | **隔离测试** | **`model-overrides.ts` 豁免；compat 可 import；扫描规则见 §6.4** | **rev 5 职责表与旧测例冲突（§6.4 rev 6）** |
-| **in-flight guard** | **`endpoint.ts` 导出，两命令共享** | **§3.1 rev 6** |
+| **in-flight guard** | **`endpoint.ts` 导出，`/endpoint` + `/endpoint-setting` + `/llmgates-reload` 共享** | **§3.1 rev 6；PR #20 增 `/llmgates-reload`** |
 | **实施方式** | **P0–P6 分阶段，每阶段独立验证与回滚** | **改动触及并发核心区，不可一次性合入（§11）** |
+
+## Amendment（PR #20，2026-07-29）
+
+PR #20 新增 `/llmgates-reload`，复用本 spec §3.1 导出的 `acquireEndpointInFlight()` /
+`releaseEndpointInFlight()`。三命令（`/endpoint`、`/endpoint-setting`、`/llmgates-reload`）互斥；
+拒答文案统一为 *"Another endpoint or catalog refresh command is already running..."*。
+验收：`test/llmgates-reload.test.ts` 与 `test/endpoint-setting.test.ts` 的 in-flight guard 用例。

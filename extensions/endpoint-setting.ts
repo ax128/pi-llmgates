@@ -150,7 +150,10 @@ export async function runEndpointSettingCommand(
 	ctx: EndpointSettingContext,
 ): Promise<void> {
 	if (!acquireEndpointInFlight()) {
-		ctx.notify("Another endpoint command is already running; wait for it to finish.", "error");
+		ctx.notify(
+			"Another endpoint or catalog refresh command is already running; wait for it to finish.",
+			"error",
+		);
 		return;
 	}
 	try {
