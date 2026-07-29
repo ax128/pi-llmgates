@@ -1,5 +1,6 @@
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
+import { UNIVERSAL_THINKING_LEVEL_MAP } from "../extensions/catalog.js";
 import { createLLMGatesProvider } from "../extensions/provider.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
 import { createMemoryStore } from "./helpers/fake-store.js";
@@ -215,15 +216,7 @@ describe("native oauth login", () => {
 				requiresReasoningContentOnAssistantMessages: true,
 				deferredToolsMode: "kimi",
 			});
-			expect(kimi?.thinkingLevelMap).toEqual({
-				off: null,
-				minimal: null,
-				low: "low",
-				medium: null,
-				high: "high",
-				xhigh: "xhigh",
-				max: "max",
-			});
+			expect(kimi?.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
 			expect(gpt?.compat).toBeUndefined();
 		} finally {
 			cleanup();

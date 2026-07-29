@@ -3,6 +3,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_MAX_TOKENS,
+	UNIVERSAL_THINKING_LEVEL_MAP,
 } from "../extensions/catalog.js";
 import {
 	applyPricingCacheToResolver,
@@ -14,7 +15,6 @@ import {
 	isMoonshotKimiCompatModel,
 	isMoonshotKimiK3Model,
 	mapCompatModelsPayload,
-	MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP,
 	moonshotKimiOpenAICompat,
 	resolveCompatContextWindow,
 } from "../extensions/compat/catalog.js";
@@ -226,9 +226,9 @@ describe("mapCompatModelsPayload", () => {
 		);
 
 		expect(models[0]).toMatchObject({
-			reasoning: false,
+			reasoning: true,
 			input: ["text", "image"],
-			thinkingLevelMap: { off: "none", xhigh: "xhigh", max: "max" },
+			thinkingLevelMap: UNIVERSAL_THINKING_LEVEL_MAP,
 		});
 	});
 
@@ -239,7 +239,7 @@ describe("mapCompatModelsPayload", () => {
 		);
 
 		expect(models[0]?.api).toBe("openai-completions");
-		expect(models[0]?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
+		expect(models[0]?.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
 	});
 
 	it("does not carry Anthropic adaptive compat through 2API", () => {
@@ -256,19 +256,10 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(models[0]?.api).toBe("openai-completions");
 		expect(models[0]?.compat).toBeUndefined();
-		// Sparse gateway map — must not collapse into the full fallback (which also has xhigh/max).
-		expect(models[0]?.thinkingLevelMap).toEqual({
-			off: null,
-			minimal: null,
-			low: null,
-			medium: null,
-			high: null,
-			xhigh: "xhigh",
-			max: "max",
-		});
+		expect(models[0]?.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
 	});
 
-	it("exposes xhigh/max for CPA Claude models without gateway-reported levels", () => {
+	it("uses universal map for CPA Claude models without gateway-reported levels", () => {
 		const { models } = mapCompatModelsPayload(
 			[{ id: "claude-opus-4-7", provider_id: "anthropic" }],
 			{ providerId: "local-cpa", inferenceBaseUrl: "http://127.0.0.1:8317/v1" },
@@ -276,18 +267,10 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(models[0]?.api).toBe("openai-completions");
 		expect(models[0]?.compat).toBeUndefined();
-		expect(models[0]?.thinkingLevelMap).toEqual({
-			off: "none",
-			minimal: null,
-			low: "low",
-			medium: "medium",
-			high: "high",
-			xhigh: "xhigh",
-			max: "max",
-		});
+		expect(models[0]?.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
 	});
 
-	it("preserves gateway-reported K3 levels while injecting transport compat", () => {
+	it("uses universal map for K3 while injecting transport compat", () => {
 		const { models } = mapCompatModelsPayload(
 			[
 				{
@@ -299,16 +282,7 @@ describe("mapCompatModelsPayload", () => {
 		);
 
 		expect(models[0]?.compat).toEqual(moonshotKimiOpenAICompat("k3"));
-		// Gateway sparse map wins; must not become full fallback or the K3 fixed map (xhigh: null).
-		expect(models[0]?.thinkingLevelMap).toEqual({
-			off: null,
-			minimal: null,
-			low: null,
-			medium: null,
-			high: null,
-			xhigh: "xhigh",
-			max: "max",
-		});
+		expect(models[0]?.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
 	});
 
 	it("injects Moonshot/Kimi openai-completions compat for CPA and Sub2API gateways", () => {
@@ -328,10 +302,7 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(models[0]?.compat).toEqual(moonshotKimiOpenAICompat("kimi-k2.7-code-highspeed"));
 		expect(models[1]?.compat).toEqual(moonshotKimiOpenAICompat("k3"));
-		expect(models[1]?.thinkingLevelMap).toEqual({
-			...MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP,
-			xhigh: "xhigh",
-		});
+		expect(models[1]?.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
 		expect(models[2]?.compat).toEqual(moonshotKimiOpenAICompat("moonshot/kimi-k2.5"));
 		expect(models[3]?.compat).toBeUndefined();
 	});
@@ -387,7 +358,7 @@ describe("mapCompatModelsPayload", () => {
 		applyMoonshotKimiCompatModel(cached);
 
 		expect(cached.compat).toEqual(moonshotKimiOpenAICompat("k3"));
-		expect(cached.thinkingLevelMap).toEqual({ off: "cached-off", max: "cached-max", xhigh: "xhigh" });
+		expect(cached.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
 		expect(isMoonshotKimiK3Model("k3")).toBe(true);
 	});
 

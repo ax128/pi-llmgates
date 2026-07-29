@@ -27,11 +27,10 @@ import {
 	openAIResponsesApi,
 } from "@earendil-works/pi-ai/compat";
 import {
-	applyOptimisticExtendedThinkingToModel,
+	applyUniversalThinkingLevelMapToModel,
 	applyGatewayModelCosts,
 	applyInferenceBaseUrlToModel,
 	DEFAULT_BASE_URL,
-	extractReasoningEfforts,
 	isOfflineMode,
 	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
@@ -172,7 +171,6 @@ function mapGatewayPayload(
 ): Model<Api>[] {
 	const mapped: PiProviderModel[] = [];
 	const vendorById = new Map<string, string>();
-	const gatewayThinkingIds = new Set<string>();
 	const seen = new Set<string>();
 	for (const item of gatewayModels) {
 		const model = toPiModel(item, endpointOverride);
@@ -182,12 +180,11 @@ function mapGatewayPayload(
 		mapped.push(model);
 		const vendor = (item.provider_id ?? "").trim().toLowerCase();
 		if (vendor) vendorById.set(model.id, vendor);
-		if (extractReasoningEfforts(item).length > 0) gatewayThinkingIds.add(model.id);
 	}
 	// LLMGates baseUrl is not moonshot.*; without explicit compat, pi-ai sends
 	// developer role for reasoning models → Moonshot "tokenization failed".
 	return providerModelsToStoredModels(providerId, mapped, inferenceBaseUrl).map((model) =>
-		applyMoonshotKimiCompatModel(model, vendorById.get(model.id), !gatewayThinkingIds.has(model.id)),
+		applyMoonshotKimiCompatModel(model, vendorById.get(model.id)),
 	);
 }
 
@@ -316,16 +313,15 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	}
 
 	/**
-	 * Patch a cache-restored model in place. The optimistic overlay is applied to
-	 * EVERY model with no exceptions — including Kimi ids and models routed to
-	 * `anthropic-messages`, which `applyMoonshotKimiCompatModel` returns early for.
+	 * Patch a cache-restored model in place. Universal thinking levels apply to
+	 * every model with no exceptions.
 	 */
 	function patchCachedModel(model: Model<Api>, inferenceBaseUrl?: string): void {
 		if (inferenceBaseUrl) {
 			applyInferenceBaseUrlToModel(model, inferenceBaseUrl);
 		}
 		applyMoonshotKimiCompatModel(model);
-		applyOptimisticExtendedThinkingToModel(model);
+		applyUniversalThinkingLevelMapToModel(model);
 	}
 
 	function restoreFromStoreEntry(
