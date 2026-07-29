@@ -328,7 +328,10 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(models[0]?.compat).toEqual(moonshotKimiOpenAICompat("kimi-k2.7-code-highspeed"));
 		expect(models[1]?.compat).toEqual(moonshotKimiOpenAICompat("k3"));
-		expect(models[1]?.thinkingLevelMap).toEqual({ ...MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP });
+		expect(models[1]?.thinkingLevelMap).toEqual({
+			...MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP,
+			xhigh: "xhigh",
+		});
 		expect(models[2]?.compat).toEqual(moonshotKimiOpenAICompat("moonshot/kimi-k2.5"));
 		expect(models[3]?.compat).toBeUndefined();
 	});

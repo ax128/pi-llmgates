@@ -141,10 +141,9 @@ PR #20 adds an optimistic overlay for extended thinking levels and a catalog rel
 
 After the existing resolution chain produces a `thinkingLevelMap`, apply a final overlay:
 
-- Enable `xhigh` and `max` when each key is **missing** or explicitly **`null`**.
+- Enable `xhigh` and `max` when each key is **missing** or explicitly **`null`** — **all models**, including Kimi K3 transport fallback; no exceptions.
 - **Preserve** existing non-null effort strings (including cached remaps such as `max: "high"`).
 - **Do not change** the resolved `reasoning` boolean; exact built-in `reasoning: false` stays false even when extended keys are added.
-- **Exception:** Kimi K3 transport fallback (`MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP`) is authoritative and receives **no** overlay — its explicit `xhigh: null` remains disabled.
 
 The overlay runs on live catalog mapping and on in-memory cache restore (patch only missing/null extended keys; do not rewrite stored effort strings on disk until the next successful refresh).
 

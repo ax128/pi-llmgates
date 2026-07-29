@@ -286,7 +286,7 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
 3. **静态规则**：网关未上报时，Google / xAI / DeepSeek 使用内置 family 规则（`off` / `low` / `medium` / `high` / `xhigh` / `max`）；现有 Kimi K3 transport compat 也只在无网关 levels 时补其固定 map（覆盖上述静态结果）。
 4. **兜底**：其余未知模型启用 `off`（发送 `none`）/ `low` / `medium` / `high` / `xhigh` / `max`；2API（CPA 等）未上报 levels 的模型同样走此兜底。
 
-除 **Kimi K3 transport fallback**（固定 map 含 `xhigh: null`，不再叠加乐观层）外，其余路径均补齐 `xhigh` / `max`。**`reasoning` 标志不被乐观层改写**——精确 metadata 的 `reasoning: false` 保持 false，即使 map 上新增了扩展档。精确 metadata 的稀疏语义对其余 key 仍成立：缺失 key 仍缺失，显式 `null` 仍禁用（K3 的 `xhigh: null` 亦同）。适用的 Anthropic metadata 还会保留 `forceAdaptiveThinking`，由 adapter 使用 adaptive thinking 与 `output_config.effort`；明确不支持 temperature 的模型也不会发送该参数。endpoint override 先决定最终 `api`；跨 OpenAI / Anthropic family 时不会套用不兼容的精确 metadata。
+**所有模型**（含 Kimi K3 transport fallback 与磁盘缓存恢复）在最终 map 上均补齐缺失/`null` 的 `xhigh` / `max`，无例外。**`reasoning` 标志不被乐观层改写**——精确 metadata 的 `reasoning: false` 保持 false，即使 map 上新增了扩展档。精确 metadata 的稀疏语义对其余 key 仍成立：缺失 key 仍缺失；`xhigh` / `max` 若为 `null` 或缺失则乐观启用。适用的 Anthropic metadata 还会保留 `forceAdaptiveThinking`，由 adapter 使用 adaptive thinking 与 `output_config.effort`；明确不支持 temperature 的模型也不会发送该参数。endpoint override 先决定最终 `api`；跨 OpenAI / Anthropic family 时不会套用不兼容的精确 metadata。
 
 新档位或 policy 变更后需刷新 catalog 才会写入缓存（推荐 `/llmgates-reload`）；`/reload` 只重载扩展代码。启动时旧缓存也会在内存中补齐缺失/`null` 的 `xhigh` / `max`（不覆盖已有 effort 字符串），但完整重映射仍需一次成功的联网 refresh。
 
