@@ -368,7 +368,9 @@ export function mergeOutcomes(
 	if (ok.length === outcomes.length) {
 		return [
 			`${describeChoice(choice)} for ${total} model(s).${
-				choice === "auto" ? "" : " If the upstream does not support it, /endpoint chat <model-id> restores the old behavior."
+				choice === "auto"
+					? ""
+					: " If the upstream does not support it, run /endpoint-setting again and choose auto (core models may also use /endpoint auto <model-id>)."
 			}${notes}`,
 			"info",
 		];
