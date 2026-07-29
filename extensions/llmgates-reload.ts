@@ -75,6 +75,14 @@ export function mergeCatalogReloadOutcomes(outcomes: readonly CatalogReloadOutco
 		}
 		return `${outcome.label}: ${outcome.detail ?? "refresh failed"}`;
 	});
+	// "partial" would misdescribe a run where nothing was updated at all (e.g. every
+	// provider is offline). Only claim partial success when at least one refreshed.
+	if (ok.length === 0) {
+		return {
+			message: `Catalog refresh did not update any provider:\n${lines.join("\n")}`,
+			level: "warning",
+		};
+	}
 	return { message: `Catalog refresh was partial:\n${lines.join("\n")}`, level: "warning" };
 }
 
@@ -135,7 +143,12 @@ export async function runCatalogReloadCommand(
 			: undefined;
 		if (current && currentOutcome) {
 			const updated = ctx.find(current.provider, current.id);
-			if (updated) {
+			if (!updated) {
+				// The model vanished from the refreshed catalog, so the session is still
+				// bound to a stale Model object. Match /endpoint-setting and say so.
+				rebindWarning =
+					"Catalog refreshed, but the current model is no longer in the catalog; use /model to reselect it.";
+			} else {
 				try {
 					if (!(await ctx.setModel(updated))) {
 						rebindWarning =

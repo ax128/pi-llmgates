@@ -40,6 +40,9 @@
 | `extensions/index.ts` | LLMGates 主 Provider 注册与会话生命周期 |
 | `extensions/provider.ts` | native Provider：登录、模型目录、推理委托 |
 | `extensions/connection.ts` | 连接解析、凭证优先级、`llmgates/config.json` |
+| `extensions/endpoint.ts` | `/endpoint` 单模型出口切换与共享 in-flight 锁 |
+| `extensions/endpoint-setting.ts` | `/endpoint-setting` 跨 provider 批量出口选择器 |
+| `extensions/llmgates-reload.ts` | `/llmgates-reload` 强制刷新 core 与 2API catalog |
 | `extensions/compat/` | 2API 多网关兼容层（`/login llmgates-2api`、`/2api`） |
 | `extensions/tps.ts` | TUI 统计与 `/calls` 命令 |
 | `extensions/tps-subagent.ts` | 子代理用量解析（tool / meta / async event） |

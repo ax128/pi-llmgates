@@ -53,7 +53,7 @@ import {
 	formatLoginValidationFailure,
 	translateLoginError,
 } from "../login-ui.js";
-import { applyMoonshotKimiCompatModel, compatModelsUrl, isMoonshotKimiCompatModel, mapCompatModelsPayload } from "./catalog.js";
+import { applyMoonshotKimiCompatModel, compatModelsUrl, mapCompatModelsPayload } from "./catalog.js";
 // Type-only import of the shared tri-state refresh result. This is a pure type
 // and carries no path or file access, so it does not weaken the scope isolation
 // enforced by the override-path scan.
@@ -464,12 +464,15 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		}
 	}
 
+	/**
+	 * The optimistic overlay is applied to EVERY cached model with no exceptions —
+	 * including Kimi ids and models routed to `anthropic-messages`, which
+	 * `applyMoonshotKimiCompatModel` returns early for.
+	 */
 	function patchCachedModels(cachedModels: readonly Model<Api>[]): void {
 		for (const model of cachedModels) {
 			applyMoonshotKimiCompatModel(model);
-			if (!isMoonshotKimiCompatModel(model.id)) {
-				applyOptimisticExtendedThinkingToModel(model);
-			}
+			applyOptimisticExtendedThinkingToModel(model);
 			const cost = lookupMemoryPricingRates(model.id);
 			if (cost) model.cost = cost;
 			const contextWindow = lookupMemoryContextWindow(model.id);

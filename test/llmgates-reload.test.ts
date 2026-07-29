@@ -70,6 +70,16 @@ describe("mergeCatalogReloadOutcomes", () => {
 		expect(result.message).toContain("partial");
 		expect(result.message).toContain("offline mode");
 	});
+
+	it("does not call a zero-success run partial", () => {
+		const result = mergeCatalogReloadOutcomes([
+			{ providerId: CORE, label: "core", status: "partial", detail: "offline mode" },
+			{ providerId: TWO_API, label: "2API/cpa", status: "failed", detail: "boom" },
+		]);
+		expect(result.level).toBe("warning");
+		expect(result.message).not.toContain("partial");
+		expect(result.message).toContain("did not update any provider");
+	});
 });
 
 describe("runCatalogReloadCommand", () => {
@@ -108,7 +118,7 @@ describe("runCatalogReloadCommand", () => {
 		expect(notifications[0]?.message).toContain("already running");
 	});
 
-	it("reports offline refresh as partial", async () => {
+	it("does not claim partial success when no provider was updated", async () => {
 		releaseEndpointInFlight();
 		const { ctx, notifications } = makeCtx();
 		await runCatalogReloadCommand(
@@ -123,8 +133,32 @@ describe("runCatalogReloadCommand", () => {
 		);
 		expect(notifications.at(-1)).toEqual({
 			level: "warning",
-			message: "Catalog refresh was partial:\ncore: offline mode",
+			message: "Catalog refresh did not update any provider:\ncore: offline mode",
 		});
+	});
+
+	it("warns when the current model is gone from the refreshed catalog", async () => {
+		releaseEndpointInFlight();
+		const { ctx, notifications, setModel } = makeCtx({
+			current: model("retired-model", CORE),
+			// The refresh succeeded but dropped this id from the catalog.
+			findImpl: () => undefined,
+		});
+
+		await runCatalogReloadCommand(
+			() => [
+				{
+					providerId: CORE,
+					label: "core",
+					refreshEndpointForeground: async () => okRefresh([model("other", CORE)]),
+				},
+			],
+			ctx,
+		);
+
+		expect(setModel).not.toHaveBeenCalled();
+		expect(notifications.at(-1)?.level).toBe("warning");
+		expect(notifications.at(-1)?.message).toMatch(/no longer in the catalog/i);
 	});
 });
 

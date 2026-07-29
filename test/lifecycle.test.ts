@@ -145,6 +145,104 @@ describe("lifecycle", () => {
 		}
 	});
 
+	it("applies the optimistic xhigh/max overlay to every cache-restored core model", async () => {
+		const server = await startLoopbackServer([
+			{
+				path: "/v1/models?client_version=pi",
+				status: 200,
+				body: "[]",
+			},
+		]);
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_API_KEY = "k";
+			process.env.LLMGATES_BASE_URL = `${server.baseUrl}/v1`;
+			process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+			const base = {
+				provider: "llmgates",
+				baseUrl: `${server.baseUrl}/v1`,
+				reasoning: true,
+				input: ["text" as const],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1,
+				maxTokens: 1,
+			};
+			// A Kimi id routed to anthropic-messages is exactly the case
+			// applyMoonshotKimiCompatModel returns early for, so the overlay must not be
+			// gated behind an isMoonshotKimiCompatModel check.
+			const store = createMemoryStore({
+				models: [
+					{
+						...base,
+						id: "k3",
+						name: "k3",
+						api: "anthropic-messages" as const,
+						thinkingLevelMap: { off: null, low: "cached-low", xhigh: null },
+					},
+					{
+						...base,
+						id: "kimi-k2.5",
+						name: "kimi-k2.5",
+						api: "openai-completions" as const,
+						thinkingLevelMap: { off: "none", max: "cached-max" },
+					},
+					{
+						...base,
+						id: "gpt-5.6-sol",
+						name: "gpt-5.6-sol",
+						api: "openai-completions" as const,
+						thinkingLevelMap: { off: "none" },
+					},
+				],
+				checkedAt: 1_000,
+			});
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+				now: () => 1_000,
+			});
+
+			await provider.refreshModels!({
+				store,
+				allowNetwork: false,
+				credential: {
+					type: "api_key" as const,
+					key: "k",
+					env: {
+						LLMGATES_RESOLVED_BASE_URL: `${server.baseUrl}/v1`,
+						LLMGATES_RESOLVED_SOURCE: "env",
+					},
+				},
+			});
+
+			const byId = new Map(provider.getModels().map((entry) => [entry.id, entry]));
+			expect(byId.get("k3")?.thinkingLevelMap).toEqual({
+				off: null,
+				low: "cached-low",
+				xhigh: "xhigh",
+				max: "max",
+			});
+			// A messages-routed Kimi model still must not receive OpenAI-shaped compat.
+			expect(byId.get("k3")?.compat).toBeUndefined();
+			expect(byId.get("kimi-k2.5")?.thinkingLevelMap).toEqual({
+				off: "none",
+				max: "cached-max",
+				xhigh: "xhigh",
+			});
+			expect(byId.get("gpt-5.6-sol")?.thinkingLevelMap).toEqual({
+				off: "none",
+				xhigh: "xhigh",
+				max: "max",
+			});
+			// The overlay is in-memory only; nothing is rewritten to disk.
+			expect(store.writes).toHaveLength(0);
+		} finally {
+			cleanup();
+			await server.close();
+		}
+	});
+
 	it("keeps cached metadata through skips and failures, then adopts it after a successful core refresh", async () => {
 		let hits = 0;
 		const catalog = JSON.stringify([
