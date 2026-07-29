@@ -279,24 +279,24 @@ pi
 
 ### 思考等级（reasoning effort）
 
-pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展按以下顺序解析，并在最终 map 上对 **`xhigh` / `max` 做乐观补齐**（缺失或 `null` 时启用；已有非 null effort 字符串如缓存 remap 则保留）：
+本插件对 **所有** `/model` 可选模型（core LLMGates 与 2API）使用同一套固定档位，并 **原样透传** 给上游，不做 remap、不读网关 `supported_reasoning_levels`、不用 pi-ai 内置稀疏 map：
 
-1. **运行时 pi-ai 的 OpenAI / Anthropic 精确 metadata**：`provider_id`、模型 ID 和最终 `api` family 都匹配时，直接采用当前运行时 pi-ai catalog 的 `reasoning` 与 `thinkingLevelMap`。
-2. **网关**：没有适用的精确 metadata、但网关上报了非空 `supported_reasoning_levels` 时，原样采用网关值。
-3. **静态规则**：网关未上报时，Google / xAI / DeepSeek 使用内置 family 规则（`off` / `low` / `medium` / `high` / `xhigh` / `max`）；现有 Kimi K3 transport compat 也只在无网关 levels 时补其固定 map（覆盖上述静态结果）。
-4. **兜底**：其余未知模型启用 `off`（发送 `none`）/ `low` / `medium` / `high` / `xhigh` / `max`；2API（CPA 等）未上报 levels 的模型同样走此兜底。
+| pi 档位 | 发送给上游的 effort |
+| --- | --- |
+| `off` | `none` |
+| `low` | `low` |
+| `medium` | `medium` |
+| `high` | `high` |
+| `xhigh` | `xhigh` |
+| `max` | `max` |
 
-**所有模型**（含 Kimi K3 transport fallback 与磁盘缓存恢复）在最终 map 上均补齐缺失/`null` 的 `xhigh` / `max`，无例外。**`reasoning` 标志不被乐观层改写**——精确 metadata 的 `reasoning: false` 保持 false，即使 map 上新增了扩展档。精确 metadata 的稀疏语义对其余 key 仍成立：缺失 key 仍缺失；`xhigh` / `max` 若为 `null` 或缺失则乐观启用。适用的 Anthropic metadata 还会保留 `forceAdaptiveThinking`，由 adapter 使用 adaptive thinking 与 `output_config.effort`；明确不支持 temperature 的模型也不会发送该参数。endpoint override 先决定最终 `api`；跨 OpenAI / Anthropic family 时不会套用不兼容的精确 metadata。
+`minimal` 不在 universal map 里（`null` 禁用）——LLMGates 上绝大多数模型（含 Claude）没有这一档；若个别 OpenAI 模型需要，用下方 `modelOverrides` 单独打开。
 
-新档位或 policy 变更后需刷新 catalog 才会写入缓存（推荐 `/llmgates-reload`）；`/reload` 只重载扩展代码。启动时旧缓存也会在内存中补齐缺失/`null` 的 `xhigh` / `max`（不覆盖已有 effort 字符串），但完整重映射仍需一次成功的联网 refresh。
+所有模型 `reasoning: true`，选择器始终暴露上述档位。上游不支持某档或返回 400 时由用户自行降档或换模型；插件不代为 clamp / 映射。
 
-**乐观补齐是「暴露档位」，不是「保证生效」**，选到 `xhigh` / `max` 后实际行为分三种：
+仍会从 pi-ai 精确 metadata 继承 **传输层 compat**（如 Anthropic `forceAdaptiveThinking`、`supportsTemperature: false`），这只影响请求形状，不改变 effort 字符串。
 
-- **原样透传**：OpenAI 形状 API 把所选档位写入 `reasoning_effort`；上游不认该枚举值时可能返回 400，降档即可。
-- **静默按 `high` 处理**：Anthropic budget-based 思考模型（未标记 `forceAdaptiveThinking`，如 `claude-sonnet-4-5` / `claude-opus-4-5` / `claude-haiku-4-5`）由 pi-ai 把 `xhigh` / `max` clamp 成 `high` 再换算 thinking budget——**不报错，但与 `high` 等价**。
-- **真实扩展档**：Anthropic adaptive thinking 模型（`forceAdaptiveThinking`）通过 `output_config.effort` 发送，`max` 全系可用，原生 `xhigh` 仅部分模型支持。
-
-若想对具体模型关掉这两档，用下方 `modelOverrides` 写 `"xhigh": null` / `"max": null`。
+磁盘缓存恢复时也会重写为上述 universal map（不保留旧缓存里的 remap）。`/llmgates-reload` 可强制刷新 catalog。
 
 **用户级微调（pi 原生钩子）**：在 `~/.pi/agent/models.json` 用 `providers.<实际 providerId>.modelOverrides` 覆盖单个模型的思考等级（默认 provider ID 为 `llmgates`；最顶层，合并语义，只覆盖你写的 key）：
 
@@ -305,8 +305,7 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
   "providers": {
     "llmgates": {
       "modelOverrides": {
-        "claude-opus-4-7": { "thinkingLevelMap": { "max": "xhigh" } },
-        "gpt-5.6-sol":      { "thinkingLevelMap": { "xhigh": null, "max": null } }
+        "gpt-5.6-sol": { "thinkingLevelMap": { "xhigh": null, "max": null } }
       }
     }
   }

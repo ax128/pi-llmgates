@@ -1,10 +1,9 @@
 import type { Api, Model, OpenAICompletionsCompat } from "@earendil-works/pi-ai";
 import {
-	applyOptimisticExtendedThinkingToModel,
+	applyUniversalThinkingLevelMapToModel,
 	buildInputModalities,
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_MAX_TOKENS,
-	extractReasoningEfforts,
 	inferenceBaseUrlForApi,
 	parseGatewayModelsPayload,
 	resolveThinkingMetadata,
@@ -31,7 +30,7 @@ const MOONSHOT_KIMI_VENDOR_IDS = new Set([
 	"kimi-coding-cn",
 ]);
 
-/** Matches pi-ai moonshotai/kimi-k3 metadata. */
+/** @deprecated Kimi-specific thinking maps are no longer used; kept for test imports only. */
 export const MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP = {
 	off: null,
 	minimal: null,
@@ -115,21 +114,16 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
 export function applyMoonshotKimiCompatModel<T extends Model<Api>>(
 	model: T,
 	vendor?: string,
-	applyK3ThinkingFallback = false,
 ): T {
 	if (model.api === "anthropic-messages") {
-		return model;
+		return applyUniversalThinkingLevelMapToModel(model);
 	}
 	if (!isMoonshotKimiCompatModel(model.id, vendor)) {
 		return model;
 	}
 
 	model.compat = moonshotKimiOpenAICompat(model.id);
-	if (applyK3ThinkingFallback && isMoonshotKimiK3Model(model.id)) {
-		model.thinkingLevelMap = { ...MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP };
-	}
-
-	return applyOptimisticExtendedThinkingToModel(model);
+	return applyUniversalThinkingLevelMapToModel(model);
 }
 
 function positiveNumber(value: unknown): number | undefined {
@@ -184,8 +178,7 @@ export function mapCompatModelsPayload(
 		// `messages` and change behavior for users who configured no override at all.
 		const endpoint = options.endpointOverride?.(id) ?? "chat_completions";
 		const api = toPiApiType(endpoint, vendor ?? "");
-		const gatewayEfforts = extractReasoningEfforts(upstream);
-		const thinking = resolveThinkingMetadata(id, vendor, api, gatewayEfforts);
+		const thinking = resolveThinkingMetadata(id, vendor, api);
 
 		const displayName =
 			(typeof upstream.display_name === "string" && upstream.display_name.trim()) ||
@@ -204,7 +197,7 @@ export function mapCompatModelsPayload(
 			maxTokens,
 			thinkingLevelMap: thinking.thinkingLevelMap,
 		};
-		models.push(applyMoonshotKimiCompatModel(model, vendor, gatewayEfforts.length === 0));
+		models.push(applyMoonshotKimiCompatModel(model, vendor));
 		catalogRefs.push(
 			vendor && KNOWN_UPSTREAM_VENDOR_IDS.has(vendor)
 				? { id, providerId: vendor }

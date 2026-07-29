@@ -145,7 +145,7 @@ describe("lifecycle", () => {
 		}
 	});
 
-	it("applies the optimistic xhigh/max overlay to every cache-restored core model", async () => {
+	it("applies the universal thinking map to every cache-restored core model", async () => {
 		const server = await startLoopbackServer([
 			{
 				path: "/v1/models?client_version=pi",
@@ -217,24 +217,20 @@ describe("lifecycle", () => {
 			});
 
 			const byId = new Map(provider.getModels().map((entry) => [entry.id, entry]));
-			expect(byId.get("k3")?.thinkingLevelMap).toEqual({
-				off: null,
-				low: "cached-low",
+			const universal = {
+				off: "none",
+				minimal: null,
+				low: "low",
+				medium: "medium",
+				high: "high",
 				xhigh: "xhigh",
 				max: "max",
-			});
+			};
+			expect(byId.get("k3")?.thinkingLevelMap).toEqual(universal);
 			// A messages-routed Kimi model still must not receive OpenAI-shaped compat.
 			expect(byId.get("k3")?.compat).toBeUndefined();
-			expect(byId.get("kimi-k2.5")?.thinkingLevelMap).toEqual({
-				off: "none",
-				max: "cached-max",
-				xhigh: "xhigh",
-			});
-			expect(byId.get("gpt-5.6-sol")?.thinkingLevelMap).toEqual({
-				off: "none",
-				xhigh: "xhigh",
-				max: "max",
-			});
+			expect(byId.get("kimi-k2.5")?.thinkingLevelMap).toEqual(universal);
+			expect(byId.get("gpt-5.6-sol")?.thinkingLevelMap).toEqual(universal);
 			// The overlay is in-memory only; nothing is rewritten to disk.
 			expect(store.writes).toHaveLength(0);
 		} finally {
@@ -357,12 +353,28 @@ describe("lifecycle", () => {
 			await provider.refreshModels!({ store, allowNetwork: true, force: true, credential });
 			expect(provider.getModels()[0]).toMatchObject({
 				api: "openai-responses",
-				thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+				thinkingLevelMap: {
+					off: "none",
+					minimal: null,
+					low: "low",
+					medium: "medium",
+					high: "high",
+					xhigh: "xhigh",
+					max: "max",
+				},
 			});
 			expect(store.writes).toHaveLength(1);
 			expect(store.writes[0]?.models[0]).toMatchObject({
 				api: "openai-responses",
-				thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+				thinkingLevelMap: {
+					off: "none",
+					minimal: null,
+					low: "low",
+					medium: "medium",
+					high: "high",
+					xhigh: "xhigh",
+					max: "max",
+				},
 			});
 		} finally {
 			cleanup();

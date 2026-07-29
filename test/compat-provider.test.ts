@@ -390,7 +390,7 @@ describe("compat instance provider", () => {
 		}
 	});
 
-	it("applies the optimistic xhigh/max overlay to every cache-restored model", async () => {
+	it("applies the universal thinking map to every cache-restored model", async () => {
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		process.env.PI_OFFLINE = "1";
 		const { agentDir, cleanup } = withTempAgentDir();
@@ -434,24 +434,20 @@ describe("compat instance provider", () => {
 			});
 
 			const byId = new Map(provider.getModels().map((entry) => [entry.id, entry]));
-			expect(byId.get("k3")?.thinkingLevelMap).toEqual({
-				off: null,
-				low: "cached-low",
+			const universal = {
+				off: "none",
+				minimal: null,
+				low: "low",
+				medium: "medium",
+				high: "high",
 				xhigh: "xhigh",
 				max: "max",
-			});
+			};
+			expect(byId.get("k3")?.thinkingLevelMap).toEqual(universal);
 			// A messages-routed Kimi model still must not receive OpenAI-shaped compat.
 			expect(byId.get("k3")?.compat).toBeUndefined();
-			expect(byId.get("kimi-k2.5")?.thinkingLevelMap).toEqual({
-				off: "none",
-				max: "cached-max",
-				xhigh: "xhigh",
-			});
-			expect(byId.get("plain-model")?.thinkingLevelMap).toEqual({
-				off: "none",
-				xhigh: "xhigh",
-				max: "max",
-			});
+			expect(byId.get("kimi-k2.5")?.thinkingLevelMap).toEqual(universal);
+			expect(byId.get("plain-model")?.thinkingLevelMap).toEqual(universal);
 		} finally {
 			cleanup();
 		}

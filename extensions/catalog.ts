@@ -23,16 +23,16 @@ export const USER_AGENT = `pi-llmgates-provider/${PACKAGE_VERSION}`;
 export const DEFAULT_MAX_TOKENS = 16384;
 export const DEFAULT_CONTEXT_WINDOW = 128000;
 
-const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-/** Shared effort list for Google/xAI/DeepSeek static rules and the final fallback (exact metadata bypasses this). */
-export const DEFAULT_THINKING_EFFORTS = [
-	"none",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-] as const;
+/** Fixed thinking levels for every plugin model; values pass through unchanged to upstream. */
+export const UNIVERSAL_THINKING_LEVEL_MAP: ThinkingLevelMap = {
+	off: "none",
+	minimal: null,
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "xhigh",
+	max: "max",
+};
 const BUILTIN_MODELS = {
 	openai: new Map(getModels("openai").map((model) => [model.id, model])),
 	anthropic: new Map(getModels("anthropic").map((model) => [model.id, model])),
@@ -220,41 +220,18 @@ export function extractReasoningEfforts(model: GatewayModel): string[] {
 	return efforts;
 }
 
-/** Static reasoning data not covered by the reused OpenAI/Anthropic catalogs. */
-export interface ModelThinkingRule {
-	label: string;
-	pattern: RegExp;
-	provider: string;
-	efforts: readonly string[];
-}
-
-export const MODEL_THINKING_RULES: readonly ModelThinkingRule[] = [
-	{
-		label: "Google Gemini",
-		provider: "google",
-		pattern: /^gemini-/i,
-		efforts: DEFAULT_THINKING_EFFORTS,
-	},
-	{ label: "xAI Grok", provider: "xai", pattern: /^grok-/i, efforts: DEFAULT_THINKING_EFFORTS },
-	{
-		label: "DeepSeek",
-		provider: "deepseek",
-		pattern: /^deepseek-/i,
-		efforts: DEFAULT_THINKING_EFFORTS,
-	},
-];
-
-interface ExactThinkingMetadata {
+interface ResolvedThinkingMetadata {
 	reasoning: boolean;
-	thinkingLevelMap?: ThinkingLevelMap;
+	thinkingLevelMap: ThinkingLevelMap;
 	compat?: { forceAdaptiveThinking?: true; supportsTemperature?: false };
 }
 
-function resolveExactThinkingMetadata(
+/** Transport compat from pi-ai built-ins; thinking levels are always universal. */
+function resolveExactCompat(
 	modelId: string,
 	vendor: string | undefined,
 	api: PiApiType,
-): ExactThinkingMetadata | undefined {
+): ResolvedThinkingMetadata["compat"] | undefined {
 	const provider = vendor?.trim().toLowerCase();
 	const applicable =
 		(provider === "openai" && (api === "openai-responses" || api === "openai-completions")) ||
@@ -271,96 +248,32 @@ function resolveExactThinkingMetadata(
 		...(builtinCompat?.forceAdaptiveThinking === true ? { forceAdaptiveThinking: true as const } : {}),
 		...(builtinCompat?.supportsTemperature === false ? { supportsTemperature: false as const } : {}),
 	};
-	return {
-		reasoning: builtin.reasoning,
-		thinkingLevelMap: builtin.thinkingLevelMap ? { ...builtin.thinkingLevelMap } : undefined,
-		...(Object.keys(compat).length > 0 ? { compat } : {}),
-	};
+	return Object.keys(compat).length > 0 ? compat : undefined;
 }
 
-/** Resolve non-built-in levels in source order: gateway → static data → fallback. */
-export function resolveThinkingLevels(
-	modelId: string,
-	vendor: string | undefined,
-	_api: PiApiType | undefined,
-	gatewayEfforts: readonly string[] | undefined,
-): string[] {
-	const id = modelId.trim();
-	const provider = vendor?.trim().toLowerCase();
-	if (gatewayEfforts && gatewayEfforts.length > 0) return [...gatewayEfforts];
-
-	for (const rule of MODEL_THINKING_RULES) {
-		if (rule.provider === provider && rule.pattern.test(id)) return [...rule.efforts];
-	}
-
-	return [...DEFAULT_THINKING_EFFORTS];
-}
-
-export function buildThinkingLevelMap(efforts: string[], _api?: PiApiType): ThinkingLevelMap | undefined {
-	if (efforts.length === 0) {
-		return undefined;
-	}
-
-	const supported = new Set(efforts);
-	const map: ThinkingLevelMap = {};
-
-	for (const level of PI_THINKING_LEVELS) {
-		if (level === "off") {
-			map.off = supported.has("none") ? "none" : null;
-			continue;
-		}
-		map[level] = supported.has(level) ? level : null;
-	}
-
-	return map;
-}
-
-/**
- * Expose xhigh/max in pi's selector when missing or explicitly disabled (null).
- * Preserves existing non-null effort strings (e.g. cached remaps) and does not
- * touch the model's reasoning flag — upstream incompatibility is handled at request time.
- */
-export function ensureOptimisticExtendedThinking(map: ThinkingLevelMap | undefined): ThinkingLevelMap {
-	const result: ThinkingLevelMap = { ...(map ?? {}) };
-	if (result.xhigh === undefined || result.xhigh === null) {
-		result.xhigh = "xhigh";
-	}
-	if (result.max === undefined || result.max === null) {
-		result.max = "max";
-	}
-	return result;
-}
-
-function withOptimisticExtendedThinking(metadata: ResolvedThinkingMetadata): ResolvedThinkingMetadata {
-	return {
-		...metadata,
-		thinkingLevelMap: ensureOptimisticExtendedThinking(metadata.thinkingLevelMap),
-	};
-}
-
-export function applyOptimisticExtendedThinkingToModel<
-	T extends { thinkingLevelMap?: ThinkingLevelMap },
+/** Apply the fixed pass-through thinking map to a stored or cached model. */
+export function applyUniversalThinkingLevelMapToModel<
+	T extends { reasoning?: boolean; thinkingLevelMap?: ThinkingLevelMap },
 >(model: T): T {
-	model.thinkingLevelMap = ensureOptimisticExtendedThinking(model.thinkingLevelMap);
+	model.reasoning = true;
+	model.thinkingLevelMap = { ...UNIVERSAL_THINKING_LEVEL_MAP };
 	return model;
 }
 
-export type ResolvedThinkingMetadata = ExactThinkingMetadata;
+export type { ResolvedThinkingMetadata };
 
 export function resolveThinkingMetadata(
 	modelId: string,
 	vendor: string | undefined,
 	api: PiApiType,
-	gatewayEfforts: readonly string[] | undefined,
+	_gatewayEfforts?: readonly string[] | undefined,
 ): ResolvedThinkingMetadata {
-	const exact = resolveExactThinkingMetadata(modelId, vendor, api);
-	if (exact) return withOptimisticExtendedThinking(exact);
-
-	const efforts = resolveThinkingLevels(modelId, vendor, api, gatewayEfforts);
-	return withOptimisticExtendedThinking({
-		reasoning: efforts.some((effort) => effort !== "none"),
-		thinkingLevelMap: buildThinkingLevelMap(efforts, api),
-	});
+	const compat = resolveExactCompat(modelId, vendor, api);
+	return {
+		reasoning: true,
+		thinkingLevelMap: { ...UNIVERSAL_THINKING_LEVEL_MAP },
+		...(compat ? { compat } : {}),
+	};
 }
 
 export function buildInputModalities(model: GatewayModel): Array<"text" | "image"> {
@@ -411,11 +324,10 @@ export function toPiModel(
 	}
 
 	const providerId = (model.provider_id ?? "").trim().toLowerCase();
-	const gatewayEfforts = extractReasoningEfforts(model);
 	const override = typeof endpointOverride === "function" ? endpointOverride(id) : undefined;
 	const endpoint = override ?? resolveInferenceEndpoint(model);
 	const api = toPiApiType(endpoint, providerId);
-	const thinking = resolveThinkingMetadata(id, providerId || undefined, api, gatewayEfforts);
+	const thinking = resolveThinkingMetadata(id, providerId || undefined, api);
 
 	const contextWindow =
 		(typeof model.context_window === "number" && model.context_window > 0 ? model.context_window : undefined) ??

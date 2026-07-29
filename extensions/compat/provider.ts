@@ -18,7 +18,7 @@ import {
 	openAICompletionsApi,
 	openAIResponsesApi,
 } from "@earendil-works/pi-ai/compat";
-import { applyOptimisticExtendedThinkingToModel, applyInferenceBaseUrlToModel, isOfflineMode, parseGatewayModelsPayload, storedModelBaseUrlMatches, type GatewayModel } from "../catalog.js";
+import { applyUniversalThinkingLevelMapToModel, applyInferenceBaseUrlToModel, isOfflineMode, parseGatewayModelsPayload, storedModelBaseUrlMatches, type GatewayModel } from "../catalog.js";
 import {
 	createModelOverrideLookup,
 	reloadModelOverridesFromDisk,
@@ -475,7 +475,7 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 				applyInferenceBaseUrlToModel(model, canonicalBaseUrl);
 			}
 			applyMoonshotKimiCompatModel(model);
-			applyOptimisticExtendedThinkingToModel(model);
+			applyUniversalThinkingLevelMapToModel(model);
 			const cost = lookupMemoryPricingRates(model.id);
 			if (cost) model.cost = cost;
 			const contextWindow = lookupMemoryContextWindow(model.id);
