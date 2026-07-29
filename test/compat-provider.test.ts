@@ -1055,7 +1055,16 @@ describe("two-way isolation between core and 2api endpoint overrides", () => {
 
 	it("compat modules never reference the core override path", () => {
 		const root = join(import.meta.dirname, "..", "extensions", "compat");
-		for (const file of ["index.ts", "provider.ts", "catalog.ts", "storage.ts", "types.ts"]) {
+		// Enumerated from disk, not a hardcoded list, so a newly added compat module
+		// is covered automatically instead of silently escaping the scan.
+		const files = readdirSync(root, { withFileTypes: true })
+			.filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+			.map((entry) => entry.name);
+
+		expect(files).toEqual(
+			expect.arrayContaining(["index.ts", "provider.ts", "catalog.ts", "storage.ts", "types.ts"]),
+		);
+		for (const file of files) {
 			const src = readFileSync(join(root, file), "utf8");
 			expect(src, `compat/${file} must not reference the core override path`).not.toMatch(
 				CORE_OVERRIDE_PATH,

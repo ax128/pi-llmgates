@@ -22,7 +22,12 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { CompatGatewayRegistration } from "./compat/index.js";
-import { acquireEndpointInFlight, releaseEndpointInFlight } from "./endpoint.js";
+import {
+	acquireEndpointInFlight,
+	EXPECTED_API,
+	releaseEndpointInFlight,
+	WRITE_VALUE,
+} from "./endpoint.js";
 import {
 	endpointLabelForApi,
 	parseSelectorEndpointChoice,
@@ -43,20 +48,6 @@ import {
 import type { EndpointRefreshResult, LLMGatesProvider } from "./provider.js";
 
 export const ENDPOINT_SETTING_COMMAND = "endpoint-setting";
-
-/** User choice → canonical gateway write value (`auto` is a delete). */
-const WRITE_VALUE: Record<Exclude<SelectorEndpointChoice, "auto">, "chat_completions" | "messages" | "responses"> = {
-	chat: "chat_completions",
-	messages: "messages",
-	responses: "responses",
-};
-
-/** User choice → expected final pi `api`. `auto` is derived from the refresh. */
-const EXPECTED_API: Record<Exclude<SelectorEndpointChoice, "auto">, string> = {
-	chat: "openai-completions",
-	messages: "anthropic-messages",
-	responses: "openai-responses",
-};
 
 /** One writable provider group: where to write, and how to activate the change. */
 export interface EndpointSettingTarget {

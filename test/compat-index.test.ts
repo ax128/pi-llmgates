@@ -176,6 +176,30 @@ describe("extension compat/core isolation", () => {
 		}
 	});
 
+	it("registers endpoint-setting when identity resolution fails but a 2api instance is healthy", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		agentDirState.value = agentDir;
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const runtime = createPi();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStoredCompat(agentDir);
+			// Malformed identity makes index.ts return before the core provider exists,
+			// so the selector must have been registered in the early phase or a
+			// 2API-only user could never reach it.
+			writeJson(join(agentDir, "llmgates/config.json"), { providerId: 42 });
+			registerExtension(runtime.pi);
+
+			expect([...runtime.providers.keys()]).toEqual([BOOTSTRAP_PROVIDER_ID, "gateway-a"]);
+			expect(runtime.providers.has("llmgates")).toBe(false);
+			// /endpoint stays core-only and is absent; /balance needs core identity too.
+			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "endpoint-setting"]);
+			expect(warn.mock.calls.flat().join(" ")).toMatch(/llmgates\/config\.json.*providerId/i);
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("passes the custom live llmgates id to compat instance validation as reserved", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		agentDirState.value = agentDir;

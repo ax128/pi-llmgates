@@ -26,15 +26,19 @@ export const ENDPOINT_USAGE = "Usage: /endpoint <chat|messages|responses|auto> [
 const ENDPOINT_VALUES = ["chat", "messages", "responses", "auto"] as const;
 export type EndpointValue = (typeof ENDPOINT_VALUES)[number];
 
-/** User value → canonical gateway write value (auto is a delete). */
-const WRITE_VALUE: Record<Exclude<EndpointValue, "auto">, "chat_completions" | "messages" | "responses"> = {
+/**
+ * User value → canonical gateway write value (auto is a delete). Shared with
+ * `/endpoint-setting` so a fourth endpoint can never be added to one command's
+ * table and forgotten in the other's.
+ */
+export const WRITE_VALUE: Record<Exclude<EndpointValue, "auto">, "chat_completions" | "messages" | "responses"> = {
 	chat: "chat_completions",
 	messages: "messages",
 	responses: "responses",
 };
 
 /** User value → expected final pi `api`. `auto` is derived from the refresh. */
-const EXPECTED_API: Record<Exclude<EndpointValue, "auto">, string> = {
+export const EXPECTED_API: Record<Exclude<EndpointValue, "auto">, string> = {
 	chat: "openai-completions",
 	messages: "anthropic-messages",
 	responses: "openai-responses",
