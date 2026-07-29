@@ -24,6 +24,15 @@ export const DEFAULT_MAX_TOKENS = 16384;
 export const DEFAULT_CONTEXT_WINDOW = 128000;
 
 const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+/** Default efforts when gateway/static/exact metadata do not apply. */
+export const DEFAULT_THINKING_EFFORTS = [
+	"none",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const;
 const BUILTIN_MODELS = {
 	openai: new Map(getModels("openai").map((model) => [model.id, model])),
 	anthropic: new Map(getModels("anthropic").map((model) => [model.id, model])),
@@ -220,9 +229,19 @@ export interface ModelThinkingRule {
 }
 
 export const MODEL_THINKING_RULES: readonly ModelThinkingRule[] = [
-	{ label: "Google Gemini", provider: "google", pattern: /^gemini-/i, efforts: ["none", "low", "medium", "high"] },
-	{ label: "xAI Grok", provider: "xai", pattern: /^grok-/i, efforts: ["none", "low", "medium", "high"] },
-	{ label: "DeepSeek", provider: "deepseek", pattern: /^deepseek-/i, efforts: ["none", "low", "medium", "high"] },
+	{
+		label: "Google Gemini",
+		provider: "google",
+		pattern: /^gemini-/i,
+		efforts: DEFAULT_THINKING_EFFORTS,
+	},
+	{ label: "xAI Grok", provider: "xai", pattern: /^grok-/i, efforts: DEFAULT_THINKING_EFFORTS },
+	{
+		label: "DeepSeek",
+		provider: "deepseek",
+		pattern: /^deepseek-/i,
+		efforts: DEFAULT_THINKING_EFFORTS,
+	},
 ];
 
 interface ExactThinkingMetadata {
@@ -274,7 +293,7 @@ export function resolveThinkingLevels(
 		if (rule.provider === provider && rule.pattern.test(id)) return [...rule.efforts];
 	}
 
-	return ["none", "low", "medium", "high"];
+	return [...DEFAULT_THINKING_EFFORTS];
 }
 
 export function buildThinkingLevelMap(efforts: string[], _api?: PiApiType): ThinkingLevelMap | undefined {

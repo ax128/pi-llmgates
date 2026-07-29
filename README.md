@@ -282,7 +282,7 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
 1. **运行时 pi-ai 的 OpenAI / Anthropic 精确 metadata**：`provider_id`、模型 ID 和最终 `api` family 都匹配时，直接采用当前运行时 pi-ai catalog 的 `reasoning` 与 `thinkingLevelMap`。
 2. **网关**：没有适用的精确 metadata、但网关上报了非空 `supported_reasoning_levels` 时，原样采用网关值。
 3. **静态规则**：网关未上报时，Google / xAI / DeepSeek 使用内置 family 规则；现有 Kimi K3 transport compat 也只在无网关 levels 时补其固定 map。
-4. **保守兜底**：其余未知模型只启用 `off`（发送 `none`）/ `low` / `medium` / `high`，不合成扩展档位。
+4. **兜底**：其余未知模型启用 `off`（发送 `none`）/ `low` / `medium` / `high` / `xhigh` / `max`；2API（CPA 等）未上报 levels 的模型同样走此兜底。
 
 精确 metadata 的 `thinkingLevelMap` 保持稀疏语义：缺失 key 仍缺失，显式 `null` 仍禁用，对 `xhigh` / `max` 不降级或补齐。适用的 Anthropic metadata 还会保留 `forceAdaptiveThinking`，由 adapter 使用 adaptive thinking 与 `output_config.effort`；明确不支持 temperature 的模型也不会发送该参数。endpoint override 先决定最终 `api`；跨 OpenAI / Anthropic family 时不会套用不兼容的精确 metadata。
 

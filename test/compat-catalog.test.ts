@@ -258,6 +258,24 @@ describe("mapCompatModelsPayload", () => {
 		expect(models[0]?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
 	});
 
+	it("exposes xhigh/max for CPA Claude models without gateway-reported levels", () => {
+		const { models } = mapCompatModelsPayload(
+			[{ id: "claude-opus-4-7", provider_id: "anthropic" }],
+			{ providerId: "local-cpa", inferenceBaseUrl: "http://127.0.0.1:8317/v1" },
+		);
+
+		expect(models[0]?.api).toBe("openai-completions");
+		expect(models[0]?.compat).toBeUndefined();
+		expect(models[0]?.thinkingLevelMap).toMatchObject({
+			off: "none",
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: "max",
+		});
+	});
+
 	it("preserves gateway-reported K3 levels while injecting transport compat", () => {
 		const { models } = mapCompatModelsPayload(
 			[
