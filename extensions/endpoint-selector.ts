@@ -114,27 +114,51 @@ export function renderSelectorList(snapshot: SelectorSnapshot): string {
 /** `[x] id ...` / `[X] id ...` / `[ ] id ...` — capture the checkbox state and the id. */
 const ENTRY_PATTERN = /^\[([ xX])\]\s+(\S+)(?:\s.*)?$/;
 
+/** `# ── <providerId> · <label> ──` — the group header emitted by the renderer. */
+const GROUP_HEADER_PATTERN = /^#\s*──\s*(\S+)\s*·/;
+
 /**
  * Parse the edited checklist back into a selection, resolving every checked ID
  * against `snapshot`. Unknown IDs are rejected with a reason (never ignored);
  * unparseable lines become warnings without aborting the rest.
+ *
+ * Resolution is GROUP-AWARE. The same model id can legitimately exist under two
+ * providers — a 2API relay commonly re-exports the same upstream ids that core
+ * serves — and their rendered rows are visually identical, so only the enclosing
+ * group header tells them apart. Binding such an id to whichever group happened
+ * to come first would write the override to the WRONG provider's file and leave
+ * the other provider's model permanently unreachable from the selector, all while
+ * reporting success. Each row is therefore attributed to the group header above
+ * it, and an id that is still ambiguous is rejected with an explanation rather
+ * than guessed.
  */
 export function parseSelectorList(text: string, snapshot: SelectorSnapshot): SelectorParseResult {
-	const providerById = new Map<string, string>();
+	const providersById = new Map<string, string[]>();
 	for (const group of snapshot.groups) {
 		for (const model of group.models) {
-			if (!providerById.has(model.id)) providerById.set(model.id, group.providerId);
+			const providers = providersById.get(model.id);
+			if (!providers) providersById.set(model.id, [group.providerId]);
+			else if (!providers.includes(group.providerId)) providers.push(group.providerId);
 		}
 	}
+	const knownProviders = new Set(snapshot.groups.map((group) => group.providerId));
 
 	const selected: SelectorSelection[] = [];
 	const rejected: string[] = [];
 	const warnings: string[] = [];
 	const seen = new Set<string>();
+	// Which group's rows we are currently inside. Reset by any other comment line
+	// (the unmanaged summary) so rows can never inherit a stale group.
+	let currentProvider: string | undefined;
 
 	for (const raw of text.split(/\r?\n/)) {
 		const line = raw.trim();
-		if (!line || line.startsWith("#")) continue;
+		if (!line) continue;
+		if (line.startsWith("#")) {
+			const header = GROUP_HEADER_PATTERN.exec(line)?.[1];
+			currentProvider = header && knownProviders.has(header) ? header : undefined;
+			continue;
+		}
 
 		const match = ENTRY_PATTERN.exec(line);
 		if (!match) {
@@ -144,13 +168,29 @@ export function parseSelectorList(text: string, snapshot: SelectorSnapshot): Sel
 		if (match[1] === " ") continue;
 
 		const modelId = match[2]!;
-		const providerId = providerById.get(modelId);
-		if (!providerId) {
+		const candidates = providersById.get(modelId);
+		if (!candidates) {
 			rejected.push(`${modelId}（不在本扩展管辖的模型集合内，无 api 写入通道）`);
 			continue;
 		}
-		if (seen.has(modelId)) continue;
-		seen.add(modelId);
+
+		const providerId =
+			currentProvider && candidates.includes(currentProvider)
+				? currentProvider
+				: candidates.length === 1
+					? candidates[0]!
+					: undefined;
+		if (!providerId) {
+			rejected.push(
+				`${modelId}（同时存在于 ${candidates.join(" / ")}，无法判断目标；请保留分组标题行，或用 /endpoint 精确指定）`,
+			);
+			continue;
+		}
+
+		// Keyed by provider as well: the same id under two providers is two targets.
+		const key = `${providerId}\u0000${modelId}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
 		selected.push({ modelId, providerId });
 	}
 

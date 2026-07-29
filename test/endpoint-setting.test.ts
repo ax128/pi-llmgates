@@ -355,19 +355,65 @@ describe("/endpoint-setting batch write", () => {
 					{ providerId: TWO_API, scope: { kind: "2api", instanceId: TWO_API } },
 				],
 				registry: [
-					model("shared", "anthropic-messages"),
-					model("shared", "anthropic-messages", TWO_API),
+					model("c1", "anthropic-messages"),
+					model("p1", "anthropic-messages", TWO_API),
 				],
-				editor: "[x] shared",
+				editor: "[x] c1\n[x] p1",
 				select: "messages   → anthropic-messages",
 			});
 
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
-			// The id appears in both providers; the snapshot binds it to the first,
-			// so only the core file may be written.
+			expect(readModelOverridesFile(dir)?.models).toEqual({ c1: { endpoint: "messages" } });
+			expect(
+				readModelOverridesFile(dir, { kind: "2api", instanceId: TWO_API })?.models,
+			).toEqual({ p1: { endpoint: "messages" } });
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("routes a model id shared by two providers to each provider's own file", async () => {
+		const { dir, cleanup } = tempDir();
+		try {
+			let prefill = "";
+			const h = harness({
+				agentDir: dir,
+				targets: [
+					{ providerId: CORE, label: "core", scope: { kind: "core" } },
+					{ providerId: TWO_API, label: "2API/cpa", scope: { kind: "2api", instanceId: TWO_API } },
+				],
+				// A 2API relay re-exporting the same upstream id core already serves: the
+				// two rendered rows are visually identical, so only the group header can
+				// disambiguate them. Both must be reachable and land in separate files.
+				registry: [
+					model("shared", "anthropic-messages"),
+					model("shared", "anthropic-messages", TWO_API),
+				],
+				initialRegistry: [
+					model("shared", "openai-completions"),
+					model("shared", "openai-completions", TWO_API),
+				],
+				editor: () => Promise.resolve(checkAll(prefill)),
+				select: "messages   → anthropic-messages",
+			});
+			const originalEditor = h.ctx.editor;
+			h.ctx.editor = async (title, text) => {
+				prefill = text;
+				return originalEditor(title, text);
+			};
+
+			await runEndpointSettingCommand(h.runtime, h.ctx);
+
+			expect(h.notifications[0]?.level).toBe("info");
+			expect(h.writeCalls.map((call) => call.scope)).toEqual([
+				{ kind: "core" },
+				{ kind: "2api", instanceId: TWO_API },
+			]);
 			expect(readModelOverridesFile(dir)?.models?.shared?.endpoint).toBe("messages");
-			expect(readModelOverridesFile(dir, { kind: "2api", instanceId: TWO_API })).toBeNull();
+			expect(
+				readModelOverridesFile(dir, { kind: "2api", instanceId: TWO_API })?.models?.shared?.endpoint,
+			).toBe("messages");
 		} finally {
 			cleanup();
 		}

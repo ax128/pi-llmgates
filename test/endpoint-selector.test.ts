@@ -149,6 +149,79 @@ describe("parseSelectorList", () => {
 	it("treats an emptied buffer as zero selections", () => {
 		expect(parseSelectorList("", snapshot()).selected).toEqual([]);
 	});
+
+	describe("a model id present under two providers", () => {
+		/** `shared` exists in both groups; its two rendered rows look identical. */
+		function collidingSnapshot(): SelectorSnapshot {
+			return {
+				groups: [
+					{
+						providerId: "llmgates",
+						label: "core",
+						models: [{ id: "shared", name: "Shared", endpoint: "chat", hasOverride: false }],
+					},
+					{
+						providerId: "cpa",
+						label: "2API/cpa",
+						models: [{ id: "shared", name: "Shared", endpoint: "chat", hasOverride: false }],
+					},
+				],
+				unmanaged: { total: 0, byProvider: [] },
+			};
+		}
+
+		it("round-trips both rows to their own provider when checked in place", () => {
+			const snap = collidingSnapshot();
+			const checked = renderSelectorList(snap).replace(/^\[ ]/gm, "[x]");
+
+			// Both are reachable, and neither is silently retargeted at the other.
+			expect(parseSelectorList(checked, snap).selected).toEqual([
+				{ modelId: "shared", providerId: "llmgates" },
+				{ modelId: "shared", providerId: "cpa" },
+			]);
+		});
+
+		it("attributes a row to the group header above it, not to the first group", () => {
+			const snap = collidingSnapshot();
+			const result = parseSelectorList("# ── cpa · 2API/cpa ──\n[x] shared  Shared  chat", snap);
+
+			expect(result.selected).toEqual([{ modelId: "shared", providerId: "cpa" }]);
+			expect(result.rejected).toEqual([]);
+		});
+
+		it("rejects the row with an explanation when its group header was deleted", () => {
+			const snap = collidingSnapshot();
+			const result = parseSelectorList("[x] shared  Shared  chat", snap);
+
+			// Guessing here would write to the wrong provider's file and report success.
+			expect(result.selected).toEqual([]);
+			expect(result.rejected).toHaveLength(1);
+			expect(result.rejected[0]).toContain("shared");
+			expect(result.rejected[0]).toContain("llmgates / cpa");
+		});
+
+		it("does not let the unmanaged summary header carry a group over to later rows", () => {
+			const snap = collidingSnapshot();
+			const result = parseSelectorList(
+				[
+					"# ── llmgates · core ──",
+					"# ── 本扩展不管辖（无 api 写入通道，不可配置）──",
+					"[x] shared  Shared  chat",
+				].join("\n"),
+				snap,
+			);
+
+			expect(result.selected).toEqual([]);
+			expect(result.rejected).toHaveLength(1);
+		});
+
+		it("still resolves an unambiguous id even with no group header present", () => {
+			// Only one provider owns `gpt-5.6-sol`, so a stripped header is harmless.
+			expect(parseSelectorList("[x] gpt-5.6-sol  a  chat", snapshot()).selected).toEqual([
+				{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
+			]);
+		});
+	});
 });
 
 describe("step 2 endpoint options", () => {
