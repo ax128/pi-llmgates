@@ -22,6 +22,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { CompatGatewayRegistration } from "./compat/index.js";
+import { createEndpointPicker } from "./endpoint-picker.js";
 import {
 	acquireEndpointInFlight,
 	EXPECTED_API,
@@ -36,6 +37,7 @@ import {
 	SELECTOR_ENDPOINT_OPTIONS,
 	type SelectorEndpointChoice,
 	type SelectorGroup,
+	type SelectorSelection,
 	type SelectorSnapshot,
 } from "./endpoint-selector.js";
 import {
@@ -75,6 +77,11 @@ export interface EndpointSettingContext {
 	getAllModels(): Model<Api>[];
 	find(providerId: string, modelId: string): Model<Api> | undefined;
 	setModel(model: Model<Api>): Promise<boolean>;
+	/**
+	 * Interactive checkbox picker (tui only). Resolves to the chosen models, or
+	 * `undefined` when the user cancelled.
+	 */
+	pick(snapshot: SelectorSnapshot): Promise<SelectorSelection[] | undefined>;
 	editor(title: string, prefill: string): Promise<string | undefined>;
 	select(title: string, options: string[]): Promise<string | undefined>;
 	notify(message: string, level: "info" | "warning" | "error"): void;
@@ -185,22 +192,27 @@ export async function runEndpointSettingCommand(
 			return;
 		}
 
-		const edited = await ctx.editor("/endpoint-setting", renderSelectorList(snapshot));
-		if (edited === undefined) {
+		// tui gets the checkbox component; rpc has no component surface (`ui.custom`
+		// is a no-op there) and keeps the editor checklist.
+		const step1 =
+			ctx.mode === "tui"
+				? { selected: await ctx.pick(snapshot), rejected: [], warnings: [] }
+				: await pickViaEditor(ctx, snapshot);
+		const selection = step1.selected;
+		if (selection === undefined) {
 			ctx.notify("Cancelled; no configuration was changed.", "info");
 			return;
 		}
 
-		const parsed = parseSelectorList(edited, snapshot);
-		const notes = formatNotes(parsed.rejected, parsed.warnings);
-		if (parsed.selected.length === 0) {
+		const notes = formatNotes(step1.rejected, step1.warnings);
+		if (selection.length === 0) {
 			ctx.notify(`Cancelled; no models were selected.${notes}`, "info");
 			return;
 		}
 
 		const chosen = parseSelectorEndpointChoice(
 			await ctx.select(
-				`Apply to ${parsed.selected.length} model(s)`,
+				`Apply to ${selection.length} model(s)`,
 				SELECTOR_ENDPOINT_OPTIONS.map((option) => option.label),
 			),
 		);
@@ -214,10 +226,10 @@ export async function runEndpointSettingCommand(
 		// Freeze the target set before any write, grouped by provider so each group
 		// takes its lock once and refreshes once.
 		const byProvider = new Map<string, string[]>();
-		for (const selection of parsed.selected) {
-			const list = byProvider.get(selection.providerId) ?? [];
-			list.push(selection.modelId);
-			byProvider.set(selection.providerId, list);
+		for (const entry of selection) {
+			const list = byProvider.get(entry.providerId) ?? [];
+			list.push(entry.modelId);
+			byProvider.set(entry.providerId, list);
 		}
 
 		const write: ModelOverrideWrite =
@@ -241,6 +253,21 @@ export async function runEndpointSettingCommand(
 	} finally {
 		releaseEndpointInFlight();
 	}
+}
+
+/**
+ * rpc fallback for step 1: the editor checklist. Cancelling the editor and
+ * clearing every checkbox are different outcomes, so `undefined` (cancelled) is
+ * kept distinct from an empty selection.
+ */
+async function pickViaEditor(
+	ctx: EndpointSettingContext,
+	snapshot: SelectorSnapshot,
+): Promise<{ selected: SelectorSelection[] | undefined; rejected: string[]; warnings: string[] }> {
+	const edited = await ctx.editor("/endpoint-setting", renderSelectorList(snapshot));
+	if (edited === undefined) return { selected: undefined, rejected: [], warnings: [] };
+	const parsed = parseSelectorList(edited, snapshot);
+	return { selected: parsed.selected, rejected: parsed.rejected, warnings: parsed.warnings };
 }
 
 async function applyGroup(
@@ -446,6 +473,10 @@ export function registerEndpointSettingCommand(
 					getAllModels: () => ctx.modelRegistry.getAll(),
 					find: (providerId, modelId) => ctx.modelRegistry.find(providerId, modelId),
 					setModel: (model) => pi.setModel(model),
+					pick: (snapshot) =>
+						ctx.ui.custom<SelectorSelection[] | undefined>((_tui, theme, keybindings, done) =>
+							createEndpointPicker({ snapshot, theme, keys: keybindings, done }),
+						),
 					editor: (title, prefill) => ctx.ui.editor(title, prefill),
 					select: (title, selectOptions) => ctx.ui.select(title, selectOptions),
 					notify: (message, level) => ctx.ui.notify(message, level),

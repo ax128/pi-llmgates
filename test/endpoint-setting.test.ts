@@ -22,6 +22,7 @@ import {
 	type ModelOverrideWrite,
 	type OverrideScope,
 } from "../extensions/model-overrides.js";
+import { parseSelectorList, type SelectorSelection } from "../extensions/endpoint-selector.js";
 import type { EndpointRefreshResult } from "../extensions/provider.js";
 
 const CORE = "llmgates";
@@ -68,6 +69,12 @@ interface HarnessOptions {
 	initialRegistry?: Model<Api>[];
 	current?: Model<Api>;
 	mode?: string;
+	/**
+	 * What the tui checkbox picker returns. Defaults to parsing `editor` against
+	 * the snapshot the picker was handed, so one fixture drives both step-1
+	 * surfaces.
+	 */
+	pick?: SelectorSelection[] | undefined | (() => Promise<SelectorSelection[] | undefined>);
 	editor?: string | undefined | (() => Promise<string | undefined>);
 	select?: string | undefined;
 	setModelImpl?: (model: Model<Api>) => Promise<boolean>;
@@ -87,6 +94,7 @@ function harness(options: HarnessOptions) {
 	}> = [];
 	const order: string[] = [];
 	let editorPrefill = "";
+	let editorCalls = 0;
 
 	const refreshCalls: string[] = [];
 	const targets: EndpointSettingTarget[] = options.targets.map((spec) => ({
@@ -128,7 +136,17 @@ function harness(options: HarnessOptions) {
 		find: (providerId, modelId) =>
 			registry.find((entry) => entry.provider === providerId && entry.id === modelId),
 		setModel,
+		pick: async (snapshot) => {
+			if ("pick" in options) {
+				const value = options.pick;
+				return typeof value === "function" ? value() : value;
+			}
+			const value = options.editor;
+			const text = typeof value === "function" ? await value() : value;
+			return text === undefined ? undefined : parseSelectorList(text, snapshot).selected;
+		},
 		editor: async (_title, prefill) => {
+			editorCalls += 1;
 			editorPrefill = prefill;
 			const value = options.editor;
 			return typeof value === "function" ? value() : value;
@@ -146,6 +164,7 @@ function harness(options: HarnessOptions) {
 		order,
 		setModel,
 		prefill: () => editorPrefill,
+		editorCalls: () => editorCalls,
 	};
 }
 
@@ -239,6 +258,33 @@ describe("/endpoint-setting mode guard", () => {
 
 			expect(h.notifications[0]?.level).toBe("info");
 			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe("messages");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("uses the checkbox picker in tui mode and the editor checklist in rpc mode", async () => {
+		const { dir, cleanup } = tempDir();
+		try {
+			for (const [mode, expectedEditorCalls] of [
+				["tui", 0],
+				["rpc", 1],
+			] as const) {
+				const h = harness({
+					agentDir: dir,
+					mode,
+					targets: [{ providerId: CORE, scope: { kind: "core" } }],
+					registry: [model("m1", "anthropic-messages")],
+					initialRegistry: [model("m1", "openai-completions")],
+					editor: "[x] m1",
+					select: "messages   → anthropic-messages",
+				});
+
+				await runEndpointSettingCommand(h.runtime, h.ctx);
+
+				expect(h.editorCalls()).toBe(expectedEditorCalls);
+				expect(h.writeCalls).toHaveLength(1);
+			}
 		} finally {
 			cleanup();
 		}
@@ -379,6 +425,9 @@ describe("/endpoint-setting batch write", () => {
 			let prefill = "";
 			const h = harness({
 				agentDir: dir,
+				// The editor checklist (rpc) is where an id can be ambiguous at all; the
+				// tui picker carries the provider on every row.
+				mode: "rpc",
 				targets: [
 					{ providerId: CORE, label: "core", scope: { kind: "core" } },
 					{ providerId: TWO_API, label: "2API/cpa", scope: { kind: "2api", instanceId: TWO_API } },
@@ -675,7 +724,7 @@ describe("/endpoint-setting tri-state", () => {
 	});
 });
 
-describe("/endpoint-setting checklist contents", () => {
+describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 	it("renders the managed groups and discloses unmanaged models in the prefill", async () => {
 		const { dir, cleanup } = tempDir();
 		try {
@@ -684,6 +733,7 @@ describe("/endpoint-setting checklist contents", () => {
 			]);
 			const h = harness({
 				agentDir: dir,
+				mode: "rpc",
 				targets: [
 					{ providerId: CORE, label: "core", scope: { kind: "core" } },
 					{ providerId: TWO_API, label: "2API/cpa", scope: { kind: "2api", instanceId: TWO_API } },
@@ -716,6 +766,7 @@ describe("/endpoint-setting checklist contents", () => {
 		try {
 			const h = harness({
 				agentDir: dir,
+				mode: "rpc",
 				targets: [{ providerId: CORE, scope: { kind: "core" } }],
 				registry: [model("m1", "anthropic-messages")],
 				initialRegistry: [model("m1", "openai-completions")],
@@ -746,6 +797,7 @@ describe("/endpoint-setting checklist contents", () => {
 			];
 			const h = harness({
 				agentDir: dir,
+				mode: "rpc",
 				targets: [
 					{ providerId: CORE, scope: { kind: "core" } },
 					{ providerId: TWO_API, scope: { kind: "2api", instanceId: TWO_API } },
