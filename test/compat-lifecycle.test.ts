@@ -76,6 +76,7 @@ function fakeProviderFactory() {
 			beginSession: vi.fn(),
 			startInitialPricingSync: vi.fn(),
 			startBackgroundRefresh: vi.fn(async () => gate),
+			refreshEndpointForeground: vi.fn(async () => ({ status: "not-ready" }) as const),
 			shutdown: vi.fn(async () => {}),
 			getInternalState: () => ({ providerId: options.instance.id, modelCount: 1, generation: 0, hasPending: false }),
 			completeRefresh: release,

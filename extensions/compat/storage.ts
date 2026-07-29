@@ -22,6 +22,11 @@ import {
 	SECRET_FILE_MODE,
 } from "../util.js";
 
+// Re-exported so instance lifecycle callers have one storage entrypoint. The path
+// itself is derived inside model-overrides.ts, which is the single owner of
+// override paths; nothing here reconstructs it.
+export { deleteInstanceOverrides } from "../model-overrides.js";
+
 const AUTH_FILE_NAME = "auth.json";
 
 export interface CompatConfigFile {

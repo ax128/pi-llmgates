@@ -361,3 +361,173 @@ describe("2api store round-trip for non-chat endpoints", () => {
 		}
 	});
 });
+
+describe("2api foreground endpoint refresh", () => {
+	async function readyProvider(agentDir: string, options: HarnessOptions = {}) {
+		const provider = makeProvider(agentDir, options);
+		const store = await refreshOnce(provider);
+		return { provider, store };
+	}
+
+	it("returns ok with the mapped models and publishes the new api", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const { provider } = await readyProvider(agentDir);
+			await setOverride(agentDir, "m1", "messages");
+
+			const result = await provider.refreshEndpointForeground();
+
+			expect(result.status).toBe("ok");
+			// The returned models are the same mapping that was published, which is
+			// what lets a caller derive the expected api for `auto`.
+			expect(result.status === "ok" && result.models.map((model) => model.api)).toEqual([
+				"anthropic-messages",
+			]);
+			expect(provider.getModels()[0]?.api).toBe("anthropic-messages");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("returns offline in offline mode without fetching", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			let fetches = 0;
+			const { provider } = await readyProvider(agentDir, {
+				fetchImpl: async () => {
+					fetches++;
+					return new Response(JSON.stringify([{ id: "m1" }]));
+				},
+			});
+			const before = fetches;
+			process.env.PI_OFFLINE = "1";
+
+			expect(await provider.refreshEndpointForeground()).toEqual({ status: "offline" });
+			expect(fetches).toBe(before);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("returns not-ready before any refresh has supplied a store and connection", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = makeProvider(agentDir);
+			expect(await provider.refreshEndpointForeground()).toEqual({ status: "not-ready" });
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("returns superseded when a newer refresh wins the commit race", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let gated = false;
+			const { provider } = await readyProvider(agentDir, {
+				fetchImpl: async () => {
+					if (gated) await gate;
+					return new Response(JSON.stringify([{ id: "m1" }]));
+				},
+			});
+
+			gated = true;
+			const first = provider.refreshEndpointForeground();
+			// A second foreground refresh advances latestRequestId, so the first one
+			// must decline to commit rather than publish a stale mapping.
+			gated = false;
+			const second = await provider.refreshEndpointForeground();
+			release();
+
+			expect(second.status).toBe("ok");
+			expect((await first).status).toBe("superseded");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("throws on a network failure so the caller can report partial", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			let fail = false;
+			const { provider } = await readyProvider(agentDir, {
+				fetchImpl: async () => {
+					if (fail) throw new Error("network down");
+					return new Response(JSON.stringify([{ id: "m1" }]));
+				},
+			});
+
+			fail = true;
+			await expect(provider.refreshEndpointForeground()).rejects.toThrow(/network down/);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("throws on a store write failure without publishing the new models", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const { provider, store } = await readyProvider(agentDir);
+			await setOverride(agentDir, "m1", "messages");
+			store.failNextWrite = new Error("disk full");
+
+			await expect(provider.refreshEndpointForeground()).rejects.toThrow(/disk full/);
+			expect(provider.getModels()[0]?.api).toBe("openai-completions");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("does not deadlock: consecutive foreground refreshes both settle", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const { provider } = await readyProvider(agentDir);
+
+			// Serial, then concurrent: neither shape may await another commitChain
+			// task from inside withCommit, which would hang the command.
+			const first = await Promise.race([
+				provider.refreshEndpointForeground(),
+				new Promise((_, reject) => setTimeout(() => reject(new Error("deadlock")), 5000)),
+			]);
+			expect((first as { status: string }).status).toBe("ok");
+
+			const both = await Promise.race([
+				Promise.all([
+					provider.refreshEndpointForeground(),
+					provider.refreshEndpointForeground(),
+				]),
+				new Promise((_, reject) => setTimeout(() => reject(new Error("deadlock")), 5000)),
+			]);
+			expect((both as Array<{ status: string }>).map((entry) => entry.status).sort()).toEqual([
+				"ok",
+				"superseded",
+			]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("is awaited by shutdown rather than left running", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const { provider } = await readyProvider(agentDir);
+			const running = provider.refreshEndpointForeground();
+			await provider.shutdown();
+			await expect(running).resolves.toEqual(expect.objectContaining({ status: expect.any(String) }));
+			expect(await provider.refreshEndpointForeground()).toEqual({ status: "not-ready" });
+		} finally {
+			cleanup();
+		}
+	});
+});

@@ -1,8 +1,12 @@
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import {
+	readModelOverridesFile,
+	writeModelOverrides,
+} from "../extensions/model-overrides.js";
 import {
 	formatCompatInstanceList,
 	parseCompatCommand,
@@ -78,6 +82,7 @@ function fakeProviderFactory(options: { blockRefresh?: boolean } = {}) {
 			beginSession: vi.fn(),
 			startInitialPricingSync: vi.fn(),
 			startBackgroundRefresh: vi.fn(async () => refreshGate),
+			refreshEndpointForeground: vi.fn(async () => ({ status: "not-ready" }) as const),
 			shutdown: vi.fn(async () => refreshGate),
 			getInternalState: () => ({ providerId: providerOptions.instance.id, modelCount: 1, generation: 0, hasPending: false }),
 		} as CompatProvider & { shutdown: ReturnType<typeof vi.fn> };
@@ -216,6 +221,87 @@ describe("/2api management", () => {
 		}
 	});
 
+	it("deletes the instance's endpoint overrides and leaves siblings untouched", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const runtime = createPi();
+		const fakes = fakeProviderFactory();
+		try {
+			seed(agentDir);
+			await writeModelOverrides(agentDir, { kind: "2api", instanceId: "gateway-a" }, [
+				{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+			]);
+			await writeModelOverrides(agentDir, { kind: "2api", instanceId: "gateway-b" }, [
+				{ targetId: "m1", write: { kind: "set", endpoint: "responses" } },
+			]);
+			registerCompatGateways(runtime.pi, agentDir, { createProvider: fakes.createProvider });
+
+			const notifications = await runCommand(runtime.commands.get("2api")!, "remove gateway-a");
+
+			expect(notifications).toEqual([
+				{ message: expect.stringMatching(/removed.*gateway-a/i), level: "info" },
+			]);
+			expect(existsSync(join(agentDir, "llmgates/2api-models/gateway-a.json"))).toBe(false);
+			expect(
+				readModelOverridesFile(agentDir, { kind: "2api", instanceId: "gateway-b" })?.models?.m1
+					?.endpoint,
+			).toBe("responses");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("does not resurrect removed overrides when an instance is recreated with the same id", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const runtime = createPi();
+		const fakes = fakeProviderFactory();
+		try {
+			seed(agentDir);
+			await writeModelOverrides(agentDir, { kind: "2api", instanceId: "gateway-a" }, [
+				{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+			]);
+			registerCompatGateways(runtime.pi, agentDir, { createProvider: fakes.createProvider });
+			await runCommand(runtime.commands.get("2api")!, "remove gateway-a");
+
+			// A new instance under the same id is semantically unrelated to the old one.
+			expect(readModelOverridesFile(agentDir, { kind: "2api", instanceId: "gateway-a" })).toBeNull();
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("reports an override cleanup failure as partial without blocking the other steps", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const runtime = createPi();
+		const fakes = fakeProviderFactory();
+		const overrideDir = join(agentDir, "llmgates/2api-models");
+		try {
+			seed(agentDir);
+			mkdirSync(overrideDir, { recursive: true, mode: 0o700 });
+			// A directory where the file should be makes rm fail with EISDIR.
+			mkdirSync(join(overrideDir, "gateway-a.json"), { recursive: true });
+			mkdirSync(join(overrideDir, "gateway-a.json", "blocker"), { recursive: true });
+			const registration = registerCompatGateways(runtime.pi, agentDir, {
+				createProvider: fakes.createProvider,
+			});
+
+			const notifications = await runCommand(runtime.commands.get("2api")!, "remove gateway-a");
+
+			expect(notifications).toHaveLength(1);
+			expect(notifications[0]?.level).toBe("warning");
+			expect(notifications[0]?.message).toMatch(/endpoint override cleanup/i);
+			// Every other cleanup step still ran to completion.
+			expect(registration.providers.has("gateway-a")).toBe(false);
+			expect(runtime.unregistrations).toEqual(["gateway-a"]);
+			expect(listInstances(agentDir)).toEqual([INSTANCES[1]]);
+			expect(JSON.parse(readFileSync(join(agentDir, "auth.json"), "utf8"))).toEqual({
+				"gateway-b": credential(INSTANCES[1]!, "sibling-secret"),
+			});
+		} finally {
+			chmodSync(overrideDir, 0o700);
+			cleanup();
+		}
+	});
+
 	it("reports malformed auth cleanup with a fixed safe partial warning after other cleanup continues", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		const runtime = createPi();
@@ -299,6 +385,7 @@ describe("/2api management", () => {
 			streamSimple() { throw new Error("not used"); },
 			beginSession: vi.fn(),
 			startBackgroundRefresh: vi.fn(async () => {}),
+			refreshEndpointForeground: vi.fn(async () => ({ status: "not-ready" }) as const),
 			startInitialPricingSync: vi.fn(),
 			shutdown: vi.fn(async () => {
 				markShutdown();

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Credential, OAuthCredential, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { EndpointRefreshResult } from "../provider.js";
 import {
 	createCompatBootstrapProvider,
 	createCompatProvider,
@@ -12,6 +13,7 @@ import {
 	addInstance,
 	assertAuthEntryAbsent,
 	decodeCompatRefreshMeta,
+	deleteInstanceOverrides,
 	deleteProviderAuthEntry,
 	deleteProviderAuthEntryIfEqual,
 	listInstances,
@@ -31,6 +33,14 @@ export interface RegisterCompatGatewaysOptions {
 export interface CompatGatewayRegistration {
 	providers: Map<string, CompatProvider>;
 	bootstrapProvider: Provider;
+	/**
+	 * Foreground refresh for one instance, routed through this module so the
+	 * refreshed catalog is re-registered with pi. The provider's own
+	 * refreshEndpointForeground only publishes in-memory models; without the
+	 * re-registration the model registry keeps the pre-change `api` and a caller
+	 * verifying against it would always see a stale value.
+	 */
+	refreshEndpointForeground(instanceId: string): Promise<EndpointRefreshResult>;
 }
 
 export type CompatCommand =
@@ -289,6 +299,13 @@ export function registerCompatGateways(
 				} catch (error) {
 					failures.push(`auth cleanup: ${errorText(error)}`);
 				}
+				try {
+					// Leaving this behind means a later instance recreated with the same id
+					// silently inherits the removed one's endpoints.
+					deleteInstanceOverrides(agentDir, instance.id);
+				} catch (error) {
+					failures.push(`endpoint override cleanup: ${errorText(error)}`);
+				}
 
 				if (failures.length > 0) {
 					ctx.ui.notify(`2api instance "${instance.id}" removal was partial: ${failures.join("; ")}`, "warning");
@@ -333,5 +350,13 @@ export function registerCompatGateways(
 		}
 	}
 
-	return { providers, bootstrapProvider };
+	async function refreshEndpointForeground(instanceId: string): Promise<EndpointRefreshResult> {
+		const provider = providers.get(instanceId);
+		if (!provider) return { status: "not-ready" };
+		const result = await provider.refreshEndpointForeground();
+		if (result.status === "ok") registerCurrent(provider);
+		return result;
+	}
+
+	return { providers, bootstrapProvider, refreshEndpointForeground };
 }

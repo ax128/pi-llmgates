@@ -54,6 +54,10 @@ import {
 	translateLoginError,
 } from "../login-ui.js";
 import { compatModelsUrl, applyMoonshotKimiCompatModel, mapCompatModelsPayload } from "./catalog.js";
+// Type-only import of the shared tri-state refresh result. This is a pure type
+// and carries no path or file access, so it does not weaken the scope isolation
+// enforced by the override-path scan.
+import type { EndpointRefreshResult } from "../provider.js";
 import {
 	decodeCompatRefreshMeta,
 	encodeCompatRefreshMeta,
@@ -131,6 +135,16 @@ export interface CompatProvider extends Provider {
 	startInitialPricingSync(): void;
 	shutdown(): Promise<void>;
 	startBackgroundRefresh(options?: { force?: boolean }): Promise<void>;
+	/**
+	 * Foreground catalog refresh for /endpoint-setting, structurally identical to
+	 * the core provider's: bypasses the freshness window, reloads this instance's
+	 * overrides from disk, re-fetches, and commits+publishes synchronously.
+	 *
+	 * Returns offline/not-ready/superseded without throwing; THROWS on network,
+	 * override-file I/O, or store-write errors so the command can report `partial`.
+	 * Never awaits another commitChain task from inside withCommit (no deadlock).
+	 */
+	refreshEndpointForeground(): Promise<EndpointRefreshResult>;
 	getInternalState(): { providerId: string; modelCount: number; generation: number; hasPending: boolean };
 }
 
@@ -782,6 +796,67 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		throw lastError ?? new Error("Login validation failed");
 	}
 
+	async function runEndpointForeground(): Promise<EndpointRefreshResult> {
+		// Advance latestRequestId BEFORE any early return, so an older in-flight
+		// refresh cannot commit a catalog mapped from the pre-change override.
+		const requestId = nextRequestId++;
+		latestRequestId = requestId;
+		if (isOfflineMode()) {
+			return { status: "offline" };
+		}
+		const store = scopedStore;
+		const connection = lastConnection;
+		if (shutDown || !store || !connection) {
+			return { status: "not-ready" };
+		}
+		const requestGeneration = generation;
+		const controller = sessionController ?? new AbortController();
+
+		try {
+			// fetchCatalog reloads this instance's overrides from disk and re-maps; it
+			// throws on network failure and on non-ENOENT override-file fs errors.
+			const fetched = await fetchCatalog(connection, controller.signal, requestGeneration);
+
+			let committed = false;
+			await withCommit(async () => {
+				if (
+					!lifecycleMatches(requestGeneration) ||
+					controller.signal.aborted ||
+					requestId !== latestRequestId ||
+					!connectionStillMatches(connection)
+				) return;
+				fetched.store = store;
+				fetched.requestId = requestId;
+				fetched.checkedAt = now();
+				await store.write({ models: fetched.models, checkedAt: fetched.checkedAt });
+				if (
+					!lifecycleMatches(requestGeneration) ||
+					controller.signal.aborted ||
+					requestId !== latestRequestId ||
+					!connectionStillMatches(connection)
+				) return;
+				setModels(fetched.models, fetched);
+				lastCheckedAt = now();
+				committed = true;
+			});
+			// Returning the mapped models lets the caller derive the expected api for
+			// `auto` from the same mapping that produced them.
+			return committed ? { status: "ok", models: fetched.models } : { status: "superseded" };
+		} catch (error) {
+			// An abort that coincides with a lifecycle change (shutdown or a new
+			// session) is that change, not a failure the user should see: report it as
+			// superseded. Any other abort is a genuine error and propagates.
+			if (
+				!lifecycleMatches(requestGeneration) &&
+				error instanceof DOMException &&
+				error.name === "AbortError"
+			) {
+				return { status: "superseded" };
+			}
+			throw error;
+		}
+	}
+
 	provider = {
 		id: providerId,
 		name: currentInstance.name,
@@ -875,6 +950,9 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 				}
 			})();
 			await track(task);
+		},
+		refreshEndpointForeground(): Promise<EndpointRefreshResult> {
+			return track(runEndpointForeground());
 		},
 		async shutdown(): Promise<void> {
 			shutDown = true;
