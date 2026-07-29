@@ -102,6 +102,7 @@ pi
 | `/login LLMGates` | 配置 baseUrl + API key |
 | `/balance` | 查看钱包、订阅余额 |
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | 切换或清除一个 core 模型的推理出口 |
+| `/endpoint-setting` | 交互式多选，批量切换 core 与 2API 模型的推理出口 |
 | `/model` | 选择已注册的 LLMGates 模型 |
 | `/calls` | 查看本轮或本会话的 per-model 用量与费用明细 |
 | `/reload` | 安装或更新插件后重载扩展 |
@@ -120,7 +121,7 @@ pi
 | [Sub2API](https://github.com/Wei-Shaw/sub2api) | `sub2api` | 订阅配额分发与多账号中转 | [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) |
 | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA） | `cpa` | 本地 CLI 订阅代理，默认端口 `8317` | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) |
 
-同一 scheme 可添加多个实例（例如 `work-newapi` 与 `home-newapi`），不同 scheme 也可并存。所有 scheme 共用同一 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名切换协议。
+同一 scheme 可添加多个实例（例如 `work-newapi` 与 `home-newapi`），不同 scheme 也可并存。默认所有 scheme 共用 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名自动切换协议；如需改用 `messages` / `responses`，用 `/endpoint-setting` 显式配置（见 [2API 的出口覆盖](#2api-的出口覆盖)）。
 
 ### 添加实例（通用流程）
 
@@ -317,8 +318,23 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
 - `auto` 只清除该模型的 per-model endpoint；若存在 `defaults.endpoint`，会回落到 defaults，而非跳过它直达网关值。
 - 命令先原子保存 `~/.pi/agent/llmgates/models.json`，再联网强制刷新 catalog、写入 provider store、发布并校验；目标是当前模型时还会重新绑定 registry 中的新对象。只有全部完成才显示成功。
 - `PI_OFFLINE`、网络失败、provider 尚未就绪、store 写入失败或当前模型重绑失败时显示 warning：配置已保存但未完全激活，可联网后重试命令；重绑失败也可用 `/model` 重新选择。
-- 命令进行中再次执行会被拒绝；不支持批量或当前 `/models` scope 语义，需要修改多个模型时逐个执行。
-- 仅 core provider 支持；2API 不读取该配置，始终使用 OpenAI Chat Completions。
+- 命令进行中再次执行会被拒绝；本命令本身不支持批量，批量请用 `/endpoint-setting`。
+- 仅修改 core provider；2API 模型请用 `/endpoint-setting`。
+
+#### 批量切换：`/endpoint-setting`
+
+```text
+/endpoint-setting
+```
+
+- 两步交互：第一步在文本清单中把要修改的模型前的 `[ ]` 改成 `[x]`（支持跨 provider 多选），第二步选择 `chat` / `messages` / `responses` / `auto`。
+- 覆盖 **core + 全部 2API 实例**的模型；两步中任意一步取消或零选中都不会写入任何文件。
+- 清单按 provider 分组，显示「model-id · 名字 · 当前出口」，`*` 表示已有 override。第三方扩展与 pi 内置 provider 的模型没有 `api` 写入通道，因此以汇总注释行披露、不可勾选；手工写入这些 id 会被明确拒绝并说明原因。
+- 需要交互式界面：TUI 与 RPC 模式可用；`print` / `json` 模式会提示改用 `/endpoint`，不会报错也不会写文件。
+- 每个 provider 只加一次锁、写一次文件、刷新一次，分组串行执行。
+- 三态结果：全部成功为 info；**文件已写入但未激活（离线 / provider 未就绪 / 被更新的刷新取代 / 部分模型未生效 / 当前模型重绑失败）一律为 warning**，不会误报成功；只有**所有** provider 都写入失败才是 error。跨 provider 部分成功时逐 provider 说明状态，已成功的部分保持生效，不回滚。
+- 与 `/endpoint` 共用同一把 in-flight 锁：选择器打开期间执行 `/endpoint` 会被拒绝，反之亦然。
+- 2API 的上游是否支持 `messages` / `responses` 取决于你自己的中转部署，本扩展不探测、不拦截；选错了用 `/endpoint-setting` 选 `auto`，或对 core 模型用 `/endpoint chat <model-id>` 回退。
 
 也可手工编辑 `~/.pi/agent/llmgates/models.json`：
 
@@ -337,7 +353,17 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
 - 文件不存在（`ENOENT`）表示清空 override；有效 object 替换当前配置；JSON/根结构畸形时 warning 并继续使用该 core provider 实例的 last-known-good（首次加载则无 override，不与其他实例共享）。其他文件系统错误（如 `EACCES` / `EISDIR`）不会静默改路由：显式刷新在请求 catalog 前失败，后台刷新只 warning，并保留旧模型与缓存。warning 不输出 API key、文件原文或任意底层错误正文。
 - 手工编辑后，endpoint 与 thinking metadata 只会在**下一次成功的 core catalog refresh** 完成网络映射、cache 写入和内存发布后生效。cache-only、`PI_OFFLINE`、freshness-window skip 都不会重映射缓存模型；网络或 cache 写入失败也保留旧值。这里没有周期 timer 或“最长 5 分钟自动生效”保证；优先使用 `/endpoint` 触发已验证的前台刷新。
 - 缓存保存写入时的 `api`、`thinkingLevelMap` 与 `compat`；恢复时 `api`/thinking map 不重映射，只有既有的旧 Kimi 条目可补 transport `compat`。代码回滚不会改写配置。若旧版需人工清除 per-model 设定，删除对应 `models.<id>.endpoint` 后重启；随后按剩余优先级解析（可能先回落到 `defaults.endpoint`，不一定直接使用网关值）。store 的 `checkedAt` 若仍在 5 分钟 freshness window 内，仍可能暂用旧 `api`，需等待窗口并触发一次成功 refresh。新版可直接用 `/endpoint auto [model-id]`。
-- 仅 **core `llmgates`** provider 支持（它注册了 3 个 stream adapter）；**2API 兼容层完全不读取 `llmgates/models.json`**，始终走 OpenAI Chat Completions。
+- `llmgates/models.json` 仅供 **core `llmgates`** provider 使用；**2API 兼容层完全不读取它**，两侧配置互不影响。
+
+#### 2API 的出口覆盖
+
+2API 实例的 override 存放在**每实例独立文件** `~/.pi/agent/llmgates/2api-models/<instanceId>.json`，结构与 `llmgates/models.json` 相同（`defaults.endpoint` + `models.<id>.endpoint`），由 `/endpoint-setting` 或手工编辑维护。
+
+- 优先级：**per-model > `defaults` > `chat_completions`**。2API **不使用**网关 `inference_endpoint` 或按 id 的启发式——未配置 override 时行为与 0.1.12 完全一致。
+- 与 core 双向隔离：core 不读 `2api-models/`，2API 不读 `llmgates/models.json`。
+- 手工编辑后下一次 catalog refresh 即生效，无需重启。
+- `/2api remove <id>` 会一并删除该实例的 override 文件；因此用同名 ID 重建实例时不会复活旧配置。删除失败会归入 partial 提示，不阻断其余清理步骤。
+- **降级注意**：若从 0.2.0 回退到 0.1.12，provider store 缓存中残留的非 `openai-completions` 模型会被旧版校验拒绝，该 2API 实例在**首次成功联网 refresh 之前**模型不可见。override 文件不会丢失，旧版会忽略 `2api-models/`——删除该目录**不能**解决 store 问题，联网触发一次成功的 catalog refresh（或重启 pi）即可自愈。
 
 ## 定价与费用估算
 
@@ -356,7 +382,9 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与 LLMGa
 
 设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
 
-**`llmgates/models.json`** — 每模型出口（endpoint / `api`）覆盖，由 `/endpoint` 或手工编辑维护；文件本身不会从网关自动同步。详见 [模型出口](#模型出口-endpoint--api)。
+**`llmgates/models.json`** — core 每模型出口（endpoint / `api`）覆盖，由 `/endpoint`、`/endpoint-setting` 或手工编辑维护；文件本身不会从网关自动同步。详见 [模型出口](#模型出口-endpoint--api)。
+
+**`llmgates/2api-models/<instanceId>.json`** — 每个 2API 实例的出口覆盖，结构同上，由 `/endpoint-setting` 或手工编辑维护；`/2api remove` 时随实例一并删除。
 
 **`llmgates/pricing.json`** — 可编辑的 USD / **100 万 token** 单价（`input`、`output`、`cacheRead`、`cacheWrite`）。键为 `modelId` 或 `provider/modelId`（如 `openai/gpt-5.6-sol`）：
 
