@@ -242,18 +242,22 @@ describe("toPiModel", () => {
 		expect(model?.thinkingLevelMap).toEqual({ off: null, xhigh: "xhigh", max: "max" });
 	});
 
-	it("falls back conservatively when model metadata is unknown", () => {
+	it("falls back to full thinking levels when model metadata is unknown", () => {
 		expect(resolveThinkingLevels("acme-unknown-1", undefined, "anthropic-messages", undefined)).toEqual([
 			"none",
 			"low",
 			"medium",
 			"high",
+			"xhigh",
+			"max",
 		]);
 		expect(resolveThinkingLevels("acme-unknown-1", undefined, "openai-responses", undefined)).toEqual([
 			"none",
 			"low",
 			"medium",
 			"high",
+			"xhigh",
+			"max",
 		]);
 	});
 
@@ -283,7 +287,8 @@ describe("toPiModel", () => {
 		expect(model?.thinkingLevelMap?.low).toBe("low");
 		expect(model?.thinkingLevelMap?.medium).toBe("medium");
 		expect(model?.thinkingLevelMap?.high).toBe("high");
-		expect(model?.thinkingLevelMap?.xhigh).toBeNull();
+		expect(model?.thinkingLevelMap?.xhigh).toBe("xhigh");
+		expect(model?.thinkingLevelMap?.max).toBe("max");
 	});
 
 	it("skips hidden models", () => {
@@ -388,8 +393,8 @@ describe("toPiModel", () => {
 			low: "low",
 			medium: "medium",
 			high: "high",
-			xhigh: null,
-			max: null,
+			xhigh: "xhigh",
+			max: "max",
 		});
 	});
 
@@ -407,7 +412,15 @@ describe("toPiModel", () => {
 			],
 		});
 
-		expect(model?.thinkingLevelMap?.xhigh).toBe("xhigh");
+		expect(model?.thinkingLevelMap).toEqual({
+			off: "none",
+			minimal: null,
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: null,
+		});
 	});
 });
 

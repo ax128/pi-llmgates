@@ -14,6 +14,7 @@ import {
 	isMoonshotKimiCompatModel,
 	isMoonshotKimiK3Model,
 	mapCompatModelsPayload,
+	MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP,
 	moonshotKimiOpenAICompat,
 	resolveCompatContextWindow,
 } from "../extensions/compat/catalog.js";
@@ -255,7 +256,35 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(models[0]?.api).toBe("openai-completions");
 		expect(models[0]?.compat).toBeUndefined();
-		expect(models[0]?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
+		// Sparse gateway map — must not collapse into the full fallback (which also has xhigh/max).
+		expect(models[0]?.thinkingLevelMap).toEqual({
+			off: null,
+			minimal: null,
+			low: null,
+			medium: null,
+			high: null,
+			xhigh: "xhigh",
+			max: "max",
+		});
+	});
+
+	it("exposes xhigh/max for CPA Claude models without gateway-reported levels", () => {
+		const { models } = mapCompatModelsPayload(
+			[{ id: "claude-opus-4-7", provider_id: "anthropic" }],
+			{ providerId: "local-cpa", inferenceBaseUrl: "http://127.0.0.1:8317/v1" },
+		);
+
+		expect(models[0]?.api).toBe("openai-completions");
+		expect(models[0]?.compat).toBeUndefined();
+		expect(models[0]?.thinkingLevelMap).toEqual({
+			off: "none",
+			minimal: null,
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: "max",
+		});
 	});
 
 	it("preserves gateway-reported K3 levels while injecting transport compat", () => {
@@ -270,7 +299,16 @@ describe("mapCompatModelsPayload", () => {
 		);
 
 		expect(models[0]?.compat).toEqual(moonshotKimiOpenAICompat("k3"));
-		expect(models[0]?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
+		// Gateway sparse map wins; must not become full fallback or the K3 fixed map (xhigh: null).
+		expect(models[0]?.thinkingLevelMap).toEqual({
+			off: null,
+			minimal: null,
+			low: null,
+			medium: null,
+			high: null,
+			xhigh: "xhigh",
+			max: "max",
+		});
 	});
 
 	it("injects Moonshot/Kimi openai-completions compat for CPA and Sub2API gateways", () => {
@@ -290,7 +328,7 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(models[0]?.compat).toEqual(moonshotKimiOpenAICompat("kimi-k2.7-code-highspeed"));
 		expect(models[1]?.compat).toEqual(moonshotKimiOpenAICompat("k3"));
-		expect(models[1]?.thinkingLevelMap).toMatchObject({ low: "low", high: "high", max: "max" });
+		expect(models[1]?.thinkingLevelMap).toEqual({ ...MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP });
 		expect(models[2]?.compat).toEqual(moonshotKimiOpenAICompat("moonshot/kimi-k2.5"));
 		expect(models[3]?.compat).toBeUndefined();
 	});

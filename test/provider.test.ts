@@ -215,7 +215,15 @@ describe("native oauth login", () => {
 				requiresReasoningContentOnAssistantMessages: true,
 				deferredToolsMode: "kimi",
 			});
-			expect(kimi?.thinkingLevelMap).toMatchObject({ low: "low", high: "high", max: "max" });
+			expect(kimi?.thinkingLevelMap).toEqual({
+				off: null,
+				minimal: null,
+				low: "low",
+				medium: null,
+				high: "high",
+				xhigh: null,
+				max: "max",
+			});
 			expect(gpt?.compat).toBeUndefined();
 		} finally {
 			cleanup();
