@@ -29,11 +29,13 @@ import {
 import {
 	applyOptimisticExtendedThinkingToModel,
 	applyGatewayModelCosts,
+	applyInferenceBaseUrlToModel,
 	DEFAULT_BASE_URL,
 	extractReasoningEfforts,
 	isOfflineMode,
 	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
+	storedModelBaseUrlMatches,
 	toPiModel,
 	type GatewayModel,
 	type PiProviderModel,
@@ -154,7 +156,7 @@ function isModelStructValid(model: unknown, providerId: string, inferenceBaseUrl
 	if (typeof m.name !== "string") return false;
 	if (typeof m.api !== "string") return false;
 	if (m.provider !== providerId) return false;
-	if (inferenceBaseUrl && m.baseUrl !== inferenceBaseUrl) return false;
+	if (inferenceBaseUrl && !storedModelBaseUrlMatches(m as { baseUrl: unknown; api: unknown }, inferenceBaseUrl)) return false;
 	if (!Array.isArray(m.input)) return false;
 	if (!m.cost || typeof m.cost !== "object") return false;
 	if (typeof m.contextWindow !== "number" || !Number.isFinite(m.contextWindow)) return false;
@@ -318,7 +320,10 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 	 * EVERY model with no exceptions — including Kimi ids and models routed to
 	 * `anthropic-messages`, which `applyMoonshotKimiCompatModel` returns early for.
 	 */
-	function patchCachedModel(model: Model<Api>): void {
+	function patchCachedModel(model: Model<Api>, inferenceBaseUrl?: string): void {
+		if (inferenceBaseUrl) {
+			applyInferenceBaseUrlToModel(model, inferenceBaseUrl);
+		}
 		applyMoonshotKimiCompatModel(model);
 		applyOptimisticExtendedThinkingToModel(model);
 	}
@@ -345,12 +350,12 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 		}
 		// If non-empty and connection known, require baseUrl bind.
 		if (inferenceBaseUrl) {
-			const bound = valid.filter((m) => m.baseUrl === inferenceBaseUrl);
+			const bound = valid.filter((m) => storedModelBaseUrlMatches(m, inferenceBaseUrl));
 			if (bound.length === 0) {
 				return;
 			}
 			for (const model of bound) {
-				patchCachedModel(model);
+				patchCachedModel(model, inferenceBaseUrl);
 			}
 			setModels(bound as Model<Api>[]);
 		} else {

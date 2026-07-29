@@ -13,6 +13,7 @@ import {
 	parseCreditsPayload,
 	parseGatewayModelsPayload,
 	providerModelsToStoredModels,
+	storedModelBaseUrlMatches,
 	resolveCreditsUrl,
 	resolveEndpoints,
 	resolveInferenceEndpoint,
@@ -193,6 +194,7 @@ describe("toPiModel", () => {
 			web_chat_endpoint: "messages",
 		});
 		const model = providerModelsToStoredModels("llmgates", [mapped!], "https://example.invalid/v1")[0] as Model<"anthropic-messages">;
+		expect(model.baseUrl).toBe("https://example.invalid");
 		const context: Context = { messages: [] };
 		const api = anthropicMessagesApi();
 		let adaptivePayload: Record<string, unknown> | undefined;
@@ -521,6 +523,41 @@ describe("model catalog store roundtrip", () => {
 
 		expect(models[0]?.provider).toBe("llmgates");
 		expect(models[0]?.baseUrl).toBe("https://apicn.llmgates.com/v1");
+	});
+
+	it("strips trailing /v1 from baseUrl for anthropic-messages only", () => {
+		const canonical = "https://gateway.example/v1";
+		const [chat, messages] = providerModelsToStoredModels(
+			"llmgates",
+			[
+				{
+					id: "gpt-5.6-sol",
+					name: "GPT",
+					reasoning: true,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128000,
+					maxTokens: 8192,
+					api: "openai-completions",
+				},
+				{
+					id: "claude-opus-5",
+					name: "Opus",
+					reasoning: true,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128000,
+					maxTokens: 8192,
+					api: "anthropic-messages",
+				},
+			],
+			canonical,
+		);
+
+		expect(chat?.baseUrl).toBe(canonical);
+		expect(messages?.baseUrl).toBe("https://gateway.example");
+		expect(storedModelBaseUrlMatches(messages!, canonical)).toBe(true);
+		expect(storedModelBaseUrlMatches({ ...messages!, baseUrl: canonical }, canonical)).toBe(true);
 	});
 });
 

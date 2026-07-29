@@ -562,6 +562,37 @@ export function isOfflineMode(): boolean {
 	return envFlag("PI_OFFLINE") === true;
 }
 
+/**
+ * Per-model inference base URL. Anthropic's SDK appends `/v1/messages` to
+ * `baseURL`, so OpenAI-style bases ending in `/v1` would become `/v1/v1/messages`.
+ * Strip the trailing `/v1` segment only for `anthropic-messages`.
+ */
+export function inferenceBaseUrlForApi(inferenceBaseUrl: string, api: PiApiType): string {
+	if (api !== "anthropic-messages") {
+		return inferenceBaseUrl;
+	}
+	const trimmed = inferenceBaseUrl.replace(/\/+$/, "");
+	const stripped = trimmed.replace(/\/v1$/i, "");
+	return stripped || inferenceBaseUrl;
+}
+
+/** Accept registry/cache baseUrl before or after anthropic `/v1` normalization. */
+export function storedModelBaseUrlMatches(
+	model: { baseUrl: unknown; api: unknown },
+	canonicalInferenceBaseUrl: string,
+): boolean {
+	if (typeof model.baseUrl !== "string" || typeof model.api !== "string") {
+		return false;
+	}
+	const expected = inferenceBaseUrlForApi(canonicalInferenceBaseUrl, model.api as PiApiType);
+	return model.baseUrl === expected || model.baseUrl === canonicalInferenceBaseUrl;
+}
+
+/** Normalize a cached model's baseUrl after endpoint or plugin upgrades. */
+export function applyInferenceBaseUrlToModel(model: Model<Api>, canonicalInferenceBaseUrl: string): void {
+	model.baseUrl = inferenceBaseUrlForApi(canonicalInferenceBaseUrl, model.api as PiApiType);
+}
+
 export function providerModelsToStoredModels(
 	providerId: string,
 	models: PiProviderModel[],
@@ -570,6 +601,6 @@ export function providerModelsToStoredModels(
 	return models.map((model) => ({
 		...model,
 		provider: providerId,
-		baseUrl: inferenceBaseUrl,
+		baseUrl: inferenceBaseUrlForApi(inferenceBaseUrl, model.api),
 	}));
 }

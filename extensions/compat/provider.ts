@@ -18,7 +18,7 @@ import {
 	openAICompletionsApi,
 	openAIResponsesApi,
 } from "@earendil-works/pi-ai/compat";
-import { applyOptimisticExtendedThinkingToModel, isOfflineMode, parseGatewayModelsPayload, type GatewayModel } from "../catalog.js";
+import { applyOptimisticExtendedThinkingToModel, applyInferenceBaseUrlToModel, isOfflineMode, parseGatewayModelsPayload, storedModelBaseUrlMatches, type GatewayModel } from "../catalog.js";
 import {
 	createModelOverrideLookup,
 	reloadModelOverridesFromDisk,
@@ -325,7 +325,7 @@ function isStoredModelValid(model: unknown, providerId: string, baseUrl: string)
 		Boolean(value.id.trim()) &&
 		typeof value.name === "string" &&
 		value.provider === providerId &&
-		value.baseUrl === baseUrl &&
+		storedModelBaseUrlMatches(value as { baseUrl: unknown; api: unknown }, baseUrl) &&
 		// Widened from the hardcoded openai-completions: without this, a model saved
 		// as messages/responses is rejected wholesale on restore, and the instance's
 		// entire model list disappears offline until the next successful refresh.
@@ -469,8 +469,11 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 	 * including Kimi ids and models routed to `anthropic-messages`, which
 	 * `applyMoonshotKimiCompatModel` returns early for.
 	 */
-	function patchCachedModels(cachedModels: readonly Model<Api>[]): void {
+	function patchCachedModels(cachedModels: readonly Model<Api>[], canonicalBaseUrl?: string): void {
 		for (const model of cachedModels) {
+			if (canonicalBaseUrl) {
+				applyInferenceBaseUrlToModel(model, canonicalBaseUrl);
+			}
 			applyMoonshotKimiCompatModel(model);
 			applyOptimisticExtendedThinkingToModel(model);
 			const cost = lookupMemoryPricingRates(model.id);
@@ -480,7 +483,7 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		}
 	}
 
-	patchCachedModels(models);
+	patchCachedModels(models, currentInstance.baseUrl);
 
 	async function persistInstanceBaseUrl(baseUrl: string, expectedGeneration: number): Promise<void> {
 		pendingRegistryBaseUrl = baseUrl;
@@ -601,7 +604,7 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			.filter((model) => isStoredModelValid(model, providerId, connection.baseUrl))
 			.map((model) => ({ ...model, cost: { ...model.cost } }));
 		if (valid.length === 0) return;
-		patchCachedModels(valid);
+		patchCachedModels(valid, connection.baseUrl);
 		setModels(valid);
 		if (typeof entry.checkedAt === "number" && Number.isFinite(entry.checkedAt)) {
 			lastCheckedAt = entry.checkedAt;
