@@ -98,16 +98,24 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
 
 /**
  * Patch compat metadata onto gateway-routed Kimi models (including cached catalog
- * entries). `moonshotKimiOpenAICompat()` returns an OpenAICompletionsCompat shape,
- * so it must not be stamped onto a model routed to another API family — a Kimi
- * model switched to `messages` would otherwise carry OpenAI-shaped compat.
+ * entries).
+ *
+ * `moonshotKimiOpenAICompat()` returns an OpenAICompletionsCompat, whose load-
+ * bearing field here is `supportsDeveloperRole: false` — without it pi-ai sends
+ * the developer role and Moonshot fails with "tokenization failed". That field
+ * also exists on OpenAIResponsesCompat, so applying it to an openai-responses
+ * model is still correct and the surplus fields are ignored; core relies on this,
+ * since it maps Kimi ids to openai-responses by default.
+ *
+ * AnthropicMessagesCompat shares none of those fields, so a Kimi model routed to
+ * `messages` must not be stamped with this metadata at all.
  */
 export function applyMoonshotKimiCompatModel<T extends Model<Api>>(
 	model: T,
 	vendor?: string,
 	applyK3ThinkingFallback = false,
 ): T {
-	if (model.api !== "openai-completions") {
+	if (model.api === "anthropic-messages") {
 		return model;
 	}
 	if (!isMoonshotKimiCompatModel(model.id, vendor)) {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_MAX_TOKENS,
@@ -348,5 +348,26 @@ describe("mapCompatModelsPayload", () => {
 		expect(cached.compat).toEqual(moonshotKimiOpenAICompat("k3"));
 		expect(cached.thinkingLevelMap).toEqual({ off: "cached-off", max: "cached-max" });
 		expect(isMoonshotKimiK3Model("k3")).toBe(true);
+	});
+
+	it.each(["openai-completions", "openai-responses"] as const)(
+		"still applies the compat patch for api %s",
+		(api) => {
+			// supportsDeveloperRole: false is the load-bearing field and exists on both
+			// OpenAICompletionsCompat and OpenAIResponsesCompat. Core maps Kimi ids to
+			// openai-responses by default, so skipping it there would resurrect the
+			// Moonshot "tokenization failed" error.
+			const model = { id: "k3", api } as unknown as Model<Api>;
+			applyMoonshotKimiCompatModel(model);
+			expect(model.compat).toMatchObject({ supportsDeveloperRole: false });
+		},
+	);
+
+	it("does not apply OpenAI-shaped compat to a Kimi model routed to anthropic-messages", () => {
+		// AnthropicMessagesCompat shares none of these fields, so applying them would
+		// be metadata from the wrong API family.
+		const model = { id: "k3", api: "anthropic-messages" } as unknown as Model<Api>;
+		applyMoonshotKimiCompatModel(model);
+		expect(model.compat).toBeUndefined();
 	});
 });
