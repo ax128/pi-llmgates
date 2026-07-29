@@ -284,6 +284,8 @@ pi 的思考等级选择器只看每个模型的 `thinkingLevelMap`。本扩展�
 3. **静态规则**：网关未上报时，Google / xAI / DeepSeek 使用内置 family 规则（`off` / `low` / `medium` / `high` / `xhigh` / `max`）；现有 Kimi K3 transport compat 也只在无网关 levels 时补其固定 map（覆盖上述静态结果）。
 4. **兜底**：其余未知模型启用 `off`（发送 `none`）/ `low` / `medium` / `high` / `xhigh` / `max`；2API（CPA 等）未上报 levels 的模型同样走此兜底。
 
+网关未上报 levels 时，`xhigh` / `max` 是乐观暴露：OpenAI 形状 API 会把所选档位原样写入 `reasoning_effort`；若上游不支持该枚举值，可能返回 400，降档即可。新档位需一次成功的 core catalog refresh 后才会写入缓存并可见（可用 `/endpoint` 或强制刷新触发）；freshness window / cache-only / `PI_OFFLINE` 下仍使用写入时的旧 map。
+
 精确 metadata 的 `thinkingLevelMap` 保持稀疏语义：缺失 key 仍缺失，显式 `null` 仍禁用，对 `xhigh` / `max` 不降级或补齐。适用的 Anthropic metadata 还会保留 `forceAdaptiveThinking`，由 adapter 使用 adaptive thinking 与 `output_config.effort`；明确不支持 temperature 的模型也不会发送该参数。endpoint override 先决定最终 `api`；跨 OpenAI / Anthropic family 时不会套用不兼容的精确 metadata。
 
 **用户级微调（pi 原生钩子）**：在 `~/.pi/agent/models.json` 用 `providers.<实际 providerId>.modelOverrides` 覆盖单个模型的思考等级（默认 provider ID 为 `llmgates`；最顶层，合并语义，只覆盖你写的 key）：

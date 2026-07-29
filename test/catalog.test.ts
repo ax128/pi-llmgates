@@ -412,7 +412,15 @@ describe("toPiModel", () => {
 			],
 		});
 
-		expect(model?.thinkingLevelMap?.xhigh).toBe("xhigh");
+		expect(model?.thinkingLevelMap).toEqual({
+			off: "none",
+			minimal: null,
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: null,
+		});
 	});
 });
 
