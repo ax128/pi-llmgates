@@ -302,7 +302,7 @@ export function registerCompatGateways(
 				try {
 					// Leaving this behind means a later instance recreated with the same id
 					// silently inherits the removed one's endpoints.
-					deleteInstanceOverrides(agentDir, instance.id);
+					await deleteInstanceOverrides(agentDir, instance.id);
 				} catch (error) {
 					failures.push(`endpoint override cleanup: ${errorText(error)}`);
 				}

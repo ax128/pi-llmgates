@@ -494,26 +494,41 @@ describe("scoped overrides (2api)", () => {
 		expect(statSync(piModelsPath).mtimeMs).toBe(before.mtimeMs);
 	});
 
-	it("deleteInstanceOverrides removes the file and is idempotent when absent", () => {
+	it("deleteInstanceOverrides removes the file and is idempotent when absent", async () => {
 		mkdirSync(join(dir, "llmgates/2api-models"), { recursive: true });
 		writeFileSync(instancePath("cpa"), JSON.stringify({ models: { m1: { endpoint: "messages" } } }));
 
-		deleteInstanceOverrides(dir, "cpa");
+		await deleteInstanceOverrides(dir, "cpa");
 		expect(existsSync(instancePath("cpa"))).toBe(false);
-		expect(() => deleteInstanceOverrides(dir, "cpa")).not.toThrow();
+		await expect(deleteInstanceOverrides(dir, "cpa")).resolves.toBeUndefined();
 	});
 
-	it("deleteInstanceOverrides rejects a malformed id instead of deleting something else", () => {
+	it("deleteInstanceOverrides rejects a malformed id instead of deleting something else", async () => {
 		writeFileSync(join(dir, "llmgates/models.json"), JSON.stringify({ models: {} }));
-		expect(() => deleteInstanceOverrides(dir, "../models")).toThrow();
+		await expect(deleteInstanceOverrides(dir, "../models")).rejects.toThrow();
 		expect(existsSync(join(dir, "llmgates/models.json"))).toBe(true);
 	});
 
-	it("a removed instance recreated with the same id starts with no overrides", () => {
+	it("deleteInstanceOverrides holds the write lock so a concurrent batch cannot resurrect the file", async () => {
+		mkdirSync(join(dir, "llmgates/2api-models"), { recursive: true });
+		writeFileSync(instancePath("cpa"), JSON.stringify({ models: { m1: { endpoint: "messages" } } }));
+		lockState.calls = [];
+		lockState.recording = true;
+		try {
+			await deleteInstanceOverrides(dir, "cpa");
+			// Unlocked, the delete could land between a concurrent writeModelOverrides
+			// read and its atomic write, recreating the file it just removed.
+			expect(lockState.calls).toEqual([instancePath("cpa")]);
+		} finally {
+			lockState.recording = false;
+		}
+	});
+
+	it("a removed instance recreated with the same id starts with no overrides", async () => {
 		mkdirSync(join(dir, "llmgates/2api-models"), { recursive: true });
 		writeFileSync(instancePath("cpa"), JSON.stringify({ models: { m1: { endpoint: "messages" } } }));
 
-		deleteInstanceOverrides(dir, "cpa");
+		await deleteInstanceOverrides(dir, "cpa");
 
 		expect(readModelOverridesFile(dir, { kind: "2api", instanceId: "cpa" })).toBeNull();
 	});

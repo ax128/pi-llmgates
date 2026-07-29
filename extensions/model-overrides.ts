@@ -19,7 +19,7 @@
  * (provider-composer applies it as the topmost layer).
  */
 
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as lockfile from "proper-lockfile";
 import { normalizeInstanceId } from "./compat/types.js";
@@ -282,9 +282,25 @@ export async function writeModelOverride(
  * Remove a 2api instance's override file entirely (`/2api remove`). A missing
  * file is success. Without this, a removed id recreated under the same name
  * would silently resurrect the old endpoints on a semantically new instance.
+ *
+ * Takes the same lock as `writeModelOverrides` because `/2api remove` and
+ * `/endpoint-setting` are guarded by different mechanisms (an id transaction vs.
+ * the endpoint in-flight flag) and so do not exclude each other. Deleting
+ * unlocked could land between a concurrent batch's read and its atomic write,
+ * which would immediately recreate the file for the instance being removed —
+ * exactly the resurrection this function exists to prevent.
  */
-export function deleteInstanceOverrides(agentDir: string, instanceId: string): void {
-	rmSync(overridePath(agentDir, { kind: "2api", instanceId }), { force: true });
+export async function deleteInstanceOverrides(agentDir: string, instanceId: string): Promise<void> {
+	// Throws before any fs work when the instance id is malformed.
+	const path = overridePath(agentDir, { kind: "2api", instanceId });
+	if (!existsSync(path)) return;
+	ensureDirMode(dirname(path), SECRET_DIR_MODE);
+	const release = await lockfile.lock(path, LOCK_OPTIONS);
+	try {
+		rmSync(path, { force: true });
+	} finally {
+		await release();
+	}
 }
 
 export function reloadModelOverridesFromDisk(
