@@ -10,6 +10,7 @@ import type {
 	SelectorSelection,
 	SelectorSnapshot,
 } from "../extensions/endpoint-selector.js";
+import { visibleWidth } from "../extensions/terminal-width.js";
 
 const KEY = {
 	up: "\u001b[A",
@@ -129,6 +130,44 @@ describe("endpoint picker rendering", () => {
 
 		expect(text).toMatch(/另有 137 个模型.*openai\(41\)/);
 		expect(text).not.toMatch(/\[ ] openai/);
+	});
+
+	it("truncates every rendered line to the terminal width (CJK-safe)", () => {
+		const snap: SelectorSnapshot = {
+			groups: [
+				{
+					providerId: "llmgates",
+					label: "core",
+					models: Array.from({ length: 12 }, (_, index) => ({
+						id: `model-${index}`,
+						name: `Model ${index}`,
+						endpoint: "chat",
+						hasOverride: false,
+					})),
+				},
+			],
+			unmanaged: {
+				total: 1109,
+				byProvider: [
+					{ providerId: "openrouter", count: 276 },
+					{ providerId: "vercel-ai-gateway", count: 192 },
+					{ providerId: "amazon-bedrock", count: 114 },
+					{ providerId: "opencode", count: 58 },
+					{ providerId: "huggingface", count: 50 },
+				],
+			},
+		};
+		const width = 125;
+		const lines = createEndpointPicker({
+			snapshot: snap,
+			theme,
+			keys,
+			done: () => {},
+		}).render(width);
+
+		for (const [index, line] of lines.entries()) {
+			expect(visibleWidth(line), `line ${index}: ${line}`).toBeLessThanOrEqual(width);
+		}
 	});
 
 	it("marks the cursor row and scrolls it into the visible window", () => {

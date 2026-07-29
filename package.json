@@ -1,6 +1,6 @@
 {
   "name": "@llmgates_api/pi-llmgates-provider",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Pi provider extension for LLMGates: dynamic models from /v1/models and /login setup",
   "type": "module",
   "keywords": [

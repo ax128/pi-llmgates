@@ -21,6 +21,7 @@ import type {
 	SelectorSelection,
 	SelectorSnapshot,
 } from "./endpoint-selector.js";
+import { truncateToWidth } from "./terminal-width.js";
 
 /**
  * Subset of pi's `Theme` this component uses.
@@ -118,10 +119,8 @@ function padEnd(value: string, width: number): string {
 }
 
 function clip(value: string, width: number): string {
-	if (width <= 0) return value;
-	return value.length <= width
-		? value
-		: `${value.slice(0, Math.max(0, width - 1))}…`;
+	if (width <= 0) return "";
+	return truncateToWidth(value, width);
 }
 
 /** Printable input only: no control chars, no escape sequences, no multi-line pastes. */
