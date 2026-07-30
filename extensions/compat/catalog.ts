@@ -196,6 +196,7 @@ export function mapCompatModelsPayload(
 			contextWindow: resolveCompatContextWindow(id, explicitContext),
 			maxTokens,
 			thinkingLevelMap: thinking.thinkingLevelMap,
+			...(thinking.compat ? { compat: thinking.compat } : {}),
 		};
 		models.push(applyMoonshotKimiCompatModel(model, vendor));
 		catalogRefs.push(

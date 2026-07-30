@@ -64,6 +64,33 @@ describe("resolveCompatContextWindow", () => {
 });
 
 describe("mapCompatModelsPayload", () => {
+	it("stamps adaptive-thinking compat on models routed to messages", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{ id: "claude-opus-4-8" },
+				{ id: "claude-opus-5" },
+				{ id: "claude-sonnet-4-6" },
+				{ id: "claude-sonnet-4-5-20250929" },
+				{ id: "claude-3-7-sonnet-20250219" },
+			],
+			{ ...OPTIONS, endpointOverride: () => "messages" },
+		);
+
+		expect(models.map(({ id, api, compat }) => ({ id, api, compat }))).toEqual([
+			{ id: "claude-opus-4-8", api: "anthropic-messages", compat: { forceAdaptiveThinking: true, supportsTemperature: false } },
+			{ id: "claude-opus-5", api: "anthropic-messages", compat: { forceAdaptiveThinking: true, supportsTemperature: false } },
+			{ id: "claude-sonnet-4-6", api: "anthropic-messages", compat: { forceAdaptiveThinking: true } },
+			{ id: "claude-sonnet-4-5-20250929", api: "anthropic-messages", compat: undefined },
+			{ id: "claude-3-7-sonnet-20250219", api: "anthropic-messages", compat: undefined },
+		]);
+	});
+
+	it("leaves chat_completions routing without anthropic compat", () => {
+		const { models } = mapCompatModelsPayload([{ id: "claude-opus-4-8" }], OPTIONS);
+		expect(models[0]?.api).toBe("openai-completions");
+		expect(models[0]?.compat).toBeUndefined();
+	});
+
 	it.each([
 		["array", [{ id: "array-model" }]],
 		["data", { data: [{ id: "data-model" }] }],

@@ -27,6 +27,7 @@ import {
 	openAIResponsesApi,
 } from "@earendil-works/pi-ai/compat";
 import {
+	applyAnthropicAdaptiveCompatToModel,
 	applyUniversalThinkingLevelMapToModel,
 	applyGatewayModelCosts,
 	applyInferenceBaseUrlToModel,
@@ -322,6 +323,7 @@ export function createLLMGatesProvider(options: LLMGatesProviderOptions): LLMGat
 			applyInferenceBaseUrlToModel(model, inferenceBaseUrl);
 		}
 		applyMoonshotKimiCompatModel(model);
+		applyAnthropicAdaptiveCompatToModel(model);
 		applyUniversalThinkingLevelMapToModel(model);
 	}
 

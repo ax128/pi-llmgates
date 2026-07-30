@@ -2,6 +2,7 @@ import type { Context, Model } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	applyAnthropicAdaptiveCompatToModel,
 	applyGatewayModelCosts,
 	defaultInferenceEndpoint,
 	formatCreditsMessage,
@@ -160,6 +161,58 @@ describe("toPiModel", () => {
 			expect(model?.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
 		},
 	);
+
+	it.each([
+		["kiro/claude-opus-4-8", { forceAdaptiveThinking: true, supportsTemperature: false }],
+		["kiro/claude-opus-4-7-20260101", { forceAdaptiveThinking: true, supportsTemperature: false }],
+		["kiro/claude-opus-4-6", { forceAdaptiveThinking: true }],
+		["kiro/claude-sonnet-5", { forceAdaptiveThinking: true }],
+	])("keeps adaptive compat for routing-prefixed %s", (id, expected) => {
+		const model = toPiModel({ id, provider_id: "kiro", web_chat_endpoint: "messages" });
+		expect(model?.compat).toEqual(expected);
+		expect(model?.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
+	});
+
+	it("extrapolates adaptive compat for Claude releases newer than the built-in catalog", () => {
+		const model = toPiModel({ id: "kiro/claude-opus-5", provider_id: "kiro", web_chat_endpoint: "messages" });
+		expect(model?.compat).toEqual({ forceAdaptiveThinking: true, supportsTemperature: false });
+	});
+
+	it.each(["kiro/claude-haiku-4-5", "kiro/claude-opus-4-5", "kiro/claude-sonnet-4-20250514", "kiro/claude-3-7-sonnet-20250219"])(
+		"keeps budget-based thinking for pre-adaptive %s",
+		(id) => {
+			const model = toPiModel({ id, provider_id: "kiro", web_chat_endpoint: "messages" });
+			expect(model?.compat).toBeUndefined();
+		},
+	);
+
+	it("sends the selected effort for a routing-prefixed Claude model", async () => {
+		const mapped = toPiModel({ id: "kiro/claude-opus-4-8", provider_id: "kiro", web_chat_endpoint: "messages" });
+		const model = providerModelsToStoredModels("llmgates", [mapped!], "https://example.invalid/v1")[0] as Model<"anthropic-messages">;
+		let payload: Record<string, unknown> | undefined;
+		await anthropicMessagesApi().streamSimple(model, { messages: [] }, {
+			apiKey: "test-key",
+			reasoning: "max",
+			onPayload(captured) {
+				payload = captured as Record<string, unknown>;
+				throw new Error("payload captured");
+			},
+		}).result();
+		expect(payload).toMatchObject({ thinking: { type: "adaptive" }, output_config: { effort: "max" } });
+	});
+
+	it("restores adaptive compat on a cache-restored prefixed Claude model", () => {
+		const cached = {
+			id: "kiro/claude-opus-4-8",
+			api: "anthropic-messages",
+			provider: "llmgates",
+			baseUrl: "https://example.invalid",
+		} as unknown as Model<"anthropic-messages">;
+		expect(applyAnthropicAdaptiveCompatToModel(cached).compat).toEqual({
+			forceAdaptiveThinking: true,
+			supportsTemperature: false,
+		});
+	});
 
 	it("re-resolves transport compat per endpoint family (not thinking map)", () => {
 		const gateway = { id: "claude-opus-4-7", provider_id: "anthropic" };
