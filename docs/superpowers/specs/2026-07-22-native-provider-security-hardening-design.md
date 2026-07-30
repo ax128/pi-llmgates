@@ -1,8 +1,8 @@
 # LLMGates Native Provider 全面安全加固设计
 
 > Status: approved design after security review and follow-up re-review.
-> Supersedes: `docs/superpowers/specs/2026-07-22-provider-security-and-nonblocking-design.md`
-> and `docs/superpowers/plans/2026-07-22-provider-security-and-nonblocking-plan.md`.
+> Supersedes: `docs/superpowers/archive/2026-07-22-provider-security-and-nonblocking-design.md`
+> and `docs/superpowers/archive/2026-07-22-provider-security-and-nonblocking-plan.md`.
 
 ## 1. 状态与目标
 

@@ -30,17 +30,6 @@ const MOONSHOT_KIMI_VENDOR_IDS = new Set([
 	"kimi-coding-cn",
 ]);
 
-/** @deprecated Kimi-specific thinking maps are no longer used; kept for test imports only. */
-export const MOONSHOT_KIMI_K3_THINKING_LEVEL_MAP = {
-	off: null,
-	minimal: null,
-	low: "low",
-	medium: null,
-	high: "high",
-	xhigh: null,
-	max: "max",
-} as const;
-
 function bareCompatModelId(modelId: string): string {
 	const id = modelId.trim().toLowerCase();
 	return id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
@@ -178,7 +167,7 @@ export function mapCompatModelsPayload(
 		// `messages` and change behavior for users who configured no override at all.
 		const endpoint = options.endpointOverride?.(id) ?? "chat_completions";
 		const api = toPiApiType(endpoint, vendor ?? "");
-		const thinking = resolveThinkingMetadata(id, vendor, api);
+		const thinking = resolveThinkingMetadata(id, api);
 
 		const displayName =
 			(typeof upstream.display_name === "string" && upstream.display_name.trim()) ||
