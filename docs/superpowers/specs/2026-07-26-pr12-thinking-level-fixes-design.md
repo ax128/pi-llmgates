@@ -1,5 +1,13 @@
 # PR #12 Thinking-Level Fixes Design
 
+> **Partially superseded（PR #22，universal thinking levels）。** 本文的 thinking-metadata 解析链
+> （精确 OpenAI/Anthropic 内置 sparse map、网关 `supported_reasoning_levels`、Google/xAI/DeepSeek
+> 静态规则、Kimi K3 transport fallback，以及 PR #19/#20 的 xhigh/max overlay）已被
+> `extensions/catalog.ts` 中对所有插件模型统一应用的 `UNIVERSAL_THINKING_LEVEL_MAP` 取代——全量档位、
+> `reasoning` 恒为 `true`、不再读取网关 levels、不再 sparse。逐模型微调改走 pi 原生
+> `~/.pi/agent/models.json` 的 `modelOverrides`（见根 README「思考等级」）。
+> 本文的 **endpoint override 优先级与 catalog 生命周期部分仍然有效**；请勿据 thinking 部分实施。
+
 ## Goal
 
 Fix the review findings on PR #12 without changing its public configuration shape:

@@ -1,5 +1,9 @@
 # PR #12 Thinking-Level Fixes Implementation Plan
 
+> **Partially superseded（PR #22）。** 本计划的 thinking-metadata 任务（Task 1、Task 5）已被
+> `UNIVERSAL_THINKING_LEVEL_MAP` 取代；endpoint override、catalog 生命周期与文档任务仍然有效。
+> 详见对应 spec 顶部横幅与根 README「思考等级」。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Correct PR #12 thinking metadata and endpoint-override behavior without changing its public configuration shape.
@@ -13,6 +17,7 @@
 ### Task 1: Correct thinking metadata resolution
 
 **Files:**
+
 - Modify: `extensions/catalog.ts`
 - Modify: `test/catalog.test.ts`
 - Modify: `test/compat-catalog.test.ts`
@@ -26,6 +31,7 @@
 ### Task 2: Make endpoint reload safe and isolate 2API
 
 **Files:**
+
 - Modify: `extensions/model-overrides.ts`
 - Modify: `extensions/provider.ts`
 - Modify: `extensions/compat/provider.ts`
@@ -41,6 +47,7 @@
 ### Task 3: Pin refresh/cache contract and update documentation
 
 **Files:**
+
 - Modify: `extensions/provider.ts`
 - Modify: `test/lifecycle.test.ts`
 - Modify: `test/provider.test.ts`
@@ -57,6 +64,7 @@
 ### Task 4: Close catalog request and session races
 
 **Files:**
+
 - Modify: `extensions/provider.ts`
 - Modify: `test/lifecycle.test.ts`
 - Modify: `test/provider.test.ts`
@@ -71,6 +79,7 @@
 ### Task 5: Preserve Anthropic adapter-safety metadata
 
 **Files:**
+
 - Modify: `extensions/catalog.ts`
 - Modify: `test/catalog.test.ts`
 
@@ -82,6 +91,7 @@
 ### Task 6: Correct documentation and finish verification
 
 **Files:**
+
 - Modify: `README.md`
 - Modify: `docs/README.md`
 - Modify: `docs/superpowers/specs/2026-07-26-pr12-thinking-level-fixes-design.md`
