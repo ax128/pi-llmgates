@@ -200,25 +200,6 @@ export function toPiApiType(endpoint: string, providerId: string): PiApiType {
 	}
 }
 
-export function extractReasoningEfforts(model: GatewayModel): string[] {
-	const raw = Array.isArray(model.supported_reasoning_levels) ? model.supported_reasoning_levels : [];
-	const efforts: string[] = [];
-	for (const entry of raw) {
-		const effort =
-			typeof entry === "string"
-				? entry
-				: entry && typeof entry === "object" && typeof (entry as { effort?: unknown }).effort === "string"
-					? (entry as { effort: string }).effort
-					: "";
-		const normalized = effort.trim().toLowerCase();
-		if (!normalized) continue;
-		if (!efforts.includes(normalized)) {
-			efforts.push(normalized);
-		}
-	}
-	return efforts;
-}
-
 interface ResolvedThinkingMetadata {
 	reasoning: boolean;
 	thinkingLevelMap: ThinkingLevelMap;
@@ -338,9 +319,7 @@ export type { ResolvedThinkingMetadata };
 
 export function resolveThinkingMetadata(
 	modelId: string,
-	_vendor: string | undefined,
 	api: PiApiType,
-	_gatewayEfforts?: readonly string[] | undefined,
 ): ResolvedThinkingMetadata {
 	const compat = resolveExactCompat(modelId, api);
 	return {
@@ -401,7 +380,7 @@ export function toPiModel(
 	const override = typeof endpointOverride === "function" ? endpointOverride(id) : undefined;
 	const endpoint = override ?? resolveInferenceEndpoint(model);
 	const api = toPiApiType(endpoint, providerId);
-	const thinking = resolveThinkingMetadata(id, providerId || undefined, api);
+	const thinking = resolveThinkingMetadata(id, api);
 
 	const contextWindow =
 		(typeof model.context_window === "number" && model.context_window > 0 ? model.context_window : undefined) ??
