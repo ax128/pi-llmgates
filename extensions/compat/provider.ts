@@ -61,6 +61,7 @@ import type { EndpointRefreshResult } from "../provider.js";
 import {
 	decodeCompatRefreshMeta,
 	encodeCompatRefreshMeta,
+	RegistryInstanceMismatchError,
 	replaceInstanceIfEqual,
 } from "./storage.js";
 import {
@@ -487,8 +488,14 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 
 	patchCachedModels(models, currentInstance.baseUrl);
 
-	async function persistInstanceBaseUrl(baseUrl: string, expectedGeneration: number): Promise<void> {
+	type RegistryPersistOutcome = "ok" | "stale" | "failed";
+
+	async function persistInstanceBaseUrl(
+		baseUrl: string,
+		expectedGeneration: number,
+	): Promise<RegistryPersistOutcome> {
 		pendingRegistryBaseUrl = baseUrl;
+		let outcome: RegistryPersistOutcome = "ok";
 		await withCommit(async () => {
 			if (!lifecycleMatches(expectedGeneration) || pendingRegistryBaseUrl !== baseUrl) return;
 			try {
@@ -502,11 +509,26 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 				persistedInstance = updated;
 				currentInstance = updated;
 				pendingRegistryBaseUrl = null;
-			} catch {
+			} catch (error) {
 				if (!lifecycleMatches(expectedGeneration)) return;
-				logWarn(providerId, "Instance registry update failed; will retry on a later refresh.");
+				if (error instanceof RegistryInstanceMismatchError) {
+					// The entry was replaced underneath this provider (e.g. by a login
+					// repair): publishing this refresh would register stale models under
+					// the new entry's provider id. A missing entry is NOT stale — fresh
+					// logins and unregistered test providers legitimately persist into an
+					// entry that does not exist yet.
+					outcome = "stale";
+					logWarn(
+						providerId,
+						"Instance registry update failed: entry was replaced by login repair; skipping this stale refresh.",
+					);
+				} else {
+					outcome = "failed";
+					logWarn(providerId, "Instance registry update failed; will retry on a later refresh.");
+				}
 			}
 		});
+		return outcome;
 	}
 
 	function schedulePricingSync(result: CatalogResult, fetchGeneration: number): void {
@@ -632,6 +654,16 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			pendingRegistryBaseUrl = connection.baseUrl;
 		}
 
+		if (pendingRegistryBaseUrl && connection.baseUrl === pendingRegistryBaseUrl) {
+			const outcome = await persistInstanceBaseUrl(pendingRegistryBaseUrl, refreshGeneration);
+			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+			// A superseded registry entry means this provider is stale; drop the
+			// refresh entirely so its models are never (re)published. Transient
+			// failures keep the pre-existing publish behavior ("without losing
+			// models") and retry the repair on a later refresh.
+			if (outcome === "stale") return;
+		}
+
 		try {
 			const stored = await context.store.read();
 			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
@@ -639,11 +671,6 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		} catch (error) {
 			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
 			logWarn(providerId, `Failed to read model cache: ${error instanceof Error ? error.message : String(error)}`);
-		}
-
-		if (pendingRegistryBaseUrl && connection.baseUrl === pendingRegistryBaseUrl) {
-			await persistInstanceBaseUrl(pendingRegistryBaseUrl, refreshGeneration);
-			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
 		}
 
 		if (

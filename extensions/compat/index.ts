@@ -99,6 +99,30 @@ function hasAuthEntry(auth: Record<string, Credential>, providerId: string): boo
 	return Object.keys(auth).some((key) => key.toLowerCase() === providerId.toLowerCase());
 }
 
+type CleanupAuthRead =
+	| { status: "ok"; auth: Record<string, Credential> }
+	| { status: "missing" }
+	| { status: "unreadable"; error: unknown };
+
+/**
+ * Logout cleanup must never infer "logged out" from a file it could not read:
+ * a missing auth.json (manual credential reset, sync gap) or one caught
+ * mid-rewrite must skip the round instead of purging every instance. Unlike
+ * `readAuthMap` (startup, where ENOENT legitimately means "no credentials"),
+ * deletion decisions need a positively readable file.
+ */
+function readAuthMapForCleanup(agentDir: string): CleanupAuthRead {
+	try {
+		return {
+			status: "ok",
+			auth: parseAuthFile(readFileSync(join(agentDir, "auth.json"), "utf8")) as Record<string, Credential>,
+		};
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
+		return { status: "unreadable", error };
+	}
+}
+
 function matchingOAuthCredential(
 	auth: Record<string, Credential>,
 	instance: CompatInstance,
@@ -192,14 +216,59 @@ export function registerCompatGateways(
 	let authWatcher: FSWatcher | undefined;
 	let orphanCleanup: Promise<void> | undefined;
 	let orphanCleanupRequested = false;
+	let orphanCleanupRetryTimer: ReturnType<typeof setTimeout> | undefined;
+	let orphanCleanupRetryCount = 0;
+
+	const ORPHAN_CLEANUP_MAX_RETRIES = 3;
+	const ORPHAN_CLEANUP_RETRY_DELAY_MS = 1_000;
+
+	function scheduleOrphanCleanupRetry(): void {
+		if (orphanCleanupRetryTimer) return;
+		if (orphanCleanupRetryCount >= ORPHAN_CLEANUP_MAX_RETRIES) {
+			logWarn(`auth.json stayed unreadable after ${ORPHAN_CLEANUP_MAX_RETRIES} cleanup retries; run /reload to retry logout cleanup.`);
+			return;
+		}
+		orphanCleanupRetryCount += 1;
+		orphanCleanupRetryTimer = setTimeout(() => {
+			orphanCleanupRetryTimer = undefined;
+			requestOrphanCleanup();
+		}, ORPHAN_CLEANUP_RETRY_DELAY_MS);
+		orphanCleanupRetryTimer.unref();
+	}
+
+	function stopOrphanCleanupRetry(): void {
+		if (orphanCleanupRetryTimer) {
+			clearTimeout(orphanCleanupRetryTimer);
+			orphanCleanupRetryTimer = undefined;
+		}
+	}
 
 	async function pruneOrphanedInstances(): Promise<void> {
-		const auth = readAuthMap(agentDir);
+		const authRead = readAuthMapForCleanup(agentDir);
+		if (authRead.status === "unreadable") {
+			logWarn(`auth.json is temporarily unreadable; skipping 2api logout cleanup this round: ${errorText(authRead.error)}`);
+			scheduleOrphanCleanupRetry();
+			return;
+		}
+		if (authRead.status === "missing") {
+			if (listInstances(agentDir).length > 0) {
+				logWarn("auth.json is missing; skipping 2api logout cleanup this round so instances are not deleted on a missing file.");
+			}
+			return;
+		}
+		// A positively readable file settles any pending retry budget.
+		stopOrphanCleanupRetry();
+		orphanCleanupRetryCount = 0;
+		const auth = authRead.auth;
 		for (const instance of listInstances(agentDir)) {
 			if (hasAuthEntry(auth, instance.id)) continue;
 			await withIdTransaction(instance.id, async () => {
-				const currentAuth = readAuthMap(agentDir);
-				if (hasAuthEntry(currentAuth, instance.id)) return;
+				const currentAuthRead = readAuthMapForCleanup(agentDir);
+				if (currentAuthRead.status !== "ok") {
+					if (currentAuthRead.status === "unreadable") scheduleOrphanCleanupRetry();
+					return;
+				}
+				if (hasAuthEntry(currentAuthRead.auth, instance.id)) return;
 				const current = listInstances(agentDir)
 					.find((stored) => stored.id.toLowerCase() === instance.id.toLowerCase());
 				if (!current) return;
@@ -209,6 +278,11 @@ export function registerCompatGateways(
 					await retirePreviousProvider(current.id);
 				} catch (error) {
 					failures.push(`provider cleanup: ${errorText(error)}`);
+					logWarn(
+						`Failed to purge logged-out ${current.id}: ${failures.join("; ")}; `
+						+ "registry and endpoint overrides were kept so /reload can recover.",
+					);
+					return;
 				}
 				try {
 					await removeInstance(agentDir, current.id);
@@ -222,7 +296,9 @@ export function registerCompatGateways(
 				}
 				if (failures.length > 0) {
 					logWarn(`Failed to purge logged-out ${current.id}: ${failures.join("; ")}`);
+					return;
 				}
+				logWarn(`Removed logged-out 2api instance "${current.id}": registry entry, runtime provider, and endpoint overrides deleted.`);
 			});
 		}
 	}
@@ -305,7 +381,10 @@ export function registerCompatGateways(
 		async onValidated({ instance, credential, initialCatalog }) {
 			await withIdTransaction(instance.id, async () => {
 				if (listInstances(agentDir).some((stored) => stored.id.toLowerCase() === instance.id.toLowerCase())) {
-					throw new Error(`Instance ID "${instance.id}" already exists in the compatibility registry`);
+					throw new Error(
+						`Instance ID "${instance.id}" already exists in the compatibility registry; `
+						+ "if it was just logged out, wait for the cleanup to finish or run /reload.",
+					);
 				}
 				await assertAuthEntryAbsent(agentDir, instance.id);
 				await writeProviderOAuthCredential(agentDir, instance.id, credential);
@@ -439,6 +518,7 @@ export function registerCompatGateways(
 
 	pi.on("session_shutdown", async () => {
 		stopAuthWatcher();
+		stopOrphanCleanupRetry();
 		await Promise.allSettled([
 			...([...providers.values()].map((provider) => provider.shutdown())),
 			...(orphanCleanup ? [orphanCleanup] : []),

@@ -167,6 +167,13 @@ export async function updateInstance(agentDir: string, instance: CompatInstance)
 	});
 }
 
+export class RegistryInstanceMismatchError extends Error {
+	constructor(instanceId: string) {
+		super(`Instance ID "${instanceId}" changed during login repair`);
+		this.name = "RegistryInstanceMismatchError";
+	}
+}
+
 export async function replaceInstanceIfEqual(
 	agentDir: string,
 	expectedInstance: CompatInstance,
@@ -185,7 +192,7 @@ export async function replaceInstanceIfEqual(
 			throw new Error(`Instance ID "${expected.id}" does not exist`);
 		}
 		if (!isDeepStrictEqual(config.instances[index], expected)) {
-			throw new Error(`Instance ID "${expected.id}" changed during login repair`);
+			throw new RegistryInstanceMismatchError(expected.id);
 		}
 		const instances = [...config.instances];
 		instances[index] = nextInstance;

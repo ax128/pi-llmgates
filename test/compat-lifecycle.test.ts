@@ -1,5 +1,6 @@
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -8,6 +9,7 @@ import {
 } from "../extensions/compat/index.js";
 import type { CompatProvider, CompatProviderOptions } from "../extensions/compat/provider.js";
 import { encodeCompatRefreshMeta, deleteProviderAuthEntry, listInstances } from "../extensions/compat/storage.js";
+import { writeModelOverrides } from "../extensions/model-overrides.js";
 import type { CompatInstance } from "../extensions/compat/types.js";
 import { createMemoryStore } from "./helpers/fake-store.js";
 import { withTempAgentDir, writeJson } from "./helpers/temp-agent-dir.js";
@@ -165,12 +167,15 @@ describe("compat lifecycle", () => {
 		}
 	});
 
-	it("purges a registry and runtime provider after its auth entry is logged out", async () => {
+	it("purges a registry, runtime provider, and endpoint overrides after logout", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		const pi = createPi();
 		const instance = INSTANCES[0]!;
 		try {
 			seedStartup(agentDir, [instance]);
+			await writeModelOverrides(agentDir, { kind: "2api", instanceId: instance.id }, [
+				{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+			]);
 			const registration = registerCompatGateways(pi.pi, agentDir);
 			await pi.emit("session_start", { reason: "start" });
 			await deleteProviderAuthEntry(agentDir, instance.id);
@@ -178,7 +183,81 @@ describe("compat lifecycle", () => {
 			await vi.waitFor(() => expect(listInstances(agentDir)).toEqual([]));
 			expect(registration.providers.has(instance.id)).toBe(false);
 			expect(pi.unregistered).toEqual([instance.id]);
+			expect(existsSync(join(agentDir, "llmgates/2api-models", `${instance.id}.json`))).toBe(false);
 		} finally {
+			cleanup();
+		}
+	});
+
+	it("purges only the logged-out instance and keeps other instances running", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const [loggedOut, retained] = INSTANCES;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir);
+			const registration = registerCompatGateways(pi.pi, agentDir);
+			await pi.emit("session_start", { reason: "start" });
+			await deleteProviderAuthEntry(agentDir, loggedOut!.id);
+
+			await vi.waitFor(() => expect(listInstances(agentDir)).toEqual([retained]), { timeout: 5_000 });
+			expect(registration.providers.has(loggedOut!.id)).toBe(false);
+			expect(registration.providers.has(retained!.id)).toBe(true);
+			expect(pi.unregistered).toEqual([loggedOut!.id]);
+			expect(pi.registered.map((provider) => provider.id)).toContain(retained!.id);
+			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Removed logged-out.*gateway-a/i));
+		} finally {
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("skips cleanup when auth.json is missing so instances are not deleted on a missing file", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const instance = INSTANCES[0]!;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			const registration = registerCompatGateways(pi.pi, agentDir);
+			rmSync(join(agentDir, "auth.json"));
+			await pi.emit("session_start", { reason: "start" });
+
+			await vi.waitFor(
+				() => expect(warn).toHaveBeenCalledWith(expect.stringMatching(/auth\.json is missing/i)),
+				{ timeout: 5_000 },
+			);
+			expect(listInstances(agentDir)).toEqual([instance]);
+			expect(registration.providers.has(instance.id)).toBe(true);
+		} finally {
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("skips cleanup on a temporarily unreadable auth.json and recovers when it becomes readable", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const instance = INSTANCES[0]!;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir);
+			await pi.emit("session_start", { reason: "start" });
+
+			// A file caught mid-rewrite must not be read as "all credentials logged out".
+			writeFileSync(join(agentDir, "auth.json"), "{");
+			await vi.waitFor(
+				() => expect(warn).toHaveBeenCalledWith(expect.stringMatching(/temporarily unreadable/i)),
+				{ timeout: 5_000 },
+			);
+			expect(listInstances(agentDir)).toEqual([instance]);
+
+			// Once the file is readable again, the pending logout cleanup completes.
+			writeJson(join(agentDir, "auth.json"), {});
+			await vi.waitFor(() => expect(listInstances(agentDir)).toEqual([]), { timeout: 5_000 });
+		} finally {
+			warn.mockRestore();
 			cleanup();
 		}
 	});
@@ -271,6 +350,7 @@ describe("compat lifecycle", () => {
 			scheme: "sub2api",
 			baseUrl: "https://replacement.example/v1",
 		};
+		const staleBaseUrl = "https://stale.example/v1";
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			seedStartup(agentDir, [instance]);
@@ -278,22 +358,30 @@ describe("compat lifecycle", () => {
 			const staleProvider = registration.providers.get(instance.id)!;
 			writeJson(join(agentDir, "llmgates/2api.json"), { instances: [replacement] });
 
+			const store = createMemoryStore();
+			await store.write({
+				models: [{ ...model(instance.id), baseUrl: staleBaseUrl }],
+				checkedAt: Date.now(),
+			});
 			await staleProvider.refreshModels!({
 				credential: {
 					type: "oauth",
 					access: "stale-key",
 					refresh: encodeCompatRefreshMeta({
-						baseUrl: "https://stale.example/v1",
+						baseUrl: staleBaseUrl,
 						scheme: instance.scheme,
 					}),
 					expires: 4_102_444_800_000,
 				},
-				store: createMemoryStore(),
+				store,
 				allowNetwork: false,
 			});
 
 			expect(listInstances(agentDir)).toEqual([replacement]);
 			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/registry update failed/i));
+			// The stale refresh must not adopt even cache-valid stale models: the
+			// registry entry now belongs to a different configuration.
+			expect(staleProvider.getModels()).toEqual([]);
 		} finally {
 			warn.mockRestore();
 			cleanup();
