@@ -12,6 +12,7 @@ import {
 	listInstances,
 	loadCompatConfig,
 	removeInstance,
+	replaceInstanceIfEqual,
 	updateInstance,
 	writeProviderOAuthCredential,
 } from "../extensions/compat/storage.js";
@@ -81,6 +82,21 @@ describe("compat registry storage", () => {
 			expect(await removeInstance(agentDir, "WORK-NEWAPI")).toBe(true);
 			expect(await removeInstance(agentDir, "work-newapi")).toBe(false);
 			expect(listInstances(agentDir)).toEqual([second]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("conditionally replaces only an unchanged registry entry", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const renamed = { ...first, id: "WORK-NEWAPI", name: "Renamed" };
+		try {
+			writeJson(join(agentDir, "llmgates/2api.json"), { instances: [first, second] });
+			await expect(replaceInstanceIfEqual(agentDir, first, renamed)).resolves.toEqual(renamed);
+			await expect(
+				replaceInstanceIfEqual(agentDir, first, { ...first, name: "Stale overwrite" }),
+			).rejects.toThrow(/changed during login repair/i);
+			expect(listInstances(agentDir)).toEqual([renamed, second]);
 		} finally {
 			cleanup();
 		}
