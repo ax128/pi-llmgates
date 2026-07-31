@@ -1,8 +1,10 @@
 # PR #12 Thinking-Level Fixes Implementation Plan
 
-> **Partially superseded（PR #22）。** 本计划的 thinking-metadata 任务（Task 1、Task 5）已被
-> `UNIVERSAL_THINKING_LEVEL_MAP` 取代；endpoint override、catalog 生命周期与文档任务仍然有效。
-> 详见对应 spec 顶部横幅与根 README「思考等级」。
+> **Partially superseded（PR #22、PR #21）。** 本计划的 thinking-metadata 任务（Task 1、Task 5）已被
+> `UNIVERSAL_THINKING_LEVEL_MAP` 取代；「2API 固定 openai-completions、移除其 endpoint-override I/O」
+> 目标已被 PR #21 endpoint-interactive 取代（2API 现支持多出口并按实例读取
+> `llmgates/2api-models/<instanceId>.json`）。core 的 endpoint override、catalog 生命周期与文档任务
+> 仍然有效。详见对应 spec 横幅与根 README「思考等级」。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

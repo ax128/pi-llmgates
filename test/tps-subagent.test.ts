@@ -267,7 +267,7 @@ describe("tps subagent usage", () => {
 		expect(normalizeRunIdForSourceKey(UUID_RUN)).toBe(UUID_NORM);
 	});
 
-	it("parses meta filename with UUID runId and dotted agent (§13.11)", () => {
+	it("parses meta filename with UUID runId and dotted agent (§13.10)", () => {
 		expect(
 			metaFileSourceKey(`${UUID_RUN}_code-analysis.custom-agent_0_meta.json`),
 		).toBe(`meta:${UUID_NORM}:code-analysis.custom-agent:0`);
@@ -875,7 +875,7 @@ describe("tps subagent usage", () => {
 		expect(ingested.size).toBe(1);
 	});
 
-	it("does not emit run aggregate when status.json has per-step usage (§13.10)", () => {
+	it("does not emit run aggregate when status.json has per-step usage (§13.9)", () => {
 		const root = mkdtempSync(join(tmpdir(), "status-nagg-"));
 		const asyncDir = join(root, "async-run");
 		mkdirSync(asyncDir, { recursive: true });
@@ -919,7 +919,7 @@ describe("tps subagent usage", () => {
 		expect(records.find((r) => r.sourceKey === `meta:${UUID_NORM}`)).toBeUndefined();
 	});
 
-	it("SUBAGENT_TOOL_NAMES excludes wait/supervisor/intercom (§13.12)", () => {
+	it("SUBAGENT_TOOL_NAMES excludes wait/supervisor/intercom (§13.11)", () => {
 		expect(SUBAGENT_TOOL_NAMES.has("subagent")).toBe(true);
 		expect(SUBAGENT_TOOL_NAMES.has("task")).toBe(true);
 		expect(SUBAGENT_TOOL_NAMES.has("subagent_wait")).toBe(false);
