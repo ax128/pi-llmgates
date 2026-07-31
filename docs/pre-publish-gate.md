@@ -72,7 +72,7 @@ npm run gate
 脚本会：
 
 - 跑 `npm run check` 与 `npm pack`
-- 断言 tarball 含 `extensions/index.ts`、`extensions/tps.ts`、`README.md`、`LICENSE`
+- 断言 tarball 含 `dist/index.js`、`dist/tps.js`、`README.md`、`LICENSE`
 - 计算 sha256 并写入 `.gate/pre-publish-build.json`（已 gitignore）
 
 **通过标准：**
@@ -99,6 +99,15 @@ pi install "./${TGZ}"
 # 或仅当前项目：pi install -l "./${TGZ}"
 ```
 
+> **pi 0.83 注意：** `pi install ./xxx.tgz` 目前只把 `.tgz` 路径当 local source 记入 settings，启动会报 `Unknown file extension ".tgz"`。临时变通：解包后安装目录（内容与日后 registry tarball 一致），并在包目录内装生产依赖：
+>
+> ```bash
+> rm -rf /tmp/llg-pkg && mkdir -p /tmp/llg-pkg
+> tar -xzf "./${TGZ}" -C /tmp/llg-pkg --strip-components=1
+> (cd /tmp/llg-pkg && npm install --omit=dev --ignore-scripts --no-audit --no-fund)
+> pi install /tmp/llg-pkg
+> ```
+
 启动 pi 并加载扩展：
 
 ```bash
@@ -115,7 +124,7 @@ pi
 
 | 方式 | 说明 |
 | --- | --- |
-| `pi install ./xxx.tgz` | **发版门禁推荐**；安装 file tarball，与 `npm pack` 产物一致 |
+| `pi install ./xxx.tgz` | **发版门禁推荐**；pi 0.83 下需先解包再装目录（见上方注意框） |
 | `pi install npm:@scope/pkg@ver` | 经 registry 拉取；publish 后可选做最终确认 |
 | `pi install .` | 源码目录，**不能**代替 §3 |
 | `pi install -l …` | 仅当前项目；与全局安装路径不同，但包内容相同 |

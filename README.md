@@ -464,6 +464,7 @@ Pi 内置 footer 在 OAuth 登录时可能仍显示 `(sub)`，该标记与 LLMGa
 git clone https://github.com/ax128/pi-llmgates.git
 cd pi-llmgates
 npm install
+npm run build    # 编译 extensions/ → dist/（pi.extensions 指向 dist，源码改动后必须重新 build）
 npm run check    # typecheck + vitest
 pi install .
 ```

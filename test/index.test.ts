@@ -48,9 +48,9 @@ describe("extension entrypoints", () => {
 		};
 		const entrypoint = readFileSync(join(root, "extensions", "index.ts"), "utf8");
 
-		expect(pkg.pi?.extensions).toContain("./extensions/index.ts");
-		expect(pkg.pi?.extensions).not.toContain("./extensions/balance.ts");
-		expect(pkg.pi?.extensions).not.toContain("./extensions/compat/index.ts");
+		expect(pkg.pi?.extensions).toContain("./dist/index.js");
+		expect(pkg.pi?.extensions).not.toContain("./dist/balance.js");
+		expect(pkg.pi?.extensions).not.toContain("./dist/compat/index.js");
 		expect(entrypoint).toMatch(/registerCompatGateways/);
 		expect(entrypoint).toMatch(/registerEndpointCommand/);
 		expect(entrypoint).toMatch(/registerEndpointSettingCommand/);

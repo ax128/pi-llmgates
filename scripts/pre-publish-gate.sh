@@ -28,8 +28,8 @@ VERSION="$(node -p "require('./package.json').version")"
 echo "==> verify tarball contents"
 REQUIRED_PATHS=(
 	package/package.json
-	package/extensions/index.ts
-	package/extensions/tps.ts
+	package/dist/index.js
+	package/dist/tps.js
 	package/README.md
 	package/LICENSE
 )

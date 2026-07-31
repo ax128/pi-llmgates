@@ -204,8 +204,8 @@ git push origin "v$VERSION"
 | --- | --- |
 | `name` | `@llmgates_api/pi-llmgates-provider` |
 | `publishConfig.access` | `public` |
-| `files` | `extensions`, `README.md`, `LICENSE` |
-| `pi.extensions` | `./extensions/index.ts`, `./extensions/tps.ts` |
+| `files` | `dist`, `README.md`, `LICENSE` |
+| `pi.extensions` | `./dist/index.js`, `./dist/tps.js`（由 `npm run build` 从 `extensions/` 编译；`prepack` 自动执行） |
 | `prepublishOnly` | `npm run check` |
 | `engines.node` | `>=22.19.0` |
 

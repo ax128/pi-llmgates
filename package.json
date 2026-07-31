@@ -28,7 +28,9 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
     "check": "npm run typecheck && npm run test",
+    "prepack": "npm run build",
     "gate": "bash ./scripts/pre-publish-gate.sh",
     "gate:record": "bash ./scripts/gate-record-pass.sh",
     "prepublishOnly": "npm run check",
@@ -36,8 +38,8 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/index.ts",
-      "./extensions/tps.ts"
+      "./dist/index.js",
+      "./dist/tps.js"
     ]
   },
   "peerDependencies": {
@@ -56,7 +58,7 @@
     "proper-lockfile": "4.1.2"
   },
   "files": [
-    "extensions",
+    "dist",
     "README.md",
     "LICENSE"
   ]
