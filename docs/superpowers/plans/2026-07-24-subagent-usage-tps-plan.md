@@ -1,5 +1,7 @@
 # TPS 子代理用量全路径采集 Implementation Plan
 
+> **Status: 已实施。** 现行行为以根 [README](../../../README.md) 与源码为准；本文保留为 Task 分解与验收历史，勿作为待办实施。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不修改 pi-subagents 的前提下，一次性补齐 async / background / detached / meta 等全部子代理路径的 token·calls·cost 统计，并入现有 TPS `/calls` 与状态行。

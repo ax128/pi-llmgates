@@ -13,7 +13,7 @@
 
 ## 设计与实现（内部）
 
-以下文档记录 native Provider 安全加固与非阻塞生命周期等历史决策，供维护者与贡献者参考。
+以下文档记录本项目的设计决策与历史演进；标注「当前有效」的可作为实现参考，标注「已实施 / superseded / 归档」的仅供回溯。
 
 ### 规格（Specs）
 
@@ -24,7 +24,7 @@
 | [runtime-lifecycle-usage-races-design.md](./superpowers/specs/2026-07-27-runtime-lifecycle-usage-races-design.md) | **当前有效** — 运行时生命周期与用量竞态修复 |
 | [subagent-usage-tps-design.md](./superpowers/specs/2026-07-24-subagent-usage-tps-design.md) | **当前有效** — TPS 子代理全路径用量采集（含 async 旁路） |
 | [native-provider-security-hardening-design.md](./superpowers/specs/2026-07-22-native-provider-security-hardening-design.md) | **当前有效** — native Provider、认证边界、HTTP 客户端、缓存与测试验收 |
-| [pr12-thinking-level-fixes-design.md](./superpowers/specs/2026-07-26-pr12-thinking-level-fixes-design.md) | **部分 superseded** — endpoint override 与 catalog 生命周期仍有效；thinking 解析链已被 PR #22 universal map 取代（见根 README「思考等级」） |
+| [pr12-thinking-level-fixes-design.md](./superpowers/specs/2026-07-26-pr12-thinking-level-fixes-design.md) | **部分 superseded** — endpoint override 与 catalog 生命周期仍有效；thinking 解析链已被 PR #22 universal map 取代（见根 README「思考等级」）；2API 固定 `openai-completions` 部分已被 PR #21 endpoint-interactive 取代 |
 
 ### 实施计划（Plans）
 
@@ -61,10 +61,15 @@
 | `extensions/balance.ts` | `/balance` 命令 |
 | `extensions/endpoint.ts` | `/endpoint` 单模型出口切换与共享 in-flight 锁 |
 | `extensions/endpoint-setting.ts` | `/endpoint-setting` 跨 provider 批量出口选择器 |
+| `extensions/endpoint-picker.ts` | `/endpoint-setting` TUI 勾选组件（`ui.custom`，零 import） |
+| `extensions/endpoint-selector.ts` | `/endpoint-setting` RPC 文本清单渲染与解析（纯函数） |
+| `extensions/terminal-width.ts` | 终端可见宽度（CJK/emoji），TUI 组件渲染辅助 |
 | `extensions/llmgates-reload.ts` | `/llmgates-reload` 强制刷新 core 与 2API catalog |
 | `extensions/compat/` | 2API 多网关兼容层（`/login llmgates-2api`、`/2api`） |
+| `extensions/login-ui.ts` | `/login` 交互：错误中文化、2API 网关选择与提示 |
 | `extensions/lib.ts` | `llmgates/config.json` 配置写入（保留 ambient apiKey） |
 | `extensions/util.ts` | 原子写、文件锁、envFlag、legacy 配置迁移 |
 | `extensions/tps.ts` | TUI 统计与 `/calls` 命令 |
+| `extensions/tps-stats.ts` | 状态行与 per-model 明细格式化 |
 | `extensions/tps-subagent.ts` | 子代理用量解析（tool / meta / async event） |
 | `extensions/tps-subagent-bridge.ts` | pi-subagents 事件桥接（async/foreground-complete） |

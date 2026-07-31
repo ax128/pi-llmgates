@@ -165,7 +165,7 @@ interface SubagentUsageRecord {
 **优先：** tool/meta 路径通常先于 event 或兜底到达；同 key 后到者丢弃。
 
 **跨粒度防重复（重要）：** 同一 `runId` 的 **per-child**（`meta:{runId}:{agent}:{index}`）与 **run 级 aggregate**（`meta:{runId}`）是**不同** sourceKey，`Set` dedup 拦不住二者叠加。须遵守：
-1. **同一来源 payload 内** per-child 存在时不得再产出 run 级 aggregate（见 §13.10）；
+1. **同一来源 payload 内** per-child 存在时不得再产出 run 级 aggregate（见 §13.9）；
 2. **跨源 ingest**（如 sync `totalChildUsage` aggregate 与后续 meta per-child）彼此互斥——已 ingest 其一则丢弃另一粒度。
 
 ---
@@ -217,7 +217,7 @@ interface SubagentUsageRecord {
 
 **解析：**
 1. 对每个 `results[i]` 按 §5.2 归一化（优先 `modelAttempts[].usage` 求和）。
-2. **§13.10 防重复：** per-child 记录存在时**不得**再产出 run 级 aggregate（二者 sourceKey 不同，Set 拦不住叠加）。
+2. **§13.9 防重复：** per-child 记录存在时**不得**再产出 run 级 aggregate（二者 sourceKey 不同，Set 拦不住叠加）。
 3. 某 child 仍缺 token 时，按 `asyncDir` 读 `status.json` **per-step**（§6.5）或 `sessionFile`（§6.6）兜底；**不得**把 status run 级 totals 写入每个 child。
 4. 若最终没有任何 per-child 记录：最多合成 **一条** run aggregate——优先 event 的 `totalTokens/totalCost`，否则 `status.json` 在 `steps` 空/缺失时的 run 级 totals（sourceKey `meta:{runId}`）。`results` 为缺 token 的 stub 时同样适用（避免 N× 扇出）。
 
@@ -245,7 +245,7 @@ interface SubagentUsageRecord {
 
 **字段（`AsyncStatus`，v0.35.x `shared/types.ts:833`）：**
 - per-step：`steps[i].agent / model / modelAttempts[] / tokens / totalCost / turnCount`；
-- run 级：`totalTokens / totalCost`（**仅在 steps[] 缺失时使用**，避免与 per-step 重复，见 §13.10）。
+- run 级：`totalTokens / totalCost`（**仅在 steps[] 缺失时使用**，避免与 per-step 重复，见 §13.9）。
 
 ### 6.6 child session.jsonl（最后兜底）
 
@@ -374,19 +374,19 @@ Bridge 注册时须传入 pi session `cwd` 作为 `workspaceRoot`；`status.json
 
 若 async 在 `session_shutdown` 之后完成，`sessionId` 过滤会丢弃 — 可接受（非交互 session 边界外不计入该 session TPS）。
 
-### 13.10 SHOULD FIX — status.json run 级 vs per-step 防重复
+### 13.9 SHOULD FIX — status.json run 级 vs per-step 防重复
 
 **问题：** 同一 `status.json` 同时含 per-step（`steps[].tokens/modelAttempts`）与 run 级（`totalTokens/totalCost`）。两者 sourceKey 不同（`meta:{runId}:{agent}:{index}` vs `meta:{runId}`），`Set` dedup **拦不住**二者叠加 → 会把 total + 各 step 计两遍。
 
 **修订：** `extractSubagentUsageFromAsyncStatus` / `extractSubagentUsageFromAsyncComplete` 在 **steps 非空时只产 per-step 记录**；仅当 `steps` 缺失/空才回退 run 级 aggregate。集成测试须覆盖（plan Task 7）。
 
-### 13.11 SHOULD FIX — meta 文件名 agent 段允许点号
+### 13.10 SHOULD FIX — meta 文件名 agent 段允许点号
 
 **问题：** pi-subagents 支持 dotted 运行时名（如 `code-analysis.custom-agent`）。现有/计划中 `metaFileSourceKey` 的 agent 段字符类 `[a-z0-9_-]+` **不含点**，会解析失败。
 
 **修订：** 右向左解析时 agent 段改为 `[a-z0-9._-]+`；单测增加 `..._code-analysis.custom-agent_0_meta.json` fixture。
 
-### 13.12 SHOULD FIX — `subagent_wait` 须排除在工具统计之外
+### 13.11 SHOULD FIX — `subagent_wait` 须排除在工具统计之外
 
 **背景：** `subagent_wait` 是独立 tool 名，当前 `SUBAGENT_TOOL_NAMES = {"subagent","task"}` 不含它，故其 `tool_execution_end` 不被采。
 
@@ -394,13 +394,13 @@ Bridge 注册时须传入 pi session `cwd` 作为 `workspaceRoot`；`status.json
 
 **修订：** 加一条不变量测试断言 `SUBAGENT_TOOL_NAMES` 不含 `subagent_wait`/`subagent_supervisor`/`intercom`，并在该常量上方注释说明原因。
 
-### 13.9 复核结论
+### 13.12 复核结论
 
 | 维度 | 结论 |
 |------|------|
 | 架构（旁路 event + 纯函数解析） | ✅ 可行，不依赖 patch pi-subagents |
 | async 主路径 | ✅ `subagent:async-complete` 运行时带 token（`modelAttempts`/run 级）；须 defensive 解析（§13.6） |
-| 去重策略 | ⚠️ 须修 UUID runId normalize（§13.1）+ run/per-step 防重复（§13.10） |
+| 去重策略 | ⚠️ 须修 UUID runId normalize（§13.1）+ run/per-step 防重复（§13.9） |
 | 与现有代码衔接 | ⚠️ 须扩展已有 sourceKey/meta 解析，非仅新增 |
-| 工作量 | 2–2.5 人日（含 §13.1/§13.10/§13.11/§13.12 修复与测试） |
+| 工作量 | 2–2.5 人日（含 §13.1/§13.9/§13.10/§13.11 修复与测试） |
 | 验收标准 | ✅ 可测；fixture 须用真实 UUID + defensive 取值 |

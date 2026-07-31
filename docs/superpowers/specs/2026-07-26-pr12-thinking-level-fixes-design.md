@@ -87,6 +87,13 @@ After either upgrade or rollback, cached metadata written by another version may
 
 ### 2API compatibility provider
 
+> **Partially superseded（PR #21，endpoint-interactive）。** 本节「2API 始终
+> `openai-completions`、不支持 per-model endpoint selection」已被
+> `docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md` 取代：2API 现支持
+> `messages` / `responses` 多出口（`extensions/compat/provider.ts` 的 `COMPAT_API_STREAMS`）。
+> 本节仍有效的是「compat 不读 core 的 `llmgates/models.json`、不写 core 的
+> endpoint override 内存」这一隔离边界。
+
 The 2API provider always advertises and streams `openai-completions`. It does not support per-model endpoint selection, so `llmgates/models.json` is unrelated to its behavior.
 
 `extensions/compat/provider.ts` has no endpoint-override imports, startup reads, refresh reads, or shared-memory writes. Its catalog mapping and lifecycle are otherwise unchanged. Creating or refreshing a 2API provider therefore cannot clear or replace the core provider's in-memory endpoint overrides.
