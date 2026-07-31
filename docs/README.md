@@ -61,7 +61,7 @@
 | `extensions/balance.ts` | `/balance` 命令 |
 | `extensions/endpoint.ts` | `/endpoint` 单模型出口切换与共享 in-flight 锁 |
 | `extensions/endpoint-setting.ts` | `/endpoint-setting` 跨 provider 批量出口选择器 |
-| `extensions/endpoint-picker.ts` | `/endpoint-setting` TUI 勾选组件（`ui.custom`，零 import） |
+| `extensions/endpoint-picker.ts` | `/endpoint-setting` TUI 勾选组件（`ui.custom`，零 pi-tui import） |
 | `extensions/endpoint-selector.ts` | `/endpoint-setting` RPC 文本清单渲染与解析（纯函数） |
 | `extensions/terminal-width.ts` | 终端可见宽度（CJK/emoji），TUI 组件渲染辅助 |
 | `extensions/llmgates-reload.ts` | `/llmgates-reload` 强制刷新 core 与 2API catalog |
