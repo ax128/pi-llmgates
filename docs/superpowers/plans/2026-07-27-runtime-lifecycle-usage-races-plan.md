@@ -1,5 +1,7 @@
 # Runtime Lifecycle and Usage Race Fixes Implementation Plan
 
+> **Status: 已实施。** 现行行为以根 [README](../../../README.md) 与源码为准；本文保留为 Task 分解与验收历史，勿作为待办实施。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix six confirmed provider, TPS, HTTP, and migration races while preserving existing interfaces and behavior outside those failure paths.

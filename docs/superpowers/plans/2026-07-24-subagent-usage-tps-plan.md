@@ -1,5 +1,7 @@
 # TPS 子代理用量全路径采集 Implementation Plan
 
+> **Status: 已实施。** 现行行为以根 [README](../../../README.md) 与源码为准；本文保留为 Task 分解与验收历史，勿作为待办实施。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不修改 pi-subagents 的前提下，一次性补齐 async / background / detached / meta 等全部子代理路径的 token·calls·cost 统计，并入现有 TPS `/calls` 与状态行。
@@ -42,7 +44,7 @@ it("normalizes hyphenated UUID for sourceKey", () => {
     .toBe("1d706627aada48289207bbab8fad3864");
 });
 
-it("parses meta filename with UUID runId and dotted agent (§13.11)", () => {
+it("parses meta filename with UUID runId and dotted agent (§13.10)", () => {
   // 右向左解析：_meta.json -> index 0 -> agent -> 剩余含 '-' 的 runId
   expect(metaFileSourceKey("1d706627-aada-4828-9207-bbab8fad3864_code-analysis.custom-agent_0_meta.json"))
     .toBe("meta:1d706627aada48289207bbab8fad3864:code-analysis.custom-agent:0");
@@ -55,7 +57,7 @@ it("parses meta filename with UUID runId and dotted agent (§13.11)", () => {
 npm run test -- test/tps-subagent.test.ts
 ```
 
-> **必改（§13.1）：** 本 Task 须同时实现 `normalizeRunIdForSourceKey`、重写 `metaFileSourceKey` 为右向左解析（agent 段允许 `[a-z0-9._-]+`，§13.11）；fixture 用带连字符 UUID 与 dotted agent。
+> **必改（§13.1）：** 本 Task 须同时实现 `normalizeRunIdForSourceKey`、重写 `metaFileSourceKey` 为右向左解析（agent 段允许 `[a-z0-9._-]+`，§13.10）；fixture 用带连字符 UUID 与 dotted agent。
 
 - [ ] **Step 3: 实现 `normalizeUsageFromPartial`、`sumModelAttemptsUsage`、`mapTotalCostToUsage`、`mapTokenUsageToUsage`**
 
@@ -105,7 +107,7 @@ it("parses meta.json via modelAttempts fallback", () => {
 
 > **defensive（§13.6）：** 事件 `results[i]` 运行时**带** `model/modelAttempts/totalCost`，但 `result-watcher` 静态类型未声明——按字段存在性取值，不可信类型。
 
-- [ ] **Step 1: 写失败测试 — parallel 4 children：event results 带 modelAttempts，run 级 aggregate 不重复（§13.10）**
+- [ ] **Step 1: 写失败测试 — parallel 4 children：event results 带 modelAttempts，run 级 aggregate 不重复（§13.9）**
 
 ```typescript
 it("extracts async parallel complete; skips run aggregate when per-child present", () => {
@@ -113,7 +115,7 @@ it("extracts async parallel complete; skips run aggregate when per-child present
     sessionId: "sess-1",
     runId: "1d706627-aada-4828-9207-bbab8fad3864", // 真实 UUID（带连字符）
     mode: "parallel",
-    totalTokens: { input: 9999, output: 9999 }, // 须被 per-child 覆盖，不重复（§13.10）
+    totalTokens: { input: 9999, output: 9999 }, // 须被 per-child 覆盖，不重复（§13.9）
     totalCost: { inputTokens: 9999, outputTokens: 9999, costUsd: 9 },
     results: [
       { agent: "reviewer", index: 0, model: "llmgates/gpt-5.6-sol",
@@ -135,7 +137,7 @@ it("extracts async parallel complete; skips run aggregate when per-child present
 
 - [ ] **Step 3: 写失败测试 — `results` 空但 run 级 `totalTokens/totalCost` 有值 → 合成 aggregate（sourceKey `meta:{runId}`）**
 
-- [ ] **Step 4: 实现 `extractSubagentUsageFromAsyncComplete(data, currentSessionId)` — 纯函数，per-child 优先、§13.10 防重复；缺 token 的 child 交由 Task 4 兑底**
+- [ ] **Step 4: 实现 `extractSubagentUsageFromAsyncComplete(data, currentSessionId)` — 纯函数，per-child 优先、§13.9 防重复；缺 token 的 child 交由 Task 4 兑底**
 
 - [ ] **Step 5: 测试通过**
 
@@ -259,9 +261,9 @@ it("dedupes tool and async-complete via meta sourceKey", () => {
 });
 ```
 
-- [ ] **Step 2: 写测试 — status.json per-step 存在时 run 级 aggregate 不重复（§13.10）**
+- [ ] **Step 2: 写测试 — status.json per-step 存在时 run 级 aggregate 不重复（§13.9）**
 
-- [ ] **Step 3: 写不变量测试 — `SUBAGENT_TOOL_NAMES` 不含 `subagent_wait`/`subagent_supervisor`/`intercom`（§13.12）**
+- [ ] **Step 3: 写不变量测试 — `SUBAGENT_TOOL_NAMES` 不含 `subagent_wait`/`subagent_supervisor`/`intercom`（§13.11）**
 
 - [ ] **Step 4: 测试通过**
 
@@ -301,7 +303,7 @@ it("dedupes tool and async-complete via meta sourceKey", () => {
 
 按 Task 1 → 9 顺序在同一条分支完成，**不要**分 PR 发布。Task 1–4 可并行编写测试后集中实现；Task 5–6 依赖 1–4；Task 7–9 收尾。
 
-预估工作量：**2–2.5 人日**（含 UUID sourceKey 修复、§13.6 async payload 重写、§13.10 run/per-step 防重复与 fixture 重写）。
+预估工作量：**2–2.5 人日**（含 UUID sourceKey 修复、§13.6 async payload 重写、§13.9 run/per-step 防重复与 fixture 重写）。
 
 ---
 

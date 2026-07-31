@@ -12,7 +12,7 @@ export const PI_SUBAGENTS_ARTIFACTS_DIR = join(PI_SUBAGENTS_DIR, "artifacts");
 
 /**
  * Only tools that return child LLM usage. Do NOT add subagent_wait /
- * subagent_supervisor / intercom — those would double-count with async-complete (§13.12).
+ * subagent_supervisor / intercom — those would double-count with async-complete (§13.11).
  */
 export const SUBAGENT_TOOL_NAMES = new Set(["subagent", "task"]);
 
@@ -333,7 +333,7 @@ export function sessionFileSourceKey(absolutePath: string): string {
 }
 
 /**
- * Right-to-left parse: `_meta.json` → index → agent → remaining runId (may contain `-`) (§13.1/§13.11).
+ * Right-to-left parse: `_meta.json` → index → agent → remaining runId (may contain `-`) (§13.1/§13.10).
  */
 export function metaFileSourceKey(fileName: string): string | null {
 	const name = fileName.trim();
@@ -476,7 +476,7 @@ function parseSingleSubagentResult(
 	return recordFromPartial(result, sourceKey);
 }
 
-/** Async/background launches complete via event; skip tool-time aggregate to avoid §13.10-style double count. */
+/** Async/background launches complete via event; skip tool-time aggregate to avoid §13.9-style double count. */
 function looksLikeAsyncOrBackgroundLaunch(details: Record<string, unknown>): boolean {
 	if (details.async === true || details.background === true || details.detached === true) {
 		return true;
@@ -726,7 +726,7 @@ export function extractSubagentUsageFromAsyncStatus(
 	return recordFromPartial(step, sourceKey, agent);
 }
 
-/** Run-level totals from status.json when steps are missing/empty (§13.10). */
+/** Run-level totals from status.json when steps are missing/empty (§13.9). */
 export function extractSubagentRunAggregateFromAsyncStatus(
 	asyncDir: string,
 	runId: string,
@@ -890,7 +890,7 @@ function resolveChildSourceKey(
 
 /**
  * Parse `subagent:async-complete` payload. Defensive field access (§13.6).
- * Per-child records suppress run-level aggregate (§13.10).
+ * Per-child records suppress run-level aggregate (§13.9).
  */
 export function extractSubagentUsageFromAsyncComplete(
 	data: unknown,
@@ -952,7 +952,7 @@ export function extractSubagentUsageFromAsyncComplete(
 		}
 	}
 
-	// §13.10: never emit run aggregate when any per-child record exists.
+	// §13.9: never emit run aggregate when any per-child record exists.
 	if (out.length > 0) {
 		return out;
 	}

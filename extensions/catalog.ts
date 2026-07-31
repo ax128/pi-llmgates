@@ -58,6 +58,8 @@ export interface GatewayModel {
 	web_chat_endpoint?: string;
 	inference_endpoint?: string;
 	input_modalities?: string[];
+	// Deliberately never read: thinking levels are the fixed UNIVERSAL_THINKING_LEVEL_MAP
+	// for every plugin model (README「思考等级」; asserted by test/catalog.test.ts).
 	supported_reasoning_levels?: Array<{ effort?: string } | string>;
 	service_tiers?: unknown[];
 	visibility?: string;

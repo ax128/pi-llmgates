@@ -16,7 +16,7 @@ Fix the review findings on PR #12 without changing its public configuration shap
 - preserve gateway-reported levels for models that do not have applicable built-in metadata;
 - keep the existing conservative fallback for unknown models;
 - resolve thinking metadata against the final API selected by endpoint overrides;
-- remove endpoint-override I/O and shared-memory side effects from the 2API compatibility provider.
+- remove endpoint-override I/O and shared-memory side effects from the 2API compatibility provider.（历史目标；「移除 I/O」部分已被 PR #21 反转——2API 现按实例读取自有 override 文件，见下文「2API compatibility provider」横幅）
 
 ## Scope and non-goals
 
@@ -86,6 +86,15 @@ If the login catalog's cache write fails, the validated models remain authoritat
 After either upgrade or rollback, cached metadata written by another version may persist across sessions until one successful core catalog refresh rewrites it with the currently running resolver.
 
 ### 2API compatibility provider
+
+> **Partially superseded（PR #21，endpoint-interactive）。** 本节两段历史论断已被
+> `docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md` 取代：
+> (1) 「2API 始终 `openai-completions`、不支持 per-model endpoint selection」——2API 现支持
+> `messages` / `responses` 多出口（`extensions/compat/provider.ts` 的 `COMPAT_API_STREAMS`）；
+> (2) 「compat/provider.ts 无 endpoint-override import / startup / refresh 读取」——现按实例读取
+> 自有 `llmgates/2api-models/<instanceId>.json`（构造时与每请求 reload）。
+> 本节仍有效的是隔离边界：compat **不读 core 的 `llmgates/models.json`、不写 core 的
+> endpoint override 内存**。
 
 The 2API provider always advertises and streams `openai-completions`. It does not support per-model endpoint selection, so `llmgates/models.json` is unrelated to its behavior.
 
