@@ -5,7 +5,10 @@ import * as lockfile from "proper-lockfile";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { registerCompatGateways } from "../extensions/compat/index.js";
-import { addInstance, listInstances } from "../extensions/compat/storage.js";
+import {
+	addInstance,
+	listInstances,
+} from "../extensions/compat/storage.js";
 import { BOOTSTRAP_PROVIDER_ID } from "../extensions/compat/types.js";
 import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
@@ -17,6 +20,7 @@ function createPi(options: { failProviderId?: string } = {}) {
 	const modelsByDir = new Map<string, ReturnType<typeof createModels>>();
 	const registered = new Map<string, Provider>();
 	const calls: string[] = [];
+	const unregistered: string[] = [];
 	const handlers = new Map<string, Array<(event: unknown) => unknown>>();
 	let agentDir = "";
 	const pi = {
@@ -31,13 +35,18 @@ function createPi(options: { failProviderId?: string } = {}) {
 			registered.set(provider.id, provider);
 			modelsByDir.get(agentDir)?.setProvider(provider);
 		},
-		unregisterProvider() {},
+		unregisterProvider(id: string) {
+			unregistered.push(id);
+			registered.delete(id);
+			modelsByDir.get(agentDir)?.deleteProvider(id);
+		},
 		registerCommand() {},
 	} as unknown as ExtensionAPI;
 	return {
 		pi,
 		registered,
 		calls,
+		unregistered,
 		handlers,
 		bindAgentDir(nextAgentDir: string) {
 			agentDir = nextAgentDir;
@@ -111,6 +120,25 @@ describe("compat bootstrap transaction", () => {
 			const auth = JSON.parse(readFileSync(join(agentDir, "auth.json"), "utf8")) as Record<string, OAuthCredential>;
 			expect(auth["work-newapi"]?.access).toBe("literal !$HOME ${HOME}");
 			expect(auth[BOOTSTRAP_PROVIDER_ID]?.access).toBe("managed");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("rejects a login when the registry instance still exists", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const harness = createPi();
+		harness.bindAgentDir(agentDir);
+		try {
+			const retained = { id: "Orphan", name: "Keep", scheme: "newapi" as const, baseUrl: BASE_URL };
+			writeJson(join(agentDir, "llmgates/2api.json"), { instances: [retained] });
+			writeJson(join(agentDir, "auth.json"), {});
+			registerCompatGateways(harness.pi, agentDir, { fetchImpl: successfulFetch() });
+			const bootstrap = harness.registered.get(BOOTSTRAP_PROVIDER_ID)!;
+			await expect(bootstrapLogin(bootstrap, ["newapi", "orphan", "", BASE_URL, "new-key"]))
+				.rejects.toThrow(/registry|already/i);
+			expect(listInstances(agentDir)).toEqual([retained]);
+			expect(JSON.parse(readFileSync(join(agentDir, "auth.json"), "utf8"))).toEqual({});
 		} finally {
 			cleanup();
 		}
@@ -213,7 +241,7 @@ describe("compat bootstrap transaction", () => {
 		}
 	});
 
-	it("rejects duplicate registry or auth IDs without overwriting either", async () => {
+	it("refuses to overwrite an existing auth entry", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		const harness = createPi();
 		harness.bindAgentDir(agentDir);

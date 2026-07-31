@@ -61,7 +61,7 @@ import type { EndpointRefreshResult } from "../provider.js";
 import {
 	decodeCompatRefreshMeta,
 	encodeCompatRefreshMeta,
-	updateInstance,
+	replaceInstanceIfEqual,
 } from "./storage.js";
 import {
 	BASE_URL_PLACEHOLDER_FOR_SCHEME,
@@ -344,6 +344,7 @@ function isStoredModelValid(model: unknown, providerId: string, baseUrl: string)
 export function createCompatProvider(options: CompatProviderOptions): CompatProvider {
 	const { agentDir } = options;
 	let currentInstance = { ...options.instance };
+	let persistedInstance = { ...options.instance };
 	const providerId = currentInstance.id;
 	const now = options.now ?? (() => Date.now());
 	const fetchImpl = options.fetchImpl ?? fetch;
@@ -491,8 +492,14 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		await withCommit(async () => {
 			if (!lifecycleMatches(expectedGeneration) || pendingRegistryBaseUrl !== baseUrl) return;
 			try {
-				const updated = await updateInstance(agentDir, { ...currentInstance, baseUrl });
+				const expectedInstance = persistedInstance;
+				const updated = await replaceInstanceIfEqual(
+					agentDir,
+					expectedInstance,
+					{ ...expectedInstance, baseUrl },
+				);
 				if (!lifecycleMatches(expectedGeneration) || pendingRegistryBaseUrl !== baseUrl) return;
+				persistedInstance = updated;
 				currentInstance = updated;
 				pendingRegistryBaseUrl = null;
 			} catch {

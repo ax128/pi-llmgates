@@ -419,16 +419,16 @@ describe("/2api management", () => {
 		}
 	});
 
-	it("documents orphan auth and stale /logout behavior in help", async () => {
+	it("documents logout cleanup and orphan auth behavior in help", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		const runtime = createPi();
 		try {
 			registerCompatGateways(runtime.pi, agentDir);
 			const [{ message }] = await runCommand(runtime.commands.get("2api")!, "help");
+			expect(message).toMatch(/\/logout.*deletes.*registry.*endpoint/i);
+			expect(message).toMatch(/watcher.*\/reload.*restart/i);
 			expect(message).toMatch(/orphan auth/i);
 			expect(message).toMatch(/auth\.json/i);
-			expect(message).toMatch(/re-add.*blocked/i);
-			expect(message).toMatch(/\/logout.*\/reload/i);
 		} finally {
 			cleanup();
 		}

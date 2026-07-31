@@ -7,7 +7,7 @@ import {
 	type RegisterCompatGatewaysOptions,
 } from "../extensions/compat/index.js";
 import type { CompatProvider, CompatProviderOptions } from "../extensions/compat/provider.js";
-import { encodeCompatRefreshMeta } from "../extensions/compat/storage.js";
+import { encodeCompatRefreshMeta, deleteProviderAuthEntry, listInstances } from "../extensions/compat/storage.js";
 import type { CompatInstance } from "../extensions/compat/types.js";
 import { createMemoryStore } from "./helpers/fake-store.js";
 import { withTempAgentDir, writeJson } from "./helpers/temp-agent-dir.js";
@@ -157,10 +157,28 @@ describe("compat lifecycle", () => {
 			const registration = registerCompatGateways(pi.pi, agentDir);
 			expect(registration.providers.size).toBe(0);
 			expect(pi.registered.map((provider) => provider.id)).toEqual(["llmgates-2api"]);
-			expect(warn).toHaveBeenCalledTimes(2);
-			expect(warn.mock.calls.flat().join(" ")).toMatch(/gateway-a.*OAuth.*skip|gateway-b.*OAuth.*skip/i);
+			expect(warn).toHaveBeenCalledOnce();
+			expect(warn.mock.calls.flat().join(" ")).toMatch(/Skipping gateway-a.*OAuth/i);
 		} finally {
 			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("purges a registry and runtime provider after its auth entry is logged out", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const instance = INSTANCES[0]!;
+		try {
+			seedStartup(agentDir, [instance]);
+			const registration = registerCompatGateways(pi.pi, agentDir);
+			await pi.emit("session_start", { reason: "start" });
+			await deleteProviderAuthEntry(agentDir, instance.id);
+
+			await vi.waitFor(() => expect(listInstances(agentDir)).toEqual([]));
+			expect(registration.providers.has(instance.id)).toBe(false);
+			expect(pi.unregistered).toEqual([instance.id]);
+		} finally {
 			cleanup();
 		}
 	});
@@ -237,6 +255,45 @@ describe("compat lifecycle", () => {
 			await provider.refreshModels!({ credential: auth, store: createMemoryStore(), allowNetwork: false });
 			expect(JSON.parse(await import("node:fs").then(({ readFileSync }) =>
 				readFileSync(join(agentDir, "llmgates/2api.json"), "utf8"))).instances[0].baseUrl).toBe(credentialBaseUrl);
+		} finally {
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("does not let a stale provider overwrite registry metadata replaced by login repair", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const instance = INSTANCES[0]!;
+		const replacement: CompatInstance = {
+			id: instance.id,
+			name: "Replacement",
+			scheme: "sub2api",
+			baseUrl: "https://replacement.example/v1",
+		};
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			const registration = registerCompatGateways(pi.pi, agentDir);
+			const staleProvider = registration.providers.get(instance.id)!;
+			writeJson(join(agentDir, "llmgates/2api.json"), { instances: [replacement] });
+
+			await staleProvider.refreshModels!({
+				credential: {
+					type: "oauth",
+					access: "stale-key",
+					refresh: encodeCompatRefreshMeta({
+						baseUrl: "https://stale.example/v1",
+						scheme: instance.scheme,
+					}),
+					expires: 4_102_444_800_000,
+				},
+				store: createMemoryStore(),
+				allowNetwork: false,
+			});
+
+			expect(listInstances(agentDir)).toEqual([replacement]);
+			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/registry update failed/i));
 		} finally {
 			warn.mockRestore();
 			cleanup();

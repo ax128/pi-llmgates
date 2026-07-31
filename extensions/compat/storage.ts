@@ -167,6 +167,33 @@ export async function updateInstance(agentDir: string, instance: CompatInstance)
 	});
 }
 
+export async function replaceInstanceIfEqual(
+	agentDir: string,
+	expectedInstance: CompatInstance,
+	instance: CompatInstance,
+): Promise<CompatInstance> {
+	const expected = canonicalizeInstance(expectedInstance);
+	const nextInstance = canonicalizeInstance(instance);
+	if (expected.id.toLowerCase() !== nextInstance.id.toLowerCase()) {
+		throw new Error("Replacement instance ID must match the existing instance ID");
+	}
+	const path = join(agentDir, COMPAT_CONFIG_FILE);
+	return withLock(path, '{"instances":[]}\n', () => {
+		const config = readCompatConfigPath(path);
+		const index = config.instances.findIndex((item) => item.id.toLowerCase() === expected.id.toLowerCase());
+		if (index === -1) {
+			throw new Error(`Instance ID "${expected.id}" does not exist`);
+		}
+		if (!isDeepStrictEqual(config.instances[index], expected)) {
+			throw new Error(`Instance ID "${expected.id}" changed during login repair`);
+		}
+		const instances = [...config.instances];
+		instances[index] = nextInstance;
+		atomicWriteJson(path, { instances }, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
+		return { ...nextInstance };
+	});
+}
+
 export async function removeInstance(agentDir: string, id: string): Promise<boolean> {
 	const normalizedId = normalizeInstanceId(id).toLowerCase();
 	const path = join(agentDir, COMPAT_CONFIG_FILE);

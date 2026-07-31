@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import type { Credential, OAuthCredential, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -49,7 +49,7 @@ export type CompatCommand =
 	| { action: "help" };
 
 const COMPAT_COMMAND_USAGE = "Usage: /2api list | /2api remove <id> | /2api help";
-const COMPAT_COMMAND_HELP = `${COMPAT_COMMAND_USAGE}\nOrphan auth (an auth.json key with no registry entry) is not removed by /2api remove; delete that key manually or re-add with the same ID remains blocked. /logout may list removed IDs until /reload.`;
+const COMPAT_COMMAND_HELP = `${COMPAT_COMMAND_USAGE}\n/logout removes its selected auth.json credential; this extension then deletes the matching 2api registry entry and endpoint overrides. If the watcher is not running, /reload or a restart completes cleanup. Orphan auth (an auth.json key with no registry entry) must be deleted manually.`;
 
 export function parseCompatCommand(args: string): CompatCommand {
 	const parts = args.trim().split(/\s+/).filter(Boolean);
@@ -95,6 +95,10 @@ function readAuthMap(agentDir: string): Record<string, Credential> {
 	}
 }
 
+function hasAuthEntry(auth: Record<string, Credential>, providerId: string): boolean {
+	return Object.keys(auth).some((key) => key.toLowerCase() === providerId.toLowerCase());
+}
+
 function matchingOAuthCredential(
 	auth: Record<string, Credential>,
 	instance: CompatInstance,
@@ -116,6 +120,7 @@ export function registerCompatGateways(
 	const createProvider = options.createProvider ?? createCompatProvider;
 
 	let instances: CompatInstance[];
+	let startupAuth: Record<string, Credential> = {};
 	let startupCredentials = new Map<string, OAuthCredential>();
 	try {
 		instances = listInstances(agentDir);
@@ -127,6 +132,7 @@ export function registerCompatGateways(
 			seen.add(key);
 		}
 		const auth = readAuthMap(agentDir);
+		startupAuth = auth;
 		startupCredentials = new Map(instances.flatMap((instance) => {
 			const credential = matchingOAuthCredential(auth, instance);
 			return credential ? [[instance.id, credential] as const] : [];
@@ -155,6 +161,107 @@ export function registerCompatGateways(
 		} catch (error) {
 			logWarn(`Failed to re-register ${provider.id}: ${error instanceof Error ? error.message : String(error)}`);
 		}
+	}
+
+	async function retirePreviousProvider(instanceId: string): Promise<void> {
+		const previousEntry = [...providers.entries()]
+			.find(([id]) => id.toLowerCase() === instanceId.toLowerCase());
+		if (!previousEntry) return;
+
+		const [previousKey, previousProvider] = previousEntry;
+		providers.delete(previousKey);
+		const failures: string[] = [];
+		try {
+			await previousProvider.shutdown();
+		} catch (error) {
+			failures.push(`provider shutdown: ${errorText(error)}`);
+		}
+		try {
+			pi.unregisterProvider(previousProvider.id);
+		} catch (error) {
+			failures.push(`runtime unregister: ${errorText(error)}`);
+		}
+		if (failures.length > 0) {
+			throw new Error(
+				`Previous runtime provider retirement failed for ${instanceId}; `
+				+ `run /reload to recover. ${failures.join("; ")}`,
+			);
+		}
+	}
+
+	let authWatcher: FSWatcher | undefined;
+	let orphanCleanup: Promise<void> | undefined;
+	let orphanCleanupRequested = false;
+
+	async function pruneOrphanedInstances(): Promise<void> {
+		const auth = readAuthMap(agentDir);
+		for (const instance of listInstances(agentDir)) {
+			if (hasAuthEntry(auth, instance.id)) continue;
+			await withIdTransaction(instance.id, async () => {
+				const currentAuth = readAuthMap(agentDir);
+				if (hasAuthEntry(currentAuth, instance.id)) return;
+				const current = listInstances(agentDir)
+					.find((stored) => stored.id.toLowerCase() === instance.id.toLowerCase());
+				if (!current) return;
+
+				const failures: string[] = [];
+				try {
+					await retirePreviousProvider(current.id);
+				} catch (error) {
+					failures.push(`provider cleanup: ${errorText(error)}`);
+				}
+				try {
+					await removeInstance(agentDir, current.id);
+				} catch (error) {
+					failures.push(`registry cleanup: ${errorText(error)}`);
+				}
+				try {
+					await deleteInstanceOverrides(agentDir, current.id);
+				} catch (error) {
+					failures.push(`endpoint override cleanup: ${errorText(error)}`);
+				}
+				if (failures.length > 0) {
+					logWarn(`Failed to purge logged-out ${current.id}: ${failures.join("; ")}`);
+				}
+			});
+		}
+	}
+
+	function requestOrphanCleanup(): void {
+		orphanCleanupRequested = true;
+		if (orphanCleanup) return;
+		orphanCleanup = Promise.resolve()
+			.then(async () => {
+				while (orphanCleanupRequested) {
+					orphanCleanupRequested = false;
+					await pruneOrphanedInstances();
+				}
+			})
+			.catch((error) => logWarn(`Failed to purge logged-out 2api instances: ${errorText(error)}`))
+			.finally(() => {
+				orphanCleanup = undefined;
+				if (orphanCleanupRequested) requestOrphanCleanup();
+			});
+	}
+
+	function startAuthWatcher(): void {
+		if (authWatcher) return;
+		try {
+			authWatcher = watch(agentDir, { persistent: false }, (_event, filename) => {
+				if (!filename || filename.toString() === "auth.json") requestOrphanCleanup();
+			});
+			authWatcher.on("error", (error) => {
+				authWatcher = undefined;
+				logWarn(`auth.json watcher stopped: ${errorText(error)}`);
+			});
+		} catch (error) {
+			logWarn(`Could not watch auth.json for logout cleanup: ${errorText(error)}`);
+		}
+	}
+
+	function stopAuthWatcher(): void {
+		authWatcher?.close();
+		authWatcher = undefined;
 	}
 
 	function rollbackStartupInstances(registered: readonly CompatProvider[]): void {
@@ -317,6 +424,8 @@ export function registerCompatGateways(
 	});
 
 	pi.on("session_start", (event) => {
+		startAuthWatcher();
+		requestOrphanCleanup();
 		const reason = typeof (event as { reason?: unknown })?.reason === "string"
 			? (event as { reason: string }).reason
 			: "start";
@@ -329,13 +438,22 @@ export function registerCompatGateways(
 	});
 
 	pi.on("session_shutdown", async () => {
-		await Promise.allSettled([...providers.values()].map((provider) => provider.shutdown()));
+		stopAuthWatcher();
+		await Promise.allSettled([
+			...([...providers.values()].map((provider) => provider.shutdown())),
+			...(orphanCleanup ? [orphanCleanup] : []),
+		]);
 	});
 
 	const startupRegistered: CompatProvider[] = [];
 	for (const instance of instances) {
 		if (!startupCredentials.has(instance.id)) {
-			logWarn(`Skipping ${instance.id}: registry metadata has no matching OAuth auth entry; run /login llmgates-2api or repair auth.json.`);
+			if (hasAuthEntry(startupAuth, instance.id)) {
+				logWarn(
+					`Skipping ${instance.id}: registry metadata has no matching OAuth auth entry; `
+					+ `repair auth.json or remove it with /2api remove ${instance.id}.`,
+				);
+			}
 			continue;
 		}
 		const provider = makeProvider(instance);

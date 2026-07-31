@@ -135,6 +135,8 @@ pi
 
 添加成功后执行 `/model` 选择该实例下的模型。Pi 0.81 模型选择器按 provider ID 区分同名模型，例如 `grok-4.5 [work-newapi]`。
 
+运行 `/logout`，在选择器中选择实例的显示名称（可输入实例 ID 搜索），Pi 会删除 `auth.json` 凭证；本扩展监听该文件变更并异步删除对应的 2API registry、停止 provider 和 endpoint override。该实例不会保留为可恢复配置；若当前进程无法监听文件，执行 `/reload` 或重启会完成清理。
+
 ### 分网关简明教程
 
 #### NewAPI
@@ -178,9 +180,9 @@ pi
 | 命令 | 说明 |
 | --- | --- |
 | `/2api list` | 列出实例 ID、scheme、base URL 和 display name（不显示密钥） |
-| `/2api remove <id>` | 删除指定实例及其 registry / auth 记录 |
+| `/2api remove <id>` | 删除指定实例及其 registry / auth / endpoint override 记录 |
 | `/2api help` | 显示用法与已知限制 |
-| `/login <id>` | 重新配置该实例的 base URL 和 API key |
+| `/login <id>` | 重新配置已登录实例的 base URL 和 API key |
 
 实例 registry 写入 `~/.pi/agent/llmgates/2api.json`，与 `auth.json` 均以 `0600` 权限写入，并使用跨进程文件锁、锁内重读和原子替换保护并发更新。
 
@@ -190,7 +192,8 @@ pi
 
 ### 已知限制
 
-- `/2api remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能列出已删除的 ID，执行 `/reload` 后才会消失。
+- Pi 的 `/logout` 不提供扩展清理回调；本扩展通过监听 `auth.json` 变更清理已登出的 2API registry、provider 和 endpoint override。若监听未运行，`/reload` 或重启会补做清理；不会保留原实例作为可恢复配置。
+- `/2api remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能短暂列出已删除的 ID，执行 `/reload` 后会完成清理。
 - 若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/2api remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
 
 ## 功能概览
