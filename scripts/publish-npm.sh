@@ -109,6 +109,5 @@ echo "Install examples (send to user):"
 echo "  pi install npm:@llmgates_api/pi-llmgates-provider"
 echo "  pi install npm:@llmgates_api/pi-llmgates-provider@$VERSION"
 echo "  pi install -l npm:@llmgates_api/pi-llmgates-provider@$VERSION"
-echo "  pi install git:github.com/ax128/pi-llmgates@v$VERSION"
 echo
 echo "Tag (if needed): git tag v$VERSION && git push origin v$VERSION"

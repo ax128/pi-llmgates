@@ -74,9 +74,6 @@ pi install npm:@llmgates_api/pi-llmgates-provider@VERSION
 
 # 仅当前项目
 pi install -l npm:@llmgates_api/pi-llmgates-provider@VERSION
-
-# git tag
-pi install git:github.com/ax128/pi-llmgates@vVERSION
 ```
 
 并提醒：安装后 `/reload` 或重启 pi，再 `/login LLMGates`。
@@ -120,10 +117,6 @@ pi install npm:@llmgates_api/pi-llmgates-provider@0.2.6
 
 # 仅当前项目
 pi install -l npm:@llmgates_api/pi-llmgates-provider
-
-# git / tag
-pi install git:github.com/ax128/pi-llmgates
-pi install git:github.com/ax128/pi-llmgates@v0.2.6
 ```
 
 安装后：`/reload` 或重启 pi，再 `/login LLMGates`。

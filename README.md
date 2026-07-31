@@ -27,9 +27,8 @@ Pi provider 扩展，对接 [LLMGates](https://llmgates.com) 网关：从 `GET /
 ## 快速开始
 
 ```bash
-# 安装（任选 npm 或 git）
+# 安装
 pi install npm:@llmgates_api/pi-llmgates-provider
-# pi install git:github.com/ax128/pi-llmgates
 
 pi
 /login LLMGates
@@ -51,14 +50,9 @@ pi install npm:@llmgates_api/pi-llmgates-provider@0.2.7   # 指定版本
 pi install -l npm:@llmgates_api/pi-llmgates-provider      # 仅当前项目（否则装到 ~/.pi/agent/）
 ```
 
-### git
+### 源码
 
-```bash
-pi install git:github.com/ax128/pi-llmgates               # 跟踪 main
-pi install git:github.com/ax128/pi-llmgates@v0.2.7        # 固定 tag（发布后可用）
-pi install git:git@github.com:ax128/pi-llmgates.git       # SSH
-pi install -l git:github.com/ax128/pi-llmgates            # 仅当前项目
-```
+> **`pi install git:…` 自 0.2.7 起不再支持**：发布产物是编译后的 `dist/`（不提交进仓库），pi 的 git 安装只跑 `npm install --omit=dev`，拿不到 `dist/`，扩展会静默不加载。源码安装请用 `pi install .`（见下方「本地开发」，需先 `npm run build`）。
 
 ### 本地开发 / 一次性运行
 
@@ -69,7 +63,6 @@ npm install
 pi install .
 
 # 单次试用，不写入全局配置
-pi -e git:github.com/ax128/pi-llmgates
 pi -e npm:@llmgates_api/pi-llmgates-provider
 ```
 
