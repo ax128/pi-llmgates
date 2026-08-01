@@ -21,7 +21,7 @@ function snapshot(): SelectorSnapshot {
 			},
 			{
 				providerId: "cpa",
-				label: "2API/cpa",
+				label: "gateway/cpa",
 				models: [
 					{ id: "claude-sonnet-5", name: "Sonnet 5", endpoint: "chat", hasOverride: false },
 				],
@@ -42,7 +42,7 @@ describe("renderSelectorList", () => {
 		const text = renderSelectorList(snapshot());
 
 		expect(text).toMatch(/# ── llmgates · core ──/);
-		expect(text).toMatch(/# ── cpa · 2API\/cpa ──/);
+		expect(text).toMatch(/# ── cpa · gateway\/cpa ──/);
 		// Every managed model is rendered unchecked with id / name / current endpoint.
 		expect(text).toMatch(/^\[ ] gpt-5\.6-sol\s+GPT-5\.6 Sol\s+chat$/m);
 		expect(text).toMatch(/^\[ ] claude-sonnet-5\s+Sonnet 5\s+chat$/m);
@@ -162,7 +162,7 @@ describe("parseSelectorList", () => {
 					},
 					{
 						providerId: "cpa",
-						label: "2API/cpa",
+						label: "gateway/cpa",
 						models: [{ id: "shared", name: "Shared", endpoint: "chat", hasOverride: false }],
 					},
 				],
@@ -183,7 +183,7 @@ describe("parseSelectorList", () => {
 
 		it("attributes a row to the group header above it, not to the first group", () => {
 			const snap = collidingSnapshot();
-			const result = parseSelectorList("# ── cpa · 2API/cpa ──\n[x] shared  Shared  chat", snap);
+			const result = parseSelectorList("# ── cpa · gateway/cpa ──\n[x] shared  Shared  chat", snap);
 
 			expect(result.selected).toEqual([{ modelId: "shared", providerId: "cpa" }]);
 			expect(result.rejected).toEqual([]);

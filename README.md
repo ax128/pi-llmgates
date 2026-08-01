@@ -92,13 +92,14 @@ pi
 
 | 命令 | 说明 |
 | --- | --- |
-| `/login LLMGates` | 配置 baseUrl + API key |
+| `/login LLMGates` | 选择并配置 LLMGates、NewAPI、CLIProxyAPI 或 Sub2API 网关 |
 | `/balance` | 查看钱包、订阅余额 |
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | 切换或清除一个 core 模型的推理出口 |
 | `/endpoint-setting` | 交互式多选，批量切换 core 与 2API 模型的推理出口 |
 | `/model` | 选择已注册的 LLMGates 模型 |
 | `/calls` | 查看本轮或本会话的 per-model 用量与费用明细 |
 | `/reload` | 安装或更新插件后重载扩展 |
+| `/llmgates list \| remove <id> \| help` | 列出、删除或查看兼容网关实例帮助 |
 | `/llmgates-reload` | 强制刷新 core 与全部 2API 的模型 catalog（绕过 freshness window，重写 thinking 档位等缓存） |
 
 重新配置：随时再跑 `/login LLMGates`。`/logout` 清除 `auth.json` 登录凭证后，env / `llmgates/config.json` 中的 ambient 配置才会重新生效。交互式登录**不会**写入新的 API Key，也**不会**删除文件中已有的 ambient `apiKey`。
@@ -121,15 +122,17 @@ pi
 
 ```bash
 pi
-/login llmgates-2api
+/login LLMGates
 ```
 
-交互提示顺序：**网关类型（scheme）** → **实例 Provider ID** → **显示名称**（留空则使用 ID）→ **Base URL** → **API Key**。
+`/login` 列表中不再单独显示 `LLMGates 2API`。进入 `LLMGates` 后先选择网关类型，顺序为 **LLMGates**（默认、最上方）→ **NewAPI** → **CLIProxyAPI** → **Sub2API**。选择 LLMGates 会配置 core provider；选择其余类型会添加独立的 2API 实例。
+
+兼容实例的后续提示顺序：**实例 Provider ID** → **显示名称**（留空则使用 ID）→ **Base URL** → **API Key**。
 
 | 字段 | 说明 |
 | --- | --- |
 | scheme | 仅用于标签与 URL 占位提示，占位符**不是**默认值 |
-| 实例 ID | 须手动指定，用于 `/login <id>`、`/model` 与 `/2api remove`；1–64 字符，字母/数字开头，可含 `.` `_` `-` |
+| 实例 ID | 须手动指定，用于 `/login <id>`、`/model` 与 `/llmgates remove`；1–64 字符，字母/数字开头，可含 `.` `_` `-` |
 | Base URL | 须完整填写，通常以 `/v1` 结尾 |
 | API Key | 须显式输入；以 literal string 存入 `auth.json`，不展开 `!cmd`、`$ENV` 或 `${...}` |
 
@@ -143,20 +146,18 @@ pi
 
 1. 按 [NewAPI 文档](https://docs.newapi.pro/zh/docs) 部署实例（Docker 或二进制均可）。
 2. 在 NewAPI 控制台创建 API Key，确认 `GET /v1/models` 可访问。
-3. 在 pi 中执行 `/login llmgates-2api`，依次选择：
-   - 网关类型：**NewAPI**
+3. 在 pi 中执行 `/login LLMGates`，选择 **NewAPI**，然后依次填写：
    - 实例 ID：如 `work-newapi`
    - 显示名称：如 `工作 NewAPI`（可留空）
    - Base URL：如 `https://your-newapi-host/v1`
    - API Key：控制台下发的密钥
-4. `/2api list` 确认实例，`/model` 选用模型。
+4. `/llmgates list` 确认实例，`/model` 选用模型。
 
 #### Sub2API
 
 1. 按 [Sub2API 仓库](https://github.com/Wei-Shaw/sub2api) 的 `deploy/` 说明部署（默认服务端口常为 `8080`）。
 2. 在 Sub2API 管理后台生成 API Key。
-3. 在 pi 中执行 `/login llmgates-2api`，依次选择：
-   - 网关类型：**Sub2API**
+3. 在 pi 中执行 `/login LLMGates`，选择 **Sub2API**，然后依次填写：
    - 实例 ID：如 `team-sub2api`
    - Base URL：如 `https://sub2api.example.com/v1`（本地可为 `http://127.0.0.1:8080/v1`）
    - API Key：后台生成的密钥
@@ -166,8 +167,7 @@ pi
 
 1. 按 [CLIProxyAPI README](https://github.com/router-for-me/CLIProxyAPI) 启动本地代理（默认监听 `http://127.0.0.1:8317`）。
 2. 完成 CLI OAuth 登录后，确认 `GET http://127.0.0.1:8317/v1/models` 返回模型列表。
-3. 在 pi 中执行 `/login llmgates-2api`，依次选择：
-   - 网关类型：**CLIProxyAPI**
+3. 在 pi 中执行 `/login LLMGates`，选择 **CLIProxyAPI**，然后依次填写：
    - 实例 ID：如 `local-cpa`
    - Base URL：`http://127.0.0.1:8317/v1`（loopback HTTP 允许）
    - API Key：按 CPA 实例配置填写（须非空；若网关未启用 Bearer 鉴权，以实际部署为准）
@@ -179,10 +179,10 @@ pi
 
 | 命令 | 说明 |
 | --- | --- |
-| `/2api list` | 列出实例 ID、scheme、base URL 和 display name（不显示密钥） |
-| `/2api remove <id>` | 删除指定实例及其 registry / auth / endpoint override 记录 |
-| `/2api help` | 显示用法与已知限制 |
-| `/login <id>` | 重新配置已登录实例的 base URL 和 API key |
+| `/llmgates list` | 列出实例 ID、scheme、base URL 和 display name（不显示密钥） |
+| `/llmgates remove <id>` | 删除指定实例及其 registry / auth / endpoint override 记录 |
+| `/llmgates help` | 显示用法与已知限制 |
+| `/login <id>` | 重新配置已登录实例的 base URL 和 API key（出现认证方式选择时请选 oauth 登录项；“Sign in with an API key” 项仅提示凭证已受管） |
 
 实例 registry 写入 `~/.pi/agent/llmgates/2api.json`，与 `auth.json` 均以 `0600` 权限写入，并使用跨进程文件锁、锁内重读和原子替换保护并发更新。
 
@@ -192,10 +192,11 @@ pi
 
 ### 已知限制
 
+- 正常启动时 `/login` 列表**不再**显示 `llmgates-2api`；仅当 core 不可用（`llmgates/config.json` identity 解析失败，或 legacy `api_key` / 损坏的 auth.json 触发 fail-closed）时，才显示恢复入口「LLMGates 兼容网关恢复」，用于在无 core 的情况下添加兼容实例。
 - Pi 的 `/logout` 不提供扩展清理回调；本扩展通过监听 `auth.json` 变更清理已登出的 2API registry、provider 和 endpoint override。若监听未运行，`/reload` 或重启会补做清理；不会保留原实例作为可恢复配置。
 - 若 `auth.json` 整体缺失或暂时损坏（如手动重置凭证、同步工具改写中途），本轮清理会被跳过以防止误删全部实例；文件恢复可读后清理自动继续。
-- `/2api remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能短暂列出已删除的 ID，执行 `/reload` 后会完成清理。
-- 若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/2api remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
+- `/llmgates remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能短暂列出已删除的 ID，执行 `/reload` 后会完成清理。
+- 若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/llmgates remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
 
 ## 功能概览
 
@@ -383,7 +384,7 @@ pi
 - 优先级：**per-model > `defaults` > `chat_completions`**。2API **不使用**网关 `inference_endpoint` 或按 id 的启发式——未配置 override 时行为与 0.1.12 完全一致。
 - 与 core 双向隔离：core 不读 `2api-models/`，2API 不读 `llmgates/models.json`。
 - 手工编辑后下一次 catalog refresh 即生效，无需重启。
-- `/2api remove <id>` 会一并删除该实例的 override 文件；因此用同名 ID 重建实例时不会复活旧配置。删除失败会归入 partial 提示，不阻断其余清理步骤。
+- `/llmgates remove <id>` 会一并删除该实例的 override 文件；因此用同名 ID 重建实例时不会复活旧配置。删除失败会归入 partial 提示，不阻断其余清理步骤。
 - **降级注意**：若从 0.2.0 回退到 0.1.12，provider store 缓存中残留的非 `openai-completions` 模型会被旧版校验拒绝，该 2API 实例在**首次成功联网 refresh 之前**模型不可见。override 文件不会丢失，旧版会忽略 `2api-models/`——删除该目录**不能**解决 store 问题，联网触发一次成功的 catalog refresh（或重启 pi）即可自愈。
 
 ## 定价与费用估算
@@ -405,7 +406,7 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与 LLMGa
 
 **`llmgates/models.json`** — core 每模型出口（endpoint / `api`）覆盖，由 `/endpoint`、`/endpoint-setting` 或手工编辑维护；文件本身不会从网关自动同步。详见 [模型出口](#模型出口-endpoint--api)。
 
-**`llmgates/2api-models/<instanceId>.json`** — 每个 2API 实例的出口覆盖，结构同上，由 `/endpoint-setting` 或手工编辑维护；`/2api remove` 时随实例一并删除。
+**`llmgates/2api-models/<instanceId>.json`** — 每个 2API 实例的出口覆盖，结构同上，由 `/endpoint-setting` 或手工编辑维护；`/llmgates remove` 时随实例一并删除。
 
 **`llmgates/pricing.json`** — 可编辑的 USD / **100 万 token** 单价（`input`、`output`、`cacheRead`、`cacheWrite`）。键为 `modelId` 或 `provider/modelId`（如 `openai/gpt-5.6-sol`）：
 

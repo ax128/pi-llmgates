@@ -40,10 +40,17 @@ export interface CompatRefreshMetaV1 {
 }
 
 function isCompatScheme(value: unknown): value is CompatScheme {
-	return typeof value === "string" && (COMPAT_SCHEMES as readonly string[]).includes(value);
+	return (
+		typeof value === "string" &&
+		(COMPAT_SCHEMES as readonly string[]).includes(value)
+	);
 }
 
-async function withLock<T>(path: string, initialContent: string, fn: () => Promise<T> | T): Promise<T> {
+async function withLock<T>(
+	path: string,
+	initialContent: string,
+	fn: () => Promise<T> | T,
+): Promise<T> {
 	ensureDirMode(dirname(path), SECRET_DIR_MODE);
 	const release = await lockfile.lock(path, LOCK_OPTIONS);
 	try {
@@ -59,7 +66,10 @@ function canonicalizeInstance(instance: CompatInstance): CompatInstance {
 		throw new Error("Invalid compatibility instance");
 	}
 	const id = normalizeInstanceId(instance.id);
-	if (typeof instance.name !== "string" || typeof instance.baseUrl !== "string") {
+	if (
+		typeof instance.name !== "string" ||
+		typeof instance.baseUrl !== "string"
+	) {
 		throw new Error("Invalid compatibility instance");
 	}
 	return {
@@ -100,7 +110,11 @@ function parseStoredInstance(value: unknown): CompatInstance {
 
 function parseCompatConfig(raw: string): CompatConfigFile {
 	const parsed: unknown = JSON.parse(raw);
-	if (!isPlainObject(parsed) || Object.keys(parsed).join(",") !== "instances" || !Array.isArray(parsed.instances)) {
+	if (
+		!isPlainObject(parsed) ||
+		Object.keys(parsed).join(",") !== "instances" ||
+		!Array.isArray(parsed.instances)
+	) {
 		throw new Error(`${COMPAT_CONFIG_FILE} must contain an instances array`);
 	}
 	const instances = parsed.instances.map(parseStoredInstance);
@@ -108,7 +122,9 @@ function parseCompatConfig(raw: string): CompatConfigFile {
 	for (const instance of instances) {
 		const normalized = instance.id.toLowerCase();
 		if (seen.has(normalized)) {
-			throw new Error(`${COMPAT_CONFIG_FILE} contains duplicate instance ID "${instance.id}"`);
+			throw new Error(
+				`${COMPAT_CONFIG_FILE} contains duplicate instance ID "${instance.id}"`,
+			);
 		}
 		seen.add(normalized);
 	}
@@ -132,37 +148,59 @@ export function loadCompatConfig(agentDir: string): CompatConfigFile {
 }
 
 export function listInstances(agentDir: string): CompatInstance[] {
-	return loadCompatConfig(agentDir).instances.map((instance) => ({ ...instance }));
+	return loadCompatConfig(agentDir).instances.map((instance) => ({
+		...instance,
+	}));
 }
 
-export async function addInstance(agentDir: string, instance: CompatInstance): Promise<CompatInstance> {
+export async function addInstance(
+	agentDir: string,
+	instance: CompatInstance,
+): Promise<CompatInstance> {
 	const nextInstance = canonicalizeInstance(instance);
 	const path = join(agentDir, COMPAT_CONFIG_FILE);
 	return withLock(path, '{"instances":[]}\n', () => {
 		const config = readCompatConfigPath(path);
-		if (config.instances.some((item) => item.id.toLowerCase() === nextInstance.id.toLowerCase())) {
+		if (
+			config.instances.some(
+				(item) => item.id.toLowerCase() === nextInstance.id.toLowerCase(),
+			)
+		) {
 			throw new Error(`Instance ID "${nextInstance.id}" already exists`);
 		}
-		atomicWriteJson(path, { instances: [...config.instances, nextInstance] }, {
-			fileMode: SECRET_FILE_MODE,
-			dirMode: SECRET_DIR_MODE,
-		});
+		atomicWriteJson(
+			path,
+			{ instances: [...config.instances, nextInstance] },
+			{
+				fileMode: SECRET_FILE_MODE,
+				dirMode: SECRET_DIR_MODE,
+			},
+		);
 		return { ...nextInstance };
 	});
 }
 
-export async function updateInstance(agentDir: string, instance: CompatInstance): Promise<CompatInstance> {
+export async function updateInstance(
+	agentDir: string,
+	instance: CompatInstance,
+): Promise<CompatInstance> {
 	const nextInstance = canonicalizeInstance(instance);
 	const path = join(agentDir, COMPAT_CONFIG_FILE);
 	return withLock(path, '{"instances":[]}\n', () => {
 		const config = readCompatConfigPath(path);
-		const index = config.instances.findIndex((item) => item.id.toLowerCase() === nextInstance.id.toLowerCase());
+		const index = config.instances.findIndex(
+			(item) => item.id.toLowerCase() === nextInstance.id.toLowerCase(),
+		);
 		if (index === -1) {
 			throw new Error(`Instance ID "${nextInstance.id}" does not exist`);
 		}
 		const instances = [...config.instances];
 		instances[index] = nextInstance;
-		atomicWriteJson(path, { instances }, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
+		atomicWriteJson(
+			path,
+			{ instances },
+			{ fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE },
+		);
 		return { ...nextInstance };
 	});
 }
@@ -182,12 +220,16 @@ export async function replaceInstanceIfEqual(
 	const expected = canonicalizeInstance(expectedInstance);
 	const nextInstance = canonicalizeInstance(instance);
 	if (expected.id.toLowerCase() !== nextInstance.id.toLowerCase()) {
-		throw new Error("Replacement instance ID must match the existing instance ID");
+		throw new Error(
+			"Replacement instance ID must match the existing instance ID",
+		);
 	}
 	const path = join(agentDir, COMPAT_CONFIG_FILE);
 	return withLock(path, '{"instances":[]}\n', () => {
 		const config = readCompatConfigPath(path);
-		const index = config.instances.findIndex((item) => item.id.toLowerCase() === expected.id.toLowerCase());
+		const index = config.instances.findIndex(
+			(item) => item.id.toLowerCase() === expected.id.toLowerCase(),
+		);
 		if (index === -1) {
 			throw new Error(`Instance ID "${expected.id}" does not exist`);
 		}
@@ -196,26 +238,41 @@ export async function replaceInstanceIfEqual(
 		}
 		const instances = [...config.instances];
 		instances[index] = nextInstance;
-		atomicWriteJson(path, { instances }, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
+		atomicWriteJson(
+			path,
+			{ instances },
+			{ fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE },
+		);
 		return { ...nextInstance };
 	});
 }
 
-export async function removeInstance(agentDir: string, id: string): Promise<boolean> {
+export async function removeInstance(
+	agentDir: string,
+	id: string,
+): Promise<boolean> {
 	const normalizedId = normalizeInstanceId(id).toLowerCase();
 	const path = join(agentDir, COMPAT_CONFIG_FILE);
 	return withLock(path, '{"instances":[]}\n', () => {
 		const config = readCompatConfigPath(path);
-		const instances = config.instances.filter((item) => item.id.toLowerCase() !== normalizedId);
+		const instances = config.instances.filter(
+			(item) => item.id.toLowerCase() !== normalizedId,
+		);
 		if (instances.length === config.instances.length) {
 			return false;
 		}
-		atomicWriteJson(path, { instances }, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
+		atomicWriteJson(
+			path,
+			{ instances },
+			{ fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE },
+		);
 		return true;
 	});
 }
 
-export function encodeCompatRefreshMeta(meta: Omit<CompatRefreshMetaV1, "version">): string {
+export function encodeCompatRefreshMeta(
+	meta: Omit<CompatRefreshMetaV1, "version">,
+): string {
 	if (!isCompatScheme(meta.scheme)) {
 		throw new Error("Invalid compatibility scheme");
 	}
@@ -256,7 +313,9 @@ export function parseAuthFile(raw: string): Record<string, unknown> {
 	try {
 		parsed = JSON.parse(raw);
 	} catch (error) {
-		throw new Error(`${AUTH_FILE_NAME} is malformed or invalid`, { cause: error });
+		throw new Error(`${AUTH_FILE_NAME} is malformed or invalid`, {
+			cause: error,
+		});
 	}
 	if (!isPlainObject(parsed)) {
 		throw new Error(`${AUTH_FILE_NAME} is malformed or invalid`);
@@ -272,11 +331,19 @@ function validatedProviderId(providerId: string): string {
 	return normalizeInstanceId(providerId);
 }
 
-function findAuthKey(auth: Record<string, unknown>, providerId: string): string | undefined {
-	return Object.keys(auth).find((key) => key.toLowerCase() === providerId.toLowerCase());
+function findAuthKey(
+	auth: Record<string, unknown>,
+	providerId: string,
+): string | undefined {
+	return Object.keys(auth).find(
+		(key) => key.toLowerCase() === providerId.toLowerCase(),
+	);
 }
 
-export async function assertAuthEntryAbsent(agentDir: string, providerId: string): Promise<void> {
+export async function assertAuthEntryAbsent(
+	agentDir: string,
+	providerId: string,
+): Promise<void> {
 	const id = validatedProviderId(providerId);
 	const path = authPath(agentDir);
 	await withLock(path, "{}\n", () => {
@@ -296,7 +363,10 @@ export async function writeProviderOAuthCredential(
 	if (typeof credential.access !== "string" || !credential.access.trim()) {
 		throw new Error("OAuth credential access must not be blank");
 	}
-	if (typeof credential.refresh !== "string" || !decodeCompatRefreshMeta(credential.refresh)) {
+	if (
+		typeof credential.refresh !== "string" ||
+		!decodeCompatRefreshMeta(credential.refresh)
+	) {
 		throw new Error("OAuth credential refresh metadata is invalid");
 	}
 	const stored: OAuthCredential = { ...credential, type: "oauth" };
@@ -306,11 +376,86 @@ export async function writeProviderOAuthCredential(
 		if (findAuthKey(auth, id) !== undefined) {
 			throw new Error(`Auth entry for instance ID "${id}" already exists`);
 		}
-		atomicWriteJson(path, { ...auth, [id]: stored }, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
+		atomicWriteJson(
+			path,
+			{ ...auth, [id]: stored },
+			{ fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE },
+		);
 	});
 }
 
-export async function deleteProviderAuthEntry(agentDir: string, providerId: string): Promise<boolean> {
+export function readProviderOAuthCredential(
+	agentDir: string,
+	providerId: string,
+): OAuthCredential | undefined {
+	const id = normalizeInstanceId(providerId);
+	try {
+		const auth = parseAuthFile(readFileSync(authPath(agentDir), "utf8"));
+		const storedKey = findAuthKey(auth, id);
+		const value = storedKey === undefined ? undefined : auth[storedKey];
+		if (
+			!isPlainObject(value) ||
+			value.type !== "oauth" ||
+			typeof value.access !== "string" ||
+			typeof value.refresh !== "string" ||
+			typeof value.expires !== "number"
+		) {
+			return undefined;
+		}
+		return value as unknown as OAuthCredential;
+	} catch {
+		return undefined;
+	}
+}
+
+function isLegacyBootstrapMarker(value: unknown): boolean {
+	if (
+		!isPlainObject(value) ||
+		Object.keys(value).sort().join(",") !== "access,expires,refresh,type" ||
+		value.type !== "oauth" ||
+		value.access !== "managed" ||
+		typeof value.refresh !== "string" ||
+		typeof value.expires !== "number" ||
+		!Number.isFinite(value.expires)
+	) {
+		return false;
+	}
+	try {
+		const meta = JSON.parse(value.refresh) as unknown;
+		return (
+			isPlainObject(meta) &&
+			Object.keys(meta).sort().join(",") === "lastInstanceId,version" &&
+			meta.version === 1 &&
+			typeof meta.lastInstanceId === "string" &&
+			Boolean(meta.lastInstanceId.trim())
+		);
+	} catch {
+		return false;
+	}
+}
+
+export async function deleteLegacyBootstrapAuthEntry(
+	agentDir: string,
+): Promise<boolean> {
+	const path = authPath(agentDir);
+	return withLock(path, "{}\n", () => {
+		const auth = parseAuthFile(readFileSync(path, "utf8"));
+		const storedKey = findAuthKey(auth, "llmgates-2api");
+		if (storedKey === undefined || !isLegacyBootstrapMarker(auth[storedKey]))
+			return false;
+		delete auth[storedKey];
+		atomicWriteJson(path, auth, {
+			fileMode: SECRET_FILE_MODE,
+			dirMode: SECRET_DIR_MODE,
+		});
+		return true;
+	});
+}
+
+export async function deleteProviderAuthEntry(
+	agentDir: string,
+	providerId: string,
+): Promise<boolean> {
 	const id = validatedProviderId(providerId);
 	const path = authPath(agentDir);
 	return withLock(path, "{}\n", () => {
@@ -320,7 +465,10 @@ export async function deleteProviderAuthEntry(agentDir: string, providerId: stri
 			return false;
 		}
 		delete auth[storedKey];
-		atomicWriteJson(path, auth, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
+		atomicWriteJson(path, auth, {
+			fileMode: SECRET_FILE_MODE,
+			dirMode: SECRET_DIR_MODE,
+		});
 		return true;
 	});
 }
@@ -335,11 +483,17 @@ export async function deleteProviderAuthEntryIfEqual(
 	return withLock(path, "{}\n", () => {
 		const auth = parseAuthFile(readFileSync(path, "utf8"));
 		const storedKey = findAuthKey(auth, id);
-		if (storedKey === undefined || !isDeepStrictEqual(auth[storedKey], credential)) {
+		if (
+			storedKey === undefined ||
+			!isDeepStrictEqual(auth[storedKey], credential)
+		) {
 			return false;
 		}
 		delete auth[storedKey];
-		atomicWriteJson(path, auth, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
+		atomicWriteJson(path, auth, {
+			fileMode: SECRET_FILE_MODE,
+			dirMode: SECRET_DIR_MODE,
+		});
 		return true;
 	});
 }

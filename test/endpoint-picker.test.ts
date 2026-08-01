@@ -75,7 +75,7 @@ function snapshot(): SelectorSnapshot {
 			},
 			{
 				providerId: "cpa",
-				label: "2API/cpa",
+				label: "gateway/cpa",
 				models: [
 					{
 						id: "claude-sonnet-5",
@@ -118,7 +118,7 @@ describe("endpoint picker rendering", () => {
 		const text = picker().text();
 
 		expect(text).toMatch(/── llmgates · core ──/);
-		expect(text).toMatch(/── cpa · 2API\/cpa ──/);
+		expect(text).toMatch(/── cpa · gateway\/cpa ──/);
 		expect(text).toMatch(/\[ ] gpt-5\.6-sol\s+GPT-5\.6 Sol\s+chat/);
 		// `*` marks a model that already has an override on disk.
 		expect(text).toMatch(/\[ ] claude-opus-4-8\s+Opus 4\.8\s+messages \*/);
@@ -445,7 +445,7 @@ describe("filterPickerRows", () => {
 				},
 				{
 					providerId: "cpa",
-					label: "2API/cpa",
+					label: "gateway/cpa",
 					models: [
 						{
 							id: "shared",

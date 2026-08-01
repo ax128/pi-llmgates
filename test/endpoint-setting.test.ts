@@ -205,7 +205,7 @@ describe("buildSelectorSnapshot", () => {
 			},
 			{
 				providerId: TWO_API,
-				label: "2API/cpa",
+				label: "gateway/cpa",
 				scope: { kind: "2api", instanceId: TWO_API },
 				refreshEndpointForeground: async () => ({ status: "not-ready" }),
 			},
@@ -500,7 +500,7 @@ describe("/endpoint-setting batch write", () => {
 					{ providerId: CORE, label: "core", scope: { kind: "core" } },
 					{
 						providerId: TWO_API,
-						label: "2API/cpa",
+						label: "gateway/cpa",
 						scope: { kind: "2api", instanceId: TWO_API },
 					},
 				],
@@ -839,7 +839,7 @@ describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 					{ providerId: CORE, label: "core", scope: { kind: "core" } },
 					{
 						providerId: TWO_API,
-						label: "2API/cpa",
+						label: "gateway/cpa",
 						scope: { kind: "2api", instanceId: TWO_API },
 					},
 				],
@@ -856,7 +856,7 @@ describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 
 			const prefill = h.prefill();
 			expect(prefill).toMatch(/# ── llmgates · core ──/);
-			expect(prefill).toMatch(/# ── cpa · 2API\/cpa ──/);
+			expect(prefill).toMatch(/# ── cpa · gateway\/cpa ──/);
 			expect(prefill).toMatch(/^\[ ] c1\s+Core One\s+messages \*$/m);
 			expect(prefill).toMatch(/^\[ ] p1\s+Gateway One\s+chat$/m);
 			expect(prefill).toMatch(/另有 1 个模型.*openai/);

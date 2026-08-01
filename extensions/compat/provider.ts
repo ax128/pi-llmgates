@@ -18,7 +18,16 @@ import {
 	openAICompletionsApi,
 	openAIResponsesApi,
 } from "@earendil-works/pi-ai/compat";
-import { applyAnthropicAdaptiveCompatToModel, applyUniversalThinkingLevelMapToModel, applyInferenceBaseUrlToModel, isOfflineMode, modelForInferenceRequest, parseGatewayModelsPayload, storedModelBaseUrlMatches, type GatewayModel } from "../catalog.js";
+import {
+	applyAnthropicAdaptiveCompatToModel,
+	applyUniversalThinkingLevelMapToModel,
+	applyInferenceBaseUrlToModel,
+	isOfflineMode,
+	modelForInferenceRequest,
+	parseGatewayModelsPayload,
+	storedModelBaseUrlMatches,
+	type GatewayModel,
+} from "../catalog.js";
 import {
 	createModelOverrideLookup,
 	reloadModelOverridesFromDisk,
@@ -49,11 +58,16 @@ import {
 } from "../util.js";
 import {
 	COMPAT_BOOTSTRAP_LOGIN_UI,
+	COMPAT_MERGED_LOGIN_INTRO,
 	compatInstanceLoginUi,
 	formatLoginValidationFailure,
 	translateLoginError,
 } from "../login-ui.js";
-import { applyMoonshotKimiCompatModel, compatModelsUrl, mapCompatModelsPayload } from "./catalog.js";
+import {
+	applyMoonshotKimiCompatModel,
+	compatModelsUrl,
+	mapCompatModelsPayload,
+} from "./catalog.js";
 // Type-only import of the shared tri-state refresh result. This is a pure type
 // and carries no path or file access, so it does not weaken the scope isolation
 // enforced by the override-path scan.
@@ -61,6 +75,7 @@ import type { EndpointRefreshResult } from "../provider.js";
 import {
 	decodeCompatRefreshMeta,
 	encodeCompatRefreshMeta,
+	readProviderOAuthCredential,
 	RegistryInstanceMismatchError,
 	replaceInstanceIfEqual,
 } from "./storage.js";
@@ -146,7 +161,12 @@ export interface CompatProvider extends Provider {
 	 * Never awaits another commitChain task from inside withCommit (no deadlock).
 	 */
 	refreshEndpointForeground(): Promise<EndpointRefreshResult>;
-	getInternalState(): { providerId: string; modelCount: number; generation: number; hasPending: boolean };
+	getInternalState(): {
+		providerId: string;
+		modelCount: number;
+		generation: number;
+		hasPending: boolean;
+	};
 }
 
 export interface CompatBootstrapResult {
@@ -162,126 +182,172 @@ export interface CompatBootstrapProviderOptions {
 	onValidated(result: CompatBootstrapResult): Promise<void>;
 }
 
+export interface CompatInstanceLoginOptions
+	extends CompatBootstrapProviderOptions {
+	/** Preselected scheme; when set the scheme prompt is skipped. */
+	scheme?: CompatScheme;
+}
+
 function logWarn(providerId: string, message: string): void {
 	console.warn(`[pi-llmgates-compat:${providerId}] ${message}`);
 }
 
 function bootstrapStreamError(): never {
-	throw new Error("The compatibility bootstrap provider does not stream inference");
+	throw new Error(
+		"The compatibility bootstrap provider does not stream inference",
+	);
 }
 
 function isCompatScheme(value: string): value is CompatScheme {
 	return (COMPAT_SCHEMES as readonly string[]).includes(value);
 }
 
-export function createCompatBootstrapProvider(options: CompatBootstrapProviderOptions): Provider {
+/**
+ * Interactive "add a 2API instance" flow, shared by the merged LLMGates login
+ * (scheme preselected) and the fallback bootstrap provider (scheme prompted).
+ * Persists through `onValidated` and resolves with the stored instance.
+ */
+export async function runCompatInstanceLogin(
+	interaction: AuthInteraction,
+	options: CompatInstanceLoginOptions,
+): Promise<CompatInstance> {
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const now = options.now ?? (() => Date.now());
 	const reservedProviderIds = options.reservedProviderIds ?? [];
 
-	async function login(interaction: AuthInteraction): Promise<OAuthCredential> {
-		let lastError: Error | undefined;
-		for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
-			if (interaction.signal?.aborted) throw abortError();
-			if (attempt === 1) {
-				interaction.notify({ type: "info", message: COMPAT_BOOTSTRAP_LOGIN_UI.intro.message });
-			}
-			const rawScheme = await interaction.prompt({
+	let lastError: Error | undefined;
+	for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
+		if (interaction.signal?.aborted) throw abortError();
+		if (attempt === 1) {
+			interaction.notify({
+				type: "info",
+				message: options.scheme
+					? COMPAT_MERGED_LOGIN_INTRO
+					: COMPAT_BOOTSTRAP_LOGIN_UI.intro.message,
+			});
+		}
+		const rawScheme =
+			options.scheme ??
+			(await interaction.prompt({
 				type: "select",
 				message: COMPAT_BOOTSTRAP_LOGIN_UI.scheme.message,
 				options: COMPAT_BOOTSTRAP_LOGIN_UI.scheme.options,
-			});
-			const rawId = await interaction.prompt({
-				type: "text",
-				message: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.message,
-				placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.placeholder,
-			});
-			const rawName = await interaction.prompt({
-				type: "text",
-				message: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.message,
-				placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.placeholder,
-			});
-			const scheme = isCompatScheme(rawScheme) ? rawScheme : undefined;
-			const rawBaseUrl = await interaction.prompt({
-				type: "text",
-				message: COMPAT_BOOTSTRAP_LOGIN_UI.baseUrl.message,
-				placeholder: scheme ? BASE_URL_PLACEHOLDER_FOR_SCHEME[scheme] : undefined,
-			});
-			const apiKey = await interaction.prompt({
-				type: "secret",
-				message: COMPAT_BOOTSTRAP_LOGIN_UI.apiKey.message,
-				placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.apiKey.placeholder,
-			});
+			}));
+		const rawId = await interaction.prompt({
+			type: "text",
+			message: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.message,
+			placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.placeholder,
+		});
+		const rawName = await interaction.prompt({
+			type: "text",
+			message: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.message,
+			placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.placeholder,
+		});
+		const scheme = isCompatScheme(rawScheme) ? rawScheme : undefined;
+		const rawBaseUrl = await interaction.prompt({
+			type: "text",
+			message: COMPAT_BOOTSTRAP_LOGIN_UI.baseUrl.message,
+			placeholder: scheme ? BASE_URL_PLACEHOLDER_FOR_SCHEME[scheme] : undefined,
+		});
+		const apiKey = await interaction.prompt({
+			type: "secret",
+			message: COMPAT_BOOTSTRAP_LOGIN_UI.apiKey.message,
+			placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.apiKey.placeholder,
+		});
 
-			let instance: CompatInstance;
-			try {
-				if (!scheme) throw new Error("Invalid compatibility scheme");
-				const id = normalizeInstanceId(rawId, reservedProviderIds);
-				if (!rawBaseUrl.trim()) throw new Error("Base URL is required");
-				if (!apiKey.trim()) throw new Error("API key is required");
-				instance = {
-					id,
-					name: normalizeInstanceName(rawName, id),
-					scheme,
-					baseUrl: normalizeCompatBaseUrl(rawBaseUrl),
-				};
-			} catch (error) {
-				lastError = error instanceof Error ? error : new Error(String(error));
-				interaction.notify({ type: "progress", message: translateLoginError(lastError.message) });
-				continue;
-			}
-
-			interaction.notify({ type: "progress", message: COMPAT_BOOTSTRAP_LOGIN_UI.validating });
-			let initialCatalog: CompatBootstrapResult["initialCatalog"];
-			try {
-				const payload = await requestLimitedJson({
-					url: compatModelsUrl(instance.baseUrl),
-					headers: {
-						Authorization: `Bearer ${apiKey}`,
-						Accept: "application/json",
-						"User-Agent": "pi-llmgates-compat-bootstrap",
-					},
-					signal: interaction.signal,
-					timeoutMs: MODELS_REQUEST_TIMEOUT_MS,
-					maxBytes: MAX_RESPONSE_BYTES,
-					operation: "models",
-					fetchImpl,
-				});
-				const mapped = mapCompatModelsPayload(payload, {
-					providerId: instance.id,
-					inferenceBaseUrl: instance.baseUrl,
-				});
-				initialCatalog = {
-					models: mapped.models,
-					pricingRefs: mapped.catalogRefs,
-					explicitContextIds: explicitContextIds(payload),
-				};
-			} catch (error) {
-				if (error instanceof DOMException && error.name === "AbortError") throw error;
-				lastError = error instanceof Error ? error : new Error(String(error));
-				interaction.notify({
-					type: "progress",
-					message: formatLoginValidationFailure(attempt, MAX_LOGIN_ATTEMPTS, lastError),
-				});
-				continue;
-			}
-
-			const credential: OAuthCredential = {
-				type: "oauth",
-				access: apiKey,
-				refresh: encodeCompatRefreshMeta({ baseUrl: instance.baseUrl, scheme: instance.scheme }),
-				expires: now() + CREDENTIAL_TTL_MS,
-				validationNonce: randomBytes(16).toString("hex"),
+		let instance: CompatInstance;
+		try {
+			if (!scheme) throw new Error("Invalid compatibility scheme");
+			const id = normalizeInstanceId(rawId, reservedProviderIds);
+			if (!rawBaseUrl.trim()) throw new Error("Base URL is required");
+			if (!apiKey.trim()) throw new Error("API key is required");
+			instance = {
+				id,
+				name: normalizeInstanceName(rawName, id),
+				scheme,
+				baseUrl: normalizeCompatBaseUrl(rawBaseUrl),
 			};
-			await options.onValidated({ instance, credential, initialCatalog });
-			return {
-				type: "oauth",
-				access: "managed",
-				refresh: JSON.stringify({ version: 1, lastInstanceId: instance.id }),
-				expires: now() + CREDENTIAL_TTL_MS,
-			};
+		} catch (error) {
+			lastError = error instanceof Error ? error : new Error(String(error));
+			interaction.notify({
+				type: "progress",
+				message: translateLoginError(lastError.message),
+			});
+			continue;
 		}
-		throw lastError ?? new Error("Login validation failed");
+
+		interaction.notify({
+			type: "progress",
+			message: COMPAT_BOOTSTRAP_LOGIN_UI.validating,
+		});
+		let initialCatalog: CompatBootstrapResult["initialCatalog"];
+		try {
+			const payload = await requestLimitedJson({
+				url: compatModelsUrl(instance.baseUrl),
+				headers: {
+					Authorization: `Bearer ${apiKey}`,
+					Accept: "application/json",
+					"User-Agent": "pi-llmgates-compat-bootstrap",
+				},
+				signal: interaction.signal,
+				timeoutMs: MODELS_REQUEST_TIMEOUT_MS,
+				maxBytes: MAX_RESPONSE_BYTES,
+				operation: "models",
+				fetchImpl,
+			});
+			const mapped = mapCompatModelsPayload(payload, {
+				providerId: instance.id,
+				inferenceBaseUrl: instance.baseUrl,
+			});
+			initialCatalog = {
+				models: mapped.models,
+				pricingRefs: mapped.catalogRefs,
+				explicitContextIds: explicitContextIds(payload),
+			};
+		} catch (error) {
+			if (error instanceof DOMException && error.name === "AbortError")
+				throw error;
+			lastError = error instanceof Error ? error : new Error(String(error));
+			interaction.notify({
+				type: "progress",
+				message: formatLoginValidationFailure(
+					attempt,
+					MAX_LOGIN_ATTEMPTS,
+					lastError,
+				),
+			});
+			continue;
+		}
+
+		const credential: OAuthCredential = {
+			type: "oauth",
+			access: apiKey,
+			refresh: encodeCompatRefreshMeta({
+				baseUrl: instance.baseUrl,
+				scheme: instance.scheme,
+			}),
+			expires: now() + CREDENTIAL_TTL_MS,
+			validationNonce: randomBytes(16).toString("hex"),
+		};
+		await options.onValidated({ instance, credential, initialCatalog });
+		return instance;
+	}
+	throw lastError ?? new Error("Login validation failed");
+}
+
+export function createCompatBootstrapProvider(
+	options: CompatBootstrapProviderOptions,
+): Provider {
+	const now = options.now ?? (() => Date.now());
+
+	async function login(interaction: AuthInteraction): Promise<OAuthCredential> {
+		const instance = await runCompatInstanceLogin(interaction, options);
+		return {
+			type: "oauth",
+			access: "managed",
+			refresh: JSON.stringify({ version: 1, lastInstanceId: instance.id }),
+			expires: now() + CREDENTIAL_TTL_MS,
+		};
 	}
 
 	return {
@@ -293,7 +359,11 @@ export function createCompatBootstrapProvider(options: CompatBootstrapProviderOp
 				loginLabel: COMPAT_BOOTSTRAP_LOGIN_UI.loginLabel,
 				login,
 				async refresh(credential: OAuthCredential): Promise<OAuthCredential> {
-					return { ...credential, type: "oauth", expires: now() + CREDENTIAL_TTL_MS };
+					return {
+						...credential,
+						type: "oauth",
+						expires: now() + CREDENTIAL_TTL_MS,
+					};
 				},
 				async toAuth() {
 					return {};
@@ -308,17 +378,28 @@ export function createCompatBootstrapProvider(options: CompatBootstrapProviderOp
 
 function explicitContextIds(payload: unknown): Set<string> {
 	const ids = new Set<string>();
-	for (const model of parseGatewayModelsPayload(payload) as Array<GatewayModel & { max_model_len?: unknown }>) {
+	for (const model of parseGatewayModelsPayload(payload) as Array<
+		GatewayModel & { max_model_len?: unknown }
+	>) {
 		const id = typeof model.id === "string" ? model.id : "";
 		const context = model.context_window ?? model.max_model_len;
-		if (id.trim() && typeof context === "number" && Number.isFinite(context) && context > 0) {
+		if (
+			id.trim() &&
+			typeof context === "number" &&
+			Number.isFinite(context) &&
+			context > 0
+		) {
 			ids.add(id);
 		}
 	}
 	return ids;
 }
 
-function isStoredModelValid(model: unknown, providerId: string, baseUrl: string): model is Model<Api> {
+function isStoredModelValid(
+	model: unknown,
+	providerId: string,
+	baseUrl: string,
+): model is Model<Api> {
 	if (!model || typeof model !== "object" || Array.isArray(model)) return false;
 	const value = model as Record<string, unknown>;
 	return (
@@ -326,7 +407,10 @@ function isStoredModelValid(model: unknown, providerId: string, baseUrl: string)
 		Boolean(value.id.trim()) &&
 		typeof value.name === "string" &&
 		value.provider === providerId &&
-		storedModelBaseUrlMatches(value as { baseUrl: unknown; api: unknown }, baseUrl) &&
+		storedModelBaseUrlMatches(
+			value as { baseUrl: unknown; api: unknown },
+			baseUrl,
+		) &&
 		// Widened from the hardcoded openai-completions: without this, a model saved
 		// as messages/responses is rejected wholesale on restore, and the instance's
 		// entire model list disappears offline until the next successful refresh.
@@ -342,7 +426,9 @@ function isStoredModelValid(model: unknown, providerId: string, baseUrl: string)
 	);
 }
 
-export function createCompatProvider(options: CompatProviderOptions): CompatProvider {
+export function createCompatProvider(
+	options: CompatProviderOptions,
+): CompatProvider {
 	const { agentDir } = options;
 	let currentInstance = { ...options.instance };
 	let persistedInstance = { ...options.instance };
@@ -350,14 +436,19 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 	const now = options.now ?? (() => Date.now());
 	const fetchImpl = options.fetchImpl ?? fetch;
 
-	let models = (options.initialCatalog?.models ?? options.initialModels ?? [])
-		.map((model) => ({ ...model, cost: { ...model.cost } }));
+	let models = (
+		options.initialCatalog?.models ??
+		options.initialModels ??
+		[]
+	).map((model) => ({ ...model, cost: { ...model.cost } }));
 	let publishedCatalog: CatalogResult | null = options.initialCatalog
 		? {
-			models,
-			pricingRefs: options.initialCatalog.pricingRefs.map((ref) => ({ ...ref })),
-			explicitContextIds: new Set(options.initialCatalog.explicitContextIds),
-		}
+				models,
+				pricingRefs: options.initialCatalog.pricingRefs.map((ref) => ({
+					...ref,
+				})),
+				explicitContextIds: new Set(options.initialCatalog.explicitContextIds),
+			}
 		: null;
 	let initialPricingStarted = false;
 	let generation = 0;
@@ -395,7 +486,10 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		// A malformed instance id cannot reach here (it failed registry validation),
 		// so this is an fs-level problem: start without overrides rather than
 		// preventing the provider from being constructed at all.
-		logWarn(providerId, `Failed to read endpoint overrides: ${error instanceof Error ? error.message : String(error)}`);
+		logWarn(
+			providerId,
+			`Failed to read endpoint overrides: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 
 	function lifecycleMatches(expectedGeneration: number): boolean {
@@ -421,20 +515,33 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 	}
 
 	function notifyPricingIfReady(result: CatalogResult): void {
-		if (result.pricingReady && !result.pricingNotified && publishedCatalog === result) {
+		if (
+			result.pricingReady &&
+			!result.pricingNotified &&
+			publishedCatalog === result
+		) {
 			result.pricingNotified = true;
 			options.onModelsChanged?.(provider);
 		}
 	}
 
-	function setModels(next: readonly Model<Api>[], catalog: CatalogResult | null = null): void {
+	function setModels(
+		next: readonly Model<Api>[],
+		catalog: CatalogResult | null = null,
+	): void {
 		models = [...next];
 		publishedCatalog = catalog;
 		if (catalog) notifyPricingIfReady(catalog);
 	}
 
-	function connectionFromCredential(credential: Credential | undefined): CompatConnection | null {
-		if (credential?.type !== "oauth" || typeof credential.access !== "string" || !credential.access.trim()) {
+	function connectionFromCredential(
+		credential: Credential | undefined,
+	): CompatConnection | null {
+		if (
+			credential?.type !== "oauth" ||
+			typeof credential.access !== "string" ||
+			!credential.access.trim()
+		) {
 			return null;
 		}
 		const meta = decodeCompatRefreshMeta(credential.refresh);
@@ -447,18 +554,22 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 	function connectionStillMatches(expected: CompatConnection): boolean {
 		return (
 			!lastConnection ||
-			(lastConnection.baseUrl === expected.baseUrl && keysEqual(lastConnection.apiKey, expected.apiKey))
+			(lastConnection.baseUrl === expected.baseUrl &&
+				keysEqual(lastConnection.apiKey, expected.apiKey))
 		);
 	}
 
 	function patchPricing(result: CatalogResult): void {
-		const vendorById = new Map(result.pricingRefs.map((ref) => [ref.id, ref.providerId]));
+		const vendorById = new Map(
+			result.pricingRefs.map((ref) => [ref.id, ref.providerId]),
+		);
 		for (const model of result.models) {
 			const vendor = vendorById.get(model.id);
 			model.cost = resolveModelCostRates(model.id, vendor);
 			if (!result.explicitContextIds.has(model.id)) {
 				const contextWindow =
-					lookupMemoryContextWindow(model.id, vendor) ?? lookupMemoryContextWindow(model.id);
+					lookupMemoryContextWindow(model.id, vendor) ??
+					lookupMemoryContextWindow(model.id);
 				if (contextWindow !== undefined) {
 					model.contextWindow = contextWindow;
 				}
@@ -471,7 +582,10 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 	 * including Kimi ids and models routed to `anthropic-messages`, which
 	 * `applyMoonshotKimiCompatModel` returns early for.
 	 */
-	function patchCachedModels(cachedModels: readonly Model<Api>[], canonicalBaseUrl?: string): void {
+	function patchCachedModels(
+		cachedModels: readonly Model<Api>[],
+		canonicalBaseUrl?: string,
+	): void {
 		for (const model of cachedModels) {
 			if (canonicalBaseUrl) {
 				applyInferenceBaseUrlToModel(model, canonicalBaseUrl);
@@ -497,7 +611,11 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		pendingRegistryBaseUrl = baseUrl;
 		let outcome: RegistryPersistOutcome = "ok";
 		await withCommit(async () => {
-			if (!lifecycleMatches(expectedGeneration) || pendingRegistryBaseUrl !== baseUrl) return;
+			if (
+				!lifecycleMatches(expectedGeneration) ||
+				pendingRegistryBaseUrl !== baseUrl
+			)
+				return;
 			try {
 				const expectedInstance = persistedInstance;
 				const updated = await replaceInstanceIfEqual(
@@ -505,7 +623,11 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 					expectedInstance,
 					{ ...expectedInstance, baseUrl },
 				);
-				if (!lifecycleMatches(expectedGeneration) || pendingRegistryBaseUrl !== baseUrl) return;
+				if (
+					!lifecycleMatches(expectedGeneration) ||
+					pendingRegistryBaseUrl !== baseUrl
+				)
+					return;
 				persistedInstance = updated;
 				currentInstance = updated;
 				pendingRegistryBaseUrl = null;
@@ -524,46 +646,70 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 					);
 				} else {
 					outcome = "failed";
-					logWarn(providerId, "Instance registry update failed; will retry on a later refresh.");
+					logWarn(
+						providerId,
+						"Instance registry update failed; will retry on a later refresh.",
+					);
 				}
 			}
 		});
 		return outcome;
 	}
 
-	function schedulePricingSync(result: CatalogResult, fetchGeneration: number): void {
+	function schedulePricingSync(
+		result: CatalogResult,
+		fetchGeneration: number,
+	): void {
 		const gatewayModels: GatewayModel[] = result.pricingRefs.map((ref) => ({
 			id: ref.id,
 			...(ref.providerId ? { provider_id: ref.providerId } : {}),
 		}));
 		void track(
 			refreshModelPricing(agentDir, gatewayModels, { fetchImpl, now })
-				.then(() => withCommit(async () => {
-					if (!lifecycleMatches(fetchGeneration)) return;
-					patchPricing(result);
-					result.pricingReady = true;
-					if (
-						publishedCatalog === result &&
-						result.store &&
-						result.store === scopedStore &&
-						result.requestId === latestRequestId
-					) {
-						try {
-							await result.store.write({ models: result.models, checkedAt: result.checkedAt });
-						} catch (error) {
-							logWarn(providerId, `Priced model cache rewrite failed: ${error instanceof Error ? error.message : String(error)}`);
+				.then(() =>
+					withCommit(async () => {
+						if (!lifecycleMatches(fetchGeneration)) return;
+						patchPricing(result);
+						result.pricingReady = true;
+						if (
+							publishedCatalog === result &&
+							result.store &&
+							result.store === scopedStore &&
+							result.requestId === latestRequestId
+						) {
+							try {
+								await result.store.write({
+									models: result.models,
+									checkedAt: result.checkedAt,
+								});
+							} catch (error) {
+								logWarn(
+									providerId,
+									`Priced model cache rewrite failed: ${error instanceof Error ? error.message : String(error)}`,
+								);
+							}
 						}
-					}
-					if (!lifecycleMatches(fetchGeneration) || publishedCatalog !== result) return;
-					if (
-						result.store &&
-						(result.store !== scopedStore || result.requestId !== latestRequestId)
-					) return;
-					notifyPricingIfReady(result);
-				}))
+						if (
+							!lifecycleMatches(fetchGeneration) ||
+							publishedCatalog !== result
+						)
+							return;
+						if (
+							result.store &&
+							(result.store !== scopedStore ||
+								result.requestId !== latestRequestId)
+						)
+							return;
+						notifyPricingIfReady(result);
+					}),
+				)
 				.catch((error) => {
-					if (error instanceof DOMException && error.name === "AbortError") return;
-					logWarn(providerId, `Background pricing sync failed: ${error instanceof Error ? error.message : String(error)}`);
+					if (error instanceof DOMException && error.name === "AbortError")
+						return;
+					logWarn(
+						providerId,
+						`Background pricing sync failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
 				}),
 		);
 	}
@@ -589,7 +735,8 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			operation: "models",
 			fetchImpl,
 		});
-		if (!lifecycleMatches(fetchGeneration) || signal?.aborted) throw abortError();
+		if (!lifecycleMatches(fetchGeneration) || signal?.aborted)
+			throw abortError();
 		const mapped = mapCompatModelsPayload(payload, {
 			providerId,
 			inferenceBaseUrl: connection.baseUrl,
@@ -610,13 +757,16 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			pending = null;
 			return false;
 		}
-		const nonce = typeof credential.validationNonce === "string" ? credential.validationNonce : "";
+		const nonce =
+			typeof credential.validationNonce === "string"
+				? credential.validationNonce
+				: "";
 		if (!nonce || nonce !== pending.validationNonce) return false;
 		const connection = connectionFromCredential(credential);
 		return Boolean(
 			connection &&
-			connection.baseUrl === pending.connection.baseUrl &&
-			keysEqual(connection.apiKey, pending.connection.apiKey),
+				connection.baseUrl === pending.connection.baseUrl &&
+				keysEqual(connection.apiKey, pending.connection.apiKey),
 		);
 	}
 
@@ -631,12 +781,17 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			return;
 		}
 		const valid = entry.models
-			.filter((model) => isStoredModelValid(model, providerId, connection.baseUrl))
+			.filter((model) =>
+				isStoredModelValid(model, providerId, connection.baseUrl),
+			)
 			.map((model) => ({ ...model, cost: { ...model.cost } }));
 		if (valid.length === 0) return;
 		patchCachedModels(valid, connection.baseUrl);
 		setModels(valid);
-		if (typeof entry.checkedAt === "number" && Number.isFinite(entry.checkedAt)) {
+		if (
+			typeof entry.checkedAt === "number" &&
+			Number.isFinite(entry.checkedAt)
+		) {
 			lastCheckedAt = entry.checkedAt;
 		}
 	}
@@ -654,9 +809,16 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			pendingRegistryBaseUrl = connection.baseUrl;
 		}
 
-		if (pendingRegistryBaseUrl && connection.baseUrl === pendingRegistryBaseUrl) {
-			const outcome = await persistInstanceBaseUrl(pendingRegistryBaseUrl, refreshGeneration);
-			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+		if (
+			pendingRegistryBaseUrl &&
+			connection.baseUrl === pendingRegistryBaseUrl
+		) {
+			const outcome = await persistInstanceBaseUrl(
+				pendingRegistryBaseUrl,
+				refreshGeneration,
+			);
+			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
+				return;
 			// A superseded registry entry means this provider is stale; drop the
 			// refresh entirely so its models are never (re)published. Transient
 			// failures keep the pre-existing publish behavior ("without losing
@@ -666,11 +828,16 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 
 		try {
 			const stored = await context.store.read();
-			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
+				return;
 			restoreFromStore(stored, connection);
 		} catch (error) {
-			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
-			logWarn(providerId, `Failed to read model cache: ${error instanceof Error ? error.message : String(error)}`);
+			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
+				return;
+			logWarn(
+				providerId,
+				`Failed to read model cache: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 
 		if (
@@ -685,31 +852,50 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 					!lifecycleMatches(refreshGeneration) ||
 					requestId !== latestRequestId ||
 					pending !== candidate
-				) return;
+				)
+					return;
 				candidate.catalog.store = context.store;
 				candidate.catalog.requestId = requestId;
 				candidate.catalog.checkedAt = now();
 				try {
-					await context.store.write({ models: candidate.catalog.models, checkedAt: candidate.catalog.checkedAt });
+					await context.store.write({
+						models: candidate.catalog.models,
+						checkedAt: candidate.catalog.checkedAt,
+					});
 				} catch (error) {
-					logWarn(providerId, `Login model cache write failed; using in-memory models: ${error instanceof Error ? error.message : String(error)}`);
+					logWarn(
+						providerId,
+						`Login model cache write failed; using in-memory models: ${error instanceof Error ? error.message : String(error)}`,
+					);
 				}
 				if (
 					!lifecycleMatches(refreshGeneration) ||
 					requestId !== latestRequestId ||
 					pending !== candidate
-				) return;
+				)
+					return;
 				pending = null;
 				consumed = true;
 				setModels(candidate.catalog.models, candidate.catalog);
-				currentInstance = { ...currentInstance, baseUrl: candidate.connection.baseUrl };
+				currentInstance = {
+					...currentInstance,
+					baseUrl: candidate.connection.baseUrl,
+				};
 				lastConnection = candidate.connection;
 				lastCheckedAt = now();
 			});
-			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
+				return;
 			if (consumed) {
-				await persistInstanceBaseUrl(candidate.connection.baseUrl, refreshGeneration);
-				if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+				await persistInstanceBaseUrl(
+					candidate.connection.baseUrl,
+					refreshGeneration,
+				);
+				if (
+					!lifecycleMatches(refreshGeneration) ||
+					requestId !== latestRequestId
+				)
+					return;
 				return;
 			}
 		}
@@ -727,26 +913,41 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 
 		let fetched: CatalogResult;
 		try {
-			fetched = await fetchCatalog(connection, context.signal, refreshGeneration);
+			fetched = await fetchCatalog(
+				connection,
+				context.signal,
+				refreshGeneration,
+			);
 		} catch (error) {
-			if (error instanceof DOMException && error.name === "AbortError" && !lifecycleMatches(refreshGeneration)) return;
+			if (
+				error instanceof DOMException &&
+				error.name === "AbortError" &&
+				!lifecycleMatches(refreshGeneration)
+			)
+				return;
 			throw error;
 		}
-		if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId) return;
+		if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
+			return;
 		await withCommit(async () => {
 			if (!lifecycleMatches(refreshGeneration)) return;
 			if (context.signal?.aborted) throw abortError();
-			if (requestId !== latestRequestId || !connectionStillMatches(connection)) return;
+			if (requestId !== latestRequestId || !connectionStillMatches(connection))
+				return;
 			fetched.store = context.store;
 			fetched.requestId = requestId;
 			fetched.checkedAt = now();
-			await context.store.write({ models: fetched.models, checkedAt: fetched.checkedAt });
+			await context.store.write({
+				models: fetched.models,
+				checkedAt: fetched.checkedAt,
+			});
 			if (
 				!lifecycleMatches(refreshGeneration) ||
 				context.signal?.aborted ||
 				requestId !== latestRequestId ||
 				!connectionStillMatches(connection)
-			) return;
+			)
+				return;
 			setModels(fetched.models, fetched);
 			lastConnection = connection;
 			lastCheckedAt = now();
@@ -762,7 +963,8 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		let lastError: Error | undefined;
 
 		for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
-			if (interaction.signal?.aborted || !lifecycleMatches(loginGeneration)) throw abortError();
+			if (interaction.signal?.aborted || !lifecycleMatches(loginGeneration))
+				throw abortError();
 			if (attempt === 1) {
 				interaction.notify({ type: "info", message: loginUi.intro.message });
 			}
@@ -783,7 +985,10 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 				baseUrl = normalizeCompatBaseUrl(rawBaseUrl);
 			} catch (error) {
 				lastError = error instanceof Error ? error : new Error(String(error));
-				interaction.notify({ type: "progress", message: translateLoginError(lastError.message) });
+				interaction.notify({
+					type: "progress",
+					message: translateLoginError(lastError.message),
+				});
 				continue;
 			}
 
@@ -802,7 +1007,11 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			const connection = { apiKey, baseUrl };
 			interaction.notify({ type: "progress", message: loginUi.validating });
 			try {
-				const catalog = await fetchCatalog(connection, interaction.signal, loginGeneration);
+				const catalog = await fetchCatalog(
+					connection,
+					interaction.signal,
+					loginGeneration,
+				);
 				if (!lifecycleMatches(loginGeneration)) throw abortError();
 				const validationNonce = randomBytes(16).toString("hex");
 				pending = {
@@ -815,7 +1024,10 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 				return {
 					type: "oauth",
 					access: apiKey,
-					refresh: encodeCompatRefreshMeta({ baseUrl, scheme: currentInstance.scheme }),
+					refresh: encodeCompatRefreshMeta({
+						baseUrl,
+						scheme: currentInstance.scheme,
+					}),
 					expires: now() + CREDENTIAL_TTL_MS,
 					validationNonce,
 				};
@@ -824,14 +1036,19 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 					pending = null;
 					throw error;
 				}
-				lastError = error instanceof HttpStatusError
-					? error
-					: error instanceof Error
+				lastError =
+					error instanceof HttpStatusError
 						? error
-						: new Error(String(error));
+						: error instanceof Error
+							? error
+							: new Error(String(error));
 				interaction.notify({
 					type: "progress",
-					message: formatLoginValidationFailure(attempt, MAX_LOGIN_ATTEMPTS, lastError),
+					message: formatLoginValidationFailure(
+						attempt,
+						MAX_LOGIN_ATTEMPTS,
+						lastError,
+					),
 				});
 			}
 		}
@@ -859,7 +1076,11 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 		try {
 			// fetchCatalog reloads this instance's overrides from disk and re-maps; it
 			// throws on network failure and on non-ENOENT override-file fs errors.
-			const fetched = await fetchCatalog(connection, controller.signal, requestGeneration);
+			const fetched = await fetchCatalog(
+				connection,
+				controller.signal,
+				requestGeneration,
+			);
 
 			let committed = false;
 			await withCommit(async () => {
@@ -868,24 +1089,31 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 					controller.signal.aborted ||
 					requestId !== latestRequestId ||
 					!connectionStillMatches(connection)
-				) return;
+				)
+					return;
 				fetched.store = store;
 				fetched.requestId = requestId;
 				fetched.checkedAt = now();
-				await store.write({ models: fetched.models, checkedAt: fetched.checkedAt });
+				await store.write({
+					models: fetched.models,
+					checkedAt: fetched.checkedAt,
+				});
 				if (
 					!lifecycleMatches(requestGeneration) ||
 					controller.signal.aborted ||
 					requestId !== latestRequestId ||
 					!connectionStillMatches(connection)
-				) return;
+				)
+					return;
 				setModels(fetched.models, fetched);
 				lastCheckedAt = now();
 				committed = true;
 			});
 			// Returning the mapped models lets the caller derive the expected api for
 			// `auto` from the same mapping that produced them.
-			return committed ? { status: "ok", models: fetched.models } : { status: "superseded" };
+			return committed
+				? { status: "ok", models: fetched.models }
+				: { status: "superseded" };
 		} catch (error) {
 			// An abort that coincides with a lifecycle change (shutdown or a new
 			// session) is that change, not a failure the user should see: report it as
@@ -904,14 +1132,48 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 	provider = {
 		id: providerId,
 		name: currentInstance.name,
-		get baseUrl() { return currentInstance.baseUrl; },
+		get baseUrl() {
+			return currentInstance.baseUrl;
+		},
 		auth: {
+			apiKey: {
+				// pi shows "{name} is configured outside pi." when this api_key entry
+				// is picked in the /login auth-type selector; the name doubles as the
+				// guidance to go back and choose the oauth re-configuration entry.
+				name: `${currentInstance.name} 凭证由 /login LLMGates 管理（重配置请选另一登录项）`,
+				async check() {
+					const connection = connectionFromCredential(
+						readProviderOAuthCredential(agentDir, providerId),
+					);
+					return connection
+						? { source: "auth.json", type: "api_key" as const }
+						: undefined;
+				},
+				async resolve() {
+					const connection = connectionFromCredential(
+						readProviderOAuthCredential(agentDir, providerId),
+					);
+					return connection
+						? {
+								auth: {
+									apiKey: connection.apiKey,
+									baseUrl: connection.baseUrl,
+								},
+								source: "auth.json",
+							}
+						: undefined;
+				},
+			},
 			oauth: {
 				name: instanceLoginUi().oauthAccountName,
 				loginLabel: instanceLoginUi().loginLabel,
 				login,
 				async refresh(credential: OAuthCredential): Promise<OAuthCredential> {
-					return { ...credential, type: "oauth", expires: now() + CREDENTIAL_TTL_MS };
+					return {
+						...credential,
+						type: "oauth",
+						expires: now() + CREDENTIAL_TTL_MS,
+					};
 				},
 				async toAuth(credential: OAuthCredential) {
 					const connection = connectionFromCredential(credential);
@@ -924,14 +1186,22 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			return models;
 		},
 		refreshModels,
-		stream<T extends Api>(model: Model<T>, context: Context, streamOptions?: ApiStreamOptions<T>) {
+		stream<T extends Api>(
+			model: Model<T>,
+			context: Context,
+			streamOptions?: ApiStreamOptions<T>,
+		) {
 			return compatStreamFor(model as Model<Api>).stream(
 				modelForInferenceRequest(model as Model<Api>) as never,
 				context,
 				streamOptions as never,
 			);
 		},
-		streamSimple(model: Model<Api>, context: Context, streamOptions?: SimpleStreamOptions) {
+		streamSimple(
+			model: Model<Api>,
+			context: Context,
+			streamOptions?: SimpleStreamOptions,
+		) {
 			return compatStreamFor(model).streamSimple(
 				modelForInferenceRequest(model) as never,
 				context,
@@ -956,8 +1226,11 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			initialPricingStarted = true;
 			schedulePricingSync(publishedCatalog, generation);
 		},
-		async startBackgroundRefresh(refreshOptions?: { force?: boolean }): Promise<void> {
-			if (shutDown || isOfflineMode() || !scopedStore || !lastConnection) return;
+		async startBackgroundRefresh(refreshOptions?: {
+			force?: boolean;
+		}): Promise<void> {
+			if (shutDown || isOfflineMode() || !scopedStore || !lastConnection)
+				return;
 			if (
 				!refreshOptions?.force &&
 				typeof lastCheckedAt === "number" &&
@@ -975,7 +1248,11 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			const requestGeneration = generation;
 			const task = (async () => {
 				try {
-					const fetched = await fetchCatalog(connection, controller.signal, requestGeneration);
+					const fetched = await fetchCatalog(
+						connection,
+						controller.signal,
+						requestGeneration,
+					);
 					if (!lifecycleMatches(requestGeneration)) return;
 					await withCommit(async () => {
 						if (
@@ -983,22 +1260,28 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 							controller.signal.aborted ||
 							requestId !== latestRequestId ||
 							!connectionStillMatches(connection)
-						) return;
+						)
+							return;
 						fetched.store = store;
 						fetched.requestId = requestId;
 						fetched.checkedAt = now();
-						await store.write({ models: fetched.models, checkedAt: fetched.checkedAt });
+						await store.write({
+							models: fetched.models,
+							checkedAt: fetched.checkedAt,
+						});
 						if (
 							!lifecycleMatches(requestGeneration) ||
 							controller.signal.aborted ||
 							requestId !== latestRequestId ||
 							!connectionStillMatches(connection)
-						) return;
+						)
+							return;
 						setModels(fetched.models, fetched);
 						lastCheckedAt = now();
 					});
 				} catch (error) {
-					if (error instanceof DOMException && error.name === "AbortError") return;
+					if (error instanceof DOMException && error.name === "AbortError")
+						return;
 				}
 			})();
 			await track(task);
@@ -1024,7 +1307,12 @@ export function createCompatProvider(options: CompatProviderOptions): CompatProv
 			lastConnection = null;
 		},
 		getInternalState() {
-			return { providerId, modelCount: models.length, generation, hasPending: pending !== null };
+			return {
+				providerId,
+				modelCount: models.length,
+				generation,
+				hasPending: pending !== null,
+			};
 		},
 	};
 

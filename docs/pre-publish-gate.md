@@ -160,10 +160,10 @@ pi
 
 **2API 兼容层**
 
-- [ ] `/login llmgates-2api` 添加实例
+- [ ] `/login LLMGates` 选择 NewAPI / CLIProxyAPI / Sub2API 添加实例（合并登录：不覆盖 core 凭证，无错误横幅，会话内出现成功提示且实例立即可用）
 - [ ] `/logout` 中选择实例显示名称（可用 ID 搜索）后，registry / provider / endpoint override 被清理；重启或 `/reload` 后不再出现（若涉及 logout 清理）
 - [ ] 同 ID 的 auth 条目仍存在时拒绝覆盖（若涉及登录恢复）
-- [ ] `/2api` 列表 / 切换
+- [ ] `/llmgates list` / `/llmgates remove <id>`
 - [ ] 多实例并存无串线
 
 **TPS / 子代理用量**

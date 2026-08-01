@@ -54,18 +54,18 @@ describe("mergeCatalogReloadOutcomes", () => {
 		expect(
 			mergeCatalogReloadOutcomes([
 				{ providerId: CORE, label: "core", status: "ok", modelCount: 3 },
-				{ providerId: TWO_API, label: "2API/cpa", status: "ok", modelCount: 2 },
+				{ providerId: TWO_API, label: "gateway/cpa", status: "ok", modelCount: 2 },
 			]),
 		).toEqual({
 			level: "info",
-			message: "Refreshed catalog for core (3 model(s)), 2API/cpa (2 model(s)).",
+			message: "Refreshed catalog for core (3 model(s)), gateway/cpa (2 model(s)).",
 		});
 	});
 
 	it("reports warning when some providers fail", () => {
 		const result = mergeCatalogReloadOutcomes([
 			{ providerId: CORE, label: "core", status: "ok", modelCount: 1 },
-			{ providerId: TWO_API, label: "2API/cpa", status: "partial", detail: "offline mode" },
+			{ providerId: TWO_API, label: "gateway/cpa", status: "partial", detail: "offline mode" },
 		]);
 		expect(result.level).toBe("warning");
 		expect(result.message).toContain("partial");
@@ -75,7 +75,7 @@ describe("mergeCatalogReloadOutcomes", () => {
 	it("does not call a zero-success run partial", () => {
 		const result = mergeCatalogReloadOutcomes([
 			{ providerId: CORE, label: "core", status: "partial", detail: "offline mode" },
-			{ providerId: TWO_API, label: "2API/cpa", status: "failed", detail: "boom" },
+			{ providerId: TWO_API, label: "gateway/cpa", status: "failed", detail: "boom" },
 		]);
 		expect(result.level).toBe("warning");
 		expect(result.message).not.toContain("partial");

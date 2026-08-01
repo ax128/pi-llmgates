@@ -10,18 +10,21 @@ import { withTempAgentDir, writeJson } from "./helpers/temp-agent-dir.js";
 const agentDirState = vi.hoisted(() => ({ value: "" }));
 
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
-	...await importOriginal<typeof import("@earendil-works/pi-coding-agent")>(),
+	...(await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()),
 	getAgentDir: () => agentDirState.value,
 }));
 
 import registerExtension from "../extensions/index.js";
 
 type EventHandler = (event: unknown) => unknown;
-type CommandHandler = (args: string, ctx: {
-	signal: AbortSignal;
-	ui: { notify(message: string, level: string): void };
-	modelRegistry: { getProviderAuth(providerId: string): Promise<undefined> };
-}) => unknown;
+type CommandHandler = (
+	args: string,
+	ctx: {
+		signal: AbortSignal;
+		ui: { notify(message: string, level: string): void };
+		modelRegistry: { getProviderAuth(providerId: string): Promise<undefined> };
+	},
+) => unknown;
 
 function createPi() {
 	const providers = new Map<string, Provider>();
@@ -52,13 +55,17 @@ function createPi() {
 		registrations,
 		commands,
 		async emit(event: string, payload: unknown = {}) {
-			await Promise.all((handlers.get(event) ?? []).map((handler) => handler(payload)));
+			await Promise.all(
+				(handlers.get(event) ?? []).map((handler) => handler(payload)),
+			);
 		},
 		async runCommand(name: string) {
 			const notifications: Array<{ message: string; level: string }> = [];
 			await commands.get(name)!("", {
 				signal: new AbortController().signal,
-				ui: { notify: (message, level) => notifications.push({ message, level }) },
+				ui: {
+					notify: (message, level) => notifications.push({ message, level }),
+				},
 				modelRegistry: { getProviderAuth: async () => undefined },
 			});
 			return notifications;
@@ -79,7 +86,10 @@ function seedStoredCompat(agentDir: string): void {
 		[instance.id]: {
 			type: "oauth",
 			access: "compat-secret",
-			refresh: encodeCompatRefreshMeta({ baseUrl: instance.baseUrl, scheme: instance.scheme }),
+			refresh: encodeCompatRefreshMeta({
+				baseUrl: instance.baseUrl,
+				scheme: instance.scheme,
+			}),
 			expires: 4_102_444_800_000,
 		},
 	});
@@ -92,9 +102,11 @@ const originalPricingSetting = process.env.LLMGATES_PRICING_AUTO_UPDATE;
 afterEach(() => {
 	if (originalProviderId === undefined) delete process.env.LLMGATES_PROVIDER_ID;
 	else process.env.LLMGATES_PROVIDER_ID = originalProviderId;
-	if (originalProviderName === undefined) delete process.env.LLMGATES_PROVIDER_NAME;
+	if (originalProviderName === undefined)
+		delete process.env.LLMGATES_PROVIDER_NAME;
 	else process.env.LLMGATES_PROVIDER_NAME = originalProviderName;
-	if (originalPricingSetting === undefined) delete process.env.LLMGATES_PRICING_AUTO_UPDATE;
+	if (originalPricingSetting === undefined)
+		delete process.env.LLMGATES_PRICING_AUTO_UPDATE;
 	else process.env.LLMGATES_PRICING_AUTO_UPDATE = originalPricingSetting;
 	vi.restoreAllMocks();
 });
@@ -110,10 +122,18 @@ describe("extension compat/core isolation", () => {
 			seedStoredCompat(agentDir);
 			registerExtension(runtime.pi);
 
-			expect([...runtime.providers.keys()]).toEqual([BOOTSTRAP_PROVIDER_ID, "gateway-a"]);
+			expect([...runtime.providers.keys()]).toEqual([
+				BOOTSTRAP_PROVIDER_ID,
+				"gateway-a",
+			]);
 			// /endpoint-setting spans 2API too, so a healthy instance keeps it available
 			// even though core is blocked; /endpoint stays core-only and is absent.
-			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "balance", "endpoint-setting", "llmgates-reload"]);
+			expect([...runtime.commands.keys()].sort()).toEqual([
+				"balance",
+				"endpoint-setting",
+				"llmgates",
+				"llmgates-reload",
+			]);
 			expect(runtime.providers.has("llmgates")).toBe(false);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(/legacy.*api_key/i);
 
@@ -140,7 +160,9 @@ describe("extension compat/core isolation", () => {
 		const runtime = createPi();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			writeJson(join(agentDir, "llmgates/2api.json"), { instances: "not-an-array" });
+			writeJson(join(agentDir, "llmgates/2api.json"), {
+				instances: "not-an-array",
+			});
 			registerExtension(runtime.pi);
 
 			expect([...runtime.providers.keys()]).toEqual(["llmgates"]);
@@ -152,7 +174,9 @@ describe("extension compat/core isolation", () => {
 				"endpoint-setting",
 				"llmgates-reload",
 			]);
-			expect(warn.mock.calls.flat().join(" ")).toMatch(/compat initialization/i);
+			expect(warn.mock.calls.flat().join(" ")).toMatch(
+				/compat initialization/i,
+			);
 		} finally {
 			cleanup();
 		}
@@ -170,8 +194,10 @@ describe("extension compat/core isolation", () => {
 			expect([...runtime.providers.keys()]).toEqual([BOOTSTRAP_PROVIDER_ID]);
 			// Bootstrap alone is not an instance: it has no catalog and no models, so
 			// there is nothing for the selector to configure.
-			expect([...runtime.commands.keys()]).toEqual(["2api"]);
-			expect(warn.mock.calls.flat().join(" ")).toMatch(/llmgates\/config\.json.*providerId/i);
+			expect([...runtime.commands.keys()]).toEqual(["llmgates"]);
+			expect(warn.mock.calls.flat().join(" ")).toMatch(
+				/llmgates\/config\.json.*providerId/i,
+			);
 		} finally {
 			cleanup();
 		}
@@ -191,11 +217,20 @@ describe("extension compat/core isolation", () => {
 			writeJson(join(agentDir, "llmgates/config.json"), { providerId: 42 });
 			registerExtension(runtime.pi);
 
-			expect([...runtime.providers.keys()]).toEqual([BOOTSTRAP_PROVIDER_ID, "gateway-a"]);
+			expect([...runtime.providers.keys()]).toEqual([
+				BOOTSTRAP_PROVIDER_ID,
+				"gateway-a",
+			]);
 			expect(runtime.providers.has("llmgates")).toBe(false);
 			// /endpoint stays core-only and is absent; /balance needs core identity too.
-			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "endpoint-setting", "llmgates-reload"]);
-			expect(warn.mock.calls.flat().join(" ")).toMatch(/llmgates\/config\.json.*providerId/i);
+			expect([...runtime.commands.keys()].sort()).toEqual([
+				"endpoint-setting",
+				"llmgates",
+				"llmgates-reload",
+			]);
+			expect(warn.mock.calls.flat().join(" ")).toMatch(
+				/llmgates\/config\.json.*providerId/i,
+			);
 		} finally {
 			cleanup();
 		}
@@ -211,13 +246,22 @@ describe("extension compat/core isolation", () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch");
 		try {
 			registerExtension(runtime.pi);
-			const bootstrap = runtime.providers.get(BOOTSTRAP_PROVIDER_ID)!;
-			const answers = Array.from({ length: 5 }, () => [
-				"newapi", "CUSTOM-LIVE", "", "https://compat.example/v1", "key",
-			]).flat();
+			const core = runtime.providers.get("custom-live")!;
+			const answers = [
+				"newapi",
+				...Array.from({ length: 5 }, () => [
+					"CUSTOM-LIVE",
+					"",
+					"https://compat.example/v1",
+					"key",
+				]).flat(),
+			];
 
-			await expect(bootstrap.auth.oauth!.login(scriptedAuthInteraction(answers))).rejects.toThrow(/reserved/i);
+			await expect(
+				core.auth.oauth!.login(scriptedAuthInteraction(answers)),
+			).rejects.toThrow(/reserved/i);
 			expect(fetchSpy).not.toHaveBeenCalled();
+			expect(runtime.providers.has(BOOTSTRAP_PROVIDER_ID)).toBe(false);
 			expect(runtime.providers.has("custom-live")).toBe(true);
 		} finally {
 			cleanup();
@@ -237,7 +281,10 @@ describe("extension compat/core isolation", () => {
 			expect(runtime.providers.has(BOOTSTRAP_PROVIDER_ID)).toBe(true);
 			// Malformed auth blocks core and there is no 2API instance, so neither
 			// endpoint command has anything to operate on.
-			expect([...runtime.commands.keys()].sort()).toEqual(["2api", "balance"]);
+			expect([...runtime.commands.keys()].sort()).toEqual([
+				"balance",
+				"llmgates",
+			]);
 			const warning = warn.mock.calls.flat().join(" ");
 			expect(warning).toMatch(/malformed.*auth\.json/i);
 			expect(warning).not.toContain("not-a-credential");

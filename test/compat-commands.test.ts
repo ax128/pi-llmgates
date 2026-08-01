@@ -140,7 +140,7 @@ async function runCommand(command: CommandOptions, args: string) {
 	return notifications;
 }
 
-describe("2api command parsing and formatting", () => {
+describe("llmgates command parsing and formatting", () => {
 	it("parses list, help, and exact remove syntax", () => {
 		expect(parseCompatCommand(" list ")).toEqual({ action: "list" });
 		expect(parseCompatCommand("")).toEqual({ action: "help" });
@@ -162,7 +162,7 @@ describe("2api command parsing and formatting", () => {
 	});
 });
 
-describe("/2api management", () => {
+describe("/llmgates management", () => {
 	it("registers one command whose list reads registry disk without reading auth", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		const runtime = createPi();
@@ -181,9 +181,9 @@ describe("/2api management", () => {
 			writeJson(join(agentDir, "auth.json"), {});
 			registerCompatGateways(runtime.pi, agentDir);
 			writeFileSync(join(agentDir, "auth.json"), "malformed target-secret", { mode: 0o600 });
-			expect([...runtime.commands.keys()]).toEqual(["2api"]);
+			expect([...runtime.commands.keys()]).toEqual(["llmgates"]);
 
-			const notifications = await runCommand(runtime.commands.get("2api")!, "list");
+			const notifications = await runCommand(runtime.commands.get("llmgates")!, "list");
 			expect(notifications).toHaveLength(1);
 			expect(notifications[0]?.level).toBe("info");
 			expect(notifications[0]?.message).toContain("gateway-a");
@@ -202,7 +202,7 @@ describe("/2api management", () => {
 			const registration = registerCompatGateways(runtime.pi, agentDir, { createProvider: fakes.createProvider });
 			expect(runtime.models().map((item) => item.provider)).toEqual(expect.arrayContaining(["gateway-a", "gateway-b"]));
 
-			const notifications = await runCommand(runtime.commands.get("2api")!, "remove GATEWAY-A");
+			const notifications = await runCommand(runtime.commands.get("llmgates")!, "remove GATEWAY-A");
 
 			expect(notifications).toEqual([{ message: expect.stringMatching(/removed.*gateway-a/i), level: "info" }]);
 			expect(registration.providers.has("gateway-a")).toBe(false);
@@ -213,7 +213,7 @@ describe("/2api management", () => {
 			const auth = JSON.parse(readFileSync(join(agentDir, "auth.json"), "utf8"));
 			expect(auth).toEqual({ "gateway-b": credential(INSTANCES[1]!, "sibling-secret") });
 
-			const repeated = await runCommand(runtime.commands.get("2api")!, "remove gateway-a");
+			const repeated = await runCommand(runtime.commands.get("llmgates")!, "remove gateway-a");
 			expect(repeated).toEqual([{ message: expect.stringMatching(/not found|already removed/i), level: "info" }]);
 			expect(runtime.unregistrations).toEqual(["gateway-a"]);
 		} finally {
@@ -235,7 +235,7 @@ describe("/2api management", () => {
 			]);
 			registerCompatGateways(runtime.pi, agentDir, { createProvider: fakes.createProvider });
 
-			const notifications = await runCommand(runtime.commands.get("2api")!, "remove gateway-a");
+			const notifications = await runCommand(runtime.commands.get("llmgates")!, "remove gateway-a");
 
 			expect(notifications).toEqual([
 				{ message: expect.stringMatching(/removed.*gateway-a/i), level: "info" },
@@ -260,7 +260,7 @@ describe("/2api management", () => {
 				{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
 			]);
 			registerCompatGateways(runtime.pi, agentDir, { createProvider: fakes.createProvider });
-			await runCommand(runtime.commands.get("2api")!, "remove gateway-a");
+			await runCommand(runtime.commands.get("llmgates")!, "remove gateway-a");
 
 			// A new instance under the same id is semantically unrelated to the old one.
 			expect(readModelOverridesFile(agentDir, { kind: "2api", instanceId: "gateway-a" })).toBeNull();
@@ -284,7 +284,7 @@ describe("/2api management", () => {
 				createProvider: fakes.createProvider,
 			});
 
-			const notifications = await runCommand(runtime.commands.get("2api")!, "remove gateway-a");
+			const notifications = await runCommand(runtime.commands.get("llmgates")!, "remove gateway-a");
 
 			expect(notifications).toHaveLength(1);
 			expect(notifications[0]?.level).toBe("warning");
@@ -312,10 +312,10 @@ describe("/2api management", () => {
 			const registration = registerCompatGateways(runtime.pi, agentDir, { createProvider: fakes.createProvider });
 			writeFileSync(join(agentDir, "auth.json"), raw, { mode: 0o600 });
 
-			const notifications = await runCommand(runtime.commands.get("2api")!, "remove gateway-a");
+			const notifications = await runCommand(runtime.commands.get("llmgates")!, "remove gateway-a");
 
 			expect(notifications).toEqual([{
-				message: '2api instance "gateway-a" removal was partial: auth cleanup: auth.json is malformed or invalid',
+				message: 'Compatible gateway instance "gateway-a" removal was partial: auth cleanup: auth.json is malformed or invalid',
 				level: "warning",
 			}]);
 			expect(notifications[0]?.message).not.toMatch(/remove-sentinel-secret|"access"|broken|unexpected token|json at position/i);
@@ -340,7 +340,7 @@ describe("/2api management", () => {
 			await runtime.emit("session_start", { reason: "start" });
 			const initialRegistrationCount = runtime.registrations.filter((id) => id === "gateway-a").length;
 
-			const removing = runCommand(runtime.commands.get("2api")!, "remove gateway-a");
+			const removing = runCommand(runtime.commands.get("llmgates")!, "remove gateway-a");
 			expect(registration.providers.has("gateway-a")).toBe(false);
 			fakes.releaseRefresh();
 			await removing;
@@ -363,7 +363,7 @@ describe("/2api management", () => {
 			beforeRegister(provider) {
 				if (provider.id === "race-gateway") {
 					expect(listInstances(agentDir).some((instance) => instance.id === provider.id)).toBe(true);
-					removing = runCommand(runtime.commands.get("2api")!, "remove RACE-GATEWAY");
+					removing = runCommand(runtime.commands.get("llmgates")!, "remove RACE-GATEWAY");
 				}
 			},
 		});
@@ -424,7 +424,7 @@ describe("/2api management", () => {
 		const runtime = createPi();
 		try {
 			registerCompatGateways(runtime.pi, agentDir);
-			const [{ message }] = await runCommand(runtime.commands.get("2api")!, "help");
+			const [{ message }] = await runCommand(runtime.commands.get("llmgates")!, "help");
 			expect(message).toMatch(/\/logout.*deletes.*registry.*endpoint/i);
 			expect(message).toMatch(/watcher.*\/reload.*restart/i);
 			expect(message).toMatch(/orphan auth/i);

@@ -36,7 +36,9 @@ import {
 export const LLMGATES_MODELS_FILE = "llmgates/models.json";
 export const LLMGATES_2API_MODELS_DIR = "llmgates/2api-models";
 
-export type OverrideScope = { kind: "core" } | { kind: "2api"; instanceId: string };
+export type OverrideScope =
+	| { kind: "core" }
+	| { kind: "2api"; instanceId: string };
 
 const CORE_SCOPE: OverrideScope = { kind: "core" };
 
@@ -52,7 +54,7 @@ function overridePath(agentDir: string, scope: OverrideScope): string {
 		return join(agentDir, LLMGATES_MODELS_FILE);
 	}
 	// Instance ids are unique case-insensitively in the registry, so lowercasing
-	// keeps the file name stable across `/2api remove` + same-id recreation.
+	// keeps the file name stable across `/llmgates remove` + same-id recreation.
 	const instanceId = normalizeInstanceId(scope.instanceId).toLowerCase();
 	return join(agentDir, LLMGATES_2API_MODELS_DIR, `${instanceId}.json`);
 }
@@ -87,7 +89,12 @@ export function normalizeEndpointOverride(value: unknown): string | undefined {
 	if (v === "responses" || v === "response") {
 		return "responses";
 	}
-	if (v === "chat" || v === "chat_completions" || v === "chat-completions" || v === "completions") {
+	if (
+		v === "chat" ||
+		v === "chat_completions" ||
+		v === "chat-completions" ||
+		v === "completions"
+	) {
 		return "chat_completions";
 	}
 	if (v === "messages" || v === "message" || v === "anthropic") {
@@ -96,7 +103,9 @@ export function normalizeEndpointOverride(value: unknown): string | undefined {
 	return undefined;
 }
 
-export function createModelOverrideLookup(file: ModelOverrideFile | null): ModelOverrideLookup {
+export function createModelOverrideLookup(
+	file: ModelOverrideFile | null,
+): ModelOverrideLookup {
 	const defaultEndpoint = normalizeEndpointOverride(file?.defaults?.endpoint);
 	const endpoints = new Map<string, string>();
 	for (const [id, entry] of Object.entries(file?.models ?? {})) {
@@ -143,9 +152,16 @@ export function readModelOverridesFile(
 	}
 	if (isPlainObject(root.models)) {
 		const out: Record<string, ModelOverrideEntry> = {};
-		for (const [id, entry] of Object.entries(root.models as Record<string, unknown>)) {
-			if (isPlainObject(entry) && typeof (entry as Record<string, unknown>).endpoint === "string") {
-				out[id] = { endpoint: (entry as Record<string, unknown>).endpoint as string };
+		for (const [id, entry] of Object.entries(
+			root.models as Record<string, unknown>,
+		)) {
+			if (
+				isPlainObject(entry) &&
+				typeof (entry as Record<string, unknown>).endpoint === "string"
+			) {
+				out[id] = {
+					endpoint: (entry as Record<string, unknown>).endpoint as string,
+				};
 			}
 		}
 		if (Object.keys(out).length > 0) {
@@ -155,7 +171,10 @@ export function readModelOverridesFile(
 	return file;
 }
 
-export type ModelOverrideEndpointValue = "chat_completions" | "messages" | "responses";
+export type ModelOverrideEndpointValue =
+	| "chat_completions"
+	| "messages"
+	| "responses";
 
 export type ModelOverrideWrite =
 	| { kind: "set"; endpoint: ModelOverrideEndpointValue }
@@ -207,7 +226,9 @@ export async function writeModelOverrides(
 			// Report the fs code (EACCES/EISDIR/...) rather than blaming JSON syntax,
 			// but never echo the underlying message, which can carry the full path.
 			const code = (error as NodeJS.ErrnoException).code;
-			throw new Error(`Cannot read ${label}${code ? `: filesystem error (${code})` : ""}`);
+			throw new Error(
+				`Cannot read ${label}${code ? `: filesystem error (${code})` : ""}`,
+			);
 		}
 
 		let root: unknown;
@@ -231,19 +252,26 @@ export async function writeModelOverrides(
 		// Validate every target before mutating anything, so an invalid entry in the
 		// batch cannot leave earlier targets written and later ones dropped.
 		for (const { targetId } of normalized) {
-			const entryValue = Object.hasOwn(models, targetId) ? models[targetId] : undefined;
+			const entryValue = Object.hasOwn(models, targetId)
+				? models[targetId]
+				: undefined;
 			if (entryValue !== undefined && !isPlainObject(entryValue)) {
-				throw new Error(`Cannot update ${label}: invalid target model structure`);
+				throw new Error(
+					`Cannot update ${label}: invalid target model structure`,
+				);
 			}
 		}
 		if (!hasModels) rootObject.models = models;
 
 		for (const { targetId, write } of normalized) {
 			const hasEntry = Object.hasOwn(models, targetId);
-			const entryValue = hasEntry ? (models[targetId] as Record<string, unknown>) : undefined;
+			const entryValue = hasEntry
+				? (models[targetId] as Record<string, unknown>)
+				: undefined;
 
 			if (write.kind === "set") {
-				const entry = entryValue ?? (Object.create(null) as Record<string, unknown>);
+				const entry =
+					entryValue ?? (Object.create(null) as Record<string, unknown>);
 				entry.endpoint = write.endpoint;
 				if (!hasEntry) {
 					// Assignment to "__proto__" invokes Object.prototype's setter; define an
@@ -262,7 +290,10 @@ export async function writeModelOverrides(
 			}
 		}
 
-		atomicWriteJson(path, root, { fileMode: SECRET_FILE_MODE, dirMode: SECRET_DIR_MODE });
+		atomicWriteJson(path, root, {
+			fileMode: SECRET_FILE_MODE,
+			dirMode: SECRET_DIR_MODE,
+		});
 	} finally {
 		await release();
 	}
@@ -279,18 +310,21 @@ export async function writeModelOverride(
 }
 
 /**
- * Remove a 2api instance's override file entirely (`/2api remove`). A missing
+ * Remove a 2api instance's override file entirely (`/llmgates remove`). A missing
  * file is success. Without this, a removed id recreated under the same name
  * would silently resurrect the old endpoints on a semantically new instance.
  *
- * Takes the same lock as `writeModelOverrides` because `/2api remove` and
+ * Takes the same lock as `writeModelOverrides` because `/llmgates remove` and
  * `/endpoint-setting` are guarded by different mechanisms (an id transaction vs.
  * the endpoint in-flight flag) and so do not exclude each other. Deleting
  * unlocked could land between a concurrent batch's read and its atomic write,
  * which would immediately recreate the file for the instance being removed —
  * exactly the resurrection this function exists to prevent.
  */
-export async function deleteInstanceOverrides(agentDir: string, instanceId: string): Promise<void> {
+export async function deleteInstanceOverrides(
+	agentDir: string,
+	instanceId: string,
+): Promise<void> {
 	// Throws before any fs work when the instance id is malformed.
 	const path = overridePath(agentDir, { kind: "2api", instanceId });
 	if (!existsSync(path)) return;

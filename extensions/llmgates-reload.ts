@@ -6,7 +6,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { acquireEndpointInFlight, releaseEndpointInFlight } from "./endpoint.js";
+import {
+	acquireEndpointInFlight,
+	releaseEndpointInFlight,
+} from "./endpoint.js";
 import type { CompatGatewayRegistration } from "./compat/index.js";
 import type { EndpointRefreshResult, LLMGatesProvider } from "./provider.js";
 
@@ -39,7 +42,9 @@ function errorSummary(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-function refreshFailureReason(refresh: Exclude<EndpointRefreshResult, { status: "ok" }>): string {
+function refreshFailureReason(
+	refresh: Exclude<EndpointRefreshResult, { status: "ok" }>,
+): string {
 	return refresh.status === "offline"
 		? "offline mode"
 		: refresh.status === "not-ready"
@@ -47,12 +52,17 @@ function refreshFailureReason(refresh: Exclude<EndpointRefreshResult, { status: 
 			: "superseded by a newer refresh";
 }
 
-export function mergeCatalogReloadOutcomes(outcomes: readonly CatalogReloadOutcome[]): {
+export function mergeCatalogReloadOutcomes(
+	outcomes: readonly CatalogReloadOutcome[],
+): {
 	message: string;
 	level: "info" | "warning" | "error";
 } {
 	if (outcomes.length === 0) {
-		return { message: "No LLMGates providers are available to refresh.", level: "error" };
+		return {
+			message: "No LLMGates providers are available to refresh.",
+			level: "error",
+		};
 	}
 
 	const ok = outcomes.filter((outcome) => outcome.status === "ok");
@@ -60,13 +70,23 @@ export function mergeCatalogReloadOutcomes(outcomes: readonly CatalogReloadOutco
 	const failed = outcomes.filter((outcome) => outcome.status === "failed");
 
 	if (failed.length === outcomes.length) {
-		const lines = outcomes.map((outcome) => `${outcome.label}: ${outcome.detail ?? "refresh failed"}`);
-		return { message: `Catalog refresh failed:\n${lines.join("\n")}`, level: "error" };
+		const lines = outcomes.map(
+			(outcome) => `${outcome.label}: ${outcome.detail ?? "refresh failed"}`,
+		);
+		return {
+			message: `Catalog refresh failed:\n${lines.join("\n")}`,
+			level: "error",
+		};
 	}
 
 	if (partial.length === 0 && failed.length === 0) {
-		const lines = ok.map((outcome) => `${outcome.label} (${outcome.modelCount ?? 0} model(s))`);
-		return { message: `Refreshed catalog for ${lines.join(", ")}.`, level: "info" };
+		const lines = ok.map(
+			(outcome) => `${outcome.label} (${outcome.modelCount ?? 0} model(s))`,
+		);
+		return {
+			message: `Refreshed catalog for ${lines.join(", ")}.`,
+			level: "info",
+		};
 	}
 
 	const lines = outcomes.map((outcome) => {
@@ -83,7 +103,10 @@ export function mergeCatalogReloadOutcomes(outcomes: readonly CatalogReloadOutco
 			level: "warning",
 		};
 	}
-	return { message: `Catalog refresh was partial:\n${lines.join("\n")}`, level: "warning" };
+	return {
+		message: `Catalog refresh was partial:\n${lines.join("\n")}`,
+		level: "warning",
+	};
 }
 
 export async function runCatalogReloadCommand(
@@ -139,7 +162,10 @@ export async function runCatalogReloadCommand(
 		const current = ctx.getModel();
 		let rebindWarning: string | undefined;
 		const currentOutcome = current
-			? outcomes.find((outcome) => outcome.providerId === current.provider && outcome.status === "ok")
+			? outcomes.find(
+					(outcome) =>
+						outcome.providerId === current.provider && outcome.status === "ok",
+				)
 			: undefined;
 		if (current && currentOutcome) {
 			const updated = ctx.find(current.provider, current.id);
@@ -161,7 +187,10 @@ export async function runCatalogReloadCommand(
 		}
 
 		const { message, level } = mergeCatalogReloadOutcomes(outcomes);
-		ctx.notify(rebindWarning ? `${message}\n${rebindWarning}` : message, rebindWarning ? "warning" : level);
+		ctx.notify(
+			rebindWarning ? `${message}\n${rebindWarning}` : message,
+			rebindWarning ? "warning" : level,
+		);
 	} catch (error) {
 		ctx.notify(`/llmgates-reload failed: ${errorSummary(error)}`, "error");
 	} finally {
@@ -196,15 +225,16 @@ export function registerCatalogReloadCommand(
 		for (const [instanceId, provider] of compat?.providers ?? []) {
 			list.push({
 				providerId: instanceId,
-				label: `2API/${provider.name}`,
-				refreshEndpointForeground: () => compat!.refreshEndpointForeground(instanceId),
+				label: `gateway/${provider.name}`,
+				refreshEndpointForeground: () =>
+					compat!.refreshEndpointForeground(instanceId),
 			});
 		}
 		return list;
 	}
 
 	pi.registerCommand(CATALOG_RELOAD_COMMAND, {
-		description: "Force-refresh LLMGates and 2API model catalogs",
+		description: "Force-refresh LLMGates and compatible gateway model catalogs",
 		handler: async (args, ctx) => {
 			if (args.trim()) {
 				ctx.ui.notify(CATALOG_RELOAD_USAGE, "error");
@@ -213,7 +243,8 @@ export function registerCatalogReloadCommand(
 			await runCatalogReloadCommand(targets, {
 				waitForIdle: () => ctx.waitForIdle(),
 				getModel: () => ctx.model,
-				find: (providerId, modelId) => ctx.modelRegistry.find(providerId, modelId),
+				find: (providerId, modelId) =>
+					ctx.modelRegistry.find(providerId, modelId),
 				setModel: (model) => pi.setModel(model),
 				notify: (message, level) => ctx.ui.notify(message, level),
 			});

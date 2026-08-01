@@ -65,8 +65,8 @@
 | `extensions/endpoint-selector.ts` | `/endpoint-setting` RPC 文本清单渲染与解析（纯函数） |
 | `extensions/terminal-width.ts` | 终端可见宽度（CJK/emoji），TUI 组件渲染辅助 |
 | `extensions/llmgates-reload.ts` | `/llmgates-reload` 强制刷新 core 与 2API catalog |
-| `extensions/compat/` | 2API 多网关兼容层（`/login llmgates-2api`、`/2api`） |
-| `extensions/login-ui.ts` | `/login` 交互：错误中文化、2API 网关选择与提示 |
+| `extensions/compat/` | 2API 多网关兼容层（由 `/login LLMGates` 选择网关类型、`/llmgates` 管理） |
+| `extensions/login-ui.ts` | `/login LLMGates` 统一网关选择、错误中文化与登录提示 |
 | `extensions/lib.ts` | `llmgates/config.json` 配置写入（保留 ambient apiKey） |
 | `extensions/util.ts` | 原子写、文件锁、envFlag、legacy 配置迁移 |
 | `extensions/tps.ts` | TUI 统计与 `/calls` 命令 |

@@ -5,7 +5,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { registerBalanceCommand } from "./balance.js";
-import { createModelSelectReconciler, registerEndpointCommand } from "./endpoint.js";
+import {
+	createModelSelectReconciler,
+	registerEndpointCommand,
+} from "./endpoint.js";
 import {
 	registerEndpointSettingCommand,
 	type EndpointSettingRegistration,
@@ -14,8 +17,15 @@ import {
 	registerCatalogReloadCommand,
 	type CatalogReloadRegistration,
 } from "./llmgates-reload.js";
-import { registerCompatGateways, type CompatGatewayRegistration } from "./compat/index.js";
-import { detectLegacyApiKeyCredential, resolveProviderIdentity } from "./connection.js";
+import {
+	registerCompatGateways,
+	type CompatGatewayRegistration,
+} from "./compat/index.js";
+import {
+	detectLegacyApiKeyCredential,
+	resolveProviderIdentity,
+} from "./connection.js";
+import { compatInstanceAddedMessage } from "./login-ui.js";
 import { createLLMGatesProvider, type LLMGatesProvider } from "./provider.js";
 import { envFlag, migrateLegacyConfigFiles } from "./util.js";
 
@@ -35,7 +45,9 @@ export default function (pi: ExtensionAPI): void {
 	try {
 		migrateLegacyConfigFiles(agentDir);
 	} catch (error) {
-		logWarn(`Legacy config migration failed: ${error instanceof Error ? error.message : String(error)}`);
+		logWarn(
+			`Legacy config migration failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 
 	let identity: { providerId: string; providerName: string } | undefined;
@@ -46,10 +58,18 @@ export default function (pi: ExtensionAPI): void {
 		identityError = error;
 	}
 
+	const legacy = identity
+		? detectLegacyApiKeyCredential(agentDir, identity.providerId)
+		: undefined;
+
 	let compat: CompatGatewayRegistration | undefined;
 	try {
 		compat = registerCompatGateways(pi, agentDir, {
-			reservedProviderIds: ["llmgates", ...(identity ? [identity.providerId] : [])],
+			reservedProviderIds: [
+				"llmgates",
+				...(identity ? [identity.providerId] : []),
+			],
+			registerBootstrapProvider: !identity || legacy?.blocked === true,
 		});
 	} catch (error) {
 		logWarn(error instanceof Error ? error.message : String(error));
@@ -68,12 +88,15 @@ export default function (pi: ExtensionAPI): void {
 	}
 
 	if (!identity) {
-		logWarn(identityError instanceof Error ? identityError.message : String(identityError));
+		logWarn(
+			identityError instanceof Error
+				? identityError.message
+				: String(identityError),
+		);
 		return;
 	}
 
-	const legacy = detectLegacyApiKeyCredential(agentDir, identity.providerId);
-	if (legacy.blocked) {
+	if (legacy?.blocked) {
 		logWarn(
 			legacy.reason === "legacy_api_key"
 				? `Refusing to register ${identity.providerId}: legacy auth.json type "api_key" is blocked. Run /logout ${identity.providerName} or remove the entry, then /reload.`
@@ -95,11 +118,31 @@ export default function (pi: ExtensionAPI): void {
 		agentDir,
 		providerId: identity.providerId,
 		providerName: identity.providerName,
+		compatLogin: compat
+			? async (interaction, scheme) => {
+					const instance = await compat.loginInstance(interaction, scheme);
+					pi.sendMessage(
+						{
+							customType: "llmgates-login",
+							content: compatInstanceAddedMessage(instance),
+							display: true,
+						},
+						{ triggerTurn: false },
+					);
+				}
+			: undefined,
 		onModelsChanged: reregisterCoreProvider,
 	});
 
 	// Native Provider overload (pi 0.81+)
-	pi.registerProvider(provider);
+	try {
+		pi.registerProvider(provider);
+	} catch (error) {
+		// Keep the recovery login entry available when core registration fails
+		// (the bootstrap provider is not registered on the normal path anymore).
+		compat?.registerBootstrapProvider();
+		throw error;
+	}
 	registerBalanceCommand(pi, identity.providerId);
 	// /endpoint is registered only after the core provider is live: it needs the
 	// foreground refresh path, which a legacy fail-closed branch cannot honor.
@@ -114,14 +157,18 @@ export default function (pi: ExtensionAPI): void {
 	else registerCatalogReloadCommand(pi, { core, compat });
 	// Reconcile stale scoped Model objects (old api) after a /endpoint change so
 	// Ctrl+P cycling rebinds to the registry's composed model. Self-guarded.
-	const reconcileModelSelect = createModelSelectReconciler(identity.providerId, (model) =>
-		pi.setModel(model),
+	const reconcileModelSelect = createModelSelectReconciler(
+		identity.providerId,
+		(model) => pi.setModel(model),
 	);
 	pi.on("model_select", (event, ctx) => reconcileModelSelect(event, ctx));
 	logDebug(`Registered native provider ${identity.providerId}`);
 
 	pi.on("session_start", async (event) => {
-		const reason = typeof (event as { reason?: string })?.reason === "string" ? (event as { reason: string }).reason : "start";
+		const reason =
+			typeof (event as { reason?: string })?.reason === "string"
+				? (event as { reason: string }).reason
+				: "start";
 		provider.beginSession(reason);
 		// Fire-and-forget background refresh; do not block session availability.
 		// Re-register (including empty catalogs) happens via onModelsChanged after a real commit.
