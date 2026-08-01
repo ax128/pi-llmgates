@@ -34,7 +34,7 @@ export interface SelectorModelRow {
 export interface SelectorGroup {
 	/** pi provider id — the write target for every row in this group. */
 	providerId: string;
-	/** Ownership label shown in the group header, e.g. "core" or "2API/cpa". */
+	/** Ownership label shown in the group header, e.g. "core" or "gateway/cpa". */
 	label: string;
 	models: SelectorModelRow[];
 }

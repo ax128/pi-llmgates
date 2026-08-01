@@ -1,5 +1,5 @@
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { UNIVERSAL_THINKING_LEVEL_MAP } from "../extensions/catalog.js";
 import { createLLMGatesProvider } from "../extensions/provider.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
@@ -8,9 +8,43 @@ import { startLoopbackServer } from "./helpers/loopback-server.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
 
 describe("native oauth login", () => {
+	it("routes a selected 2API scheme without returning a core credential", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const compatLogin = vi.fn(async () => {});
+			const provider = createLLMGatesProvider({
+				agentDir,
+				providerId: "llmgates",
+				providerName: "LLMGates",
+				compatLogin,
+			});
+			const interaction = scriptedAuthInteraction(["cpa"]);
+
+			await expect(provider.auth.oauth!.login(interaction)).rejects.toThrow(
+				"Login cancelled",
+			);
+			expect(compatLogin).toHaveBeenCalledWith(interaction, "cpa");
+			expect(interaction.prompts).toHaveLength(1);
+			expect(interaction.prompts[0]).toMatchObject({
+				type: "select",
+				options: [
+					{ id: "llmgates" },
+					{ id: "newapi" },
+					{ id: "cpa" },
+					{ id: "sub2api" },
+				],
+			});
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("returns type oauth + validationNonce after successful validation", async () => {
 		const server = await startLoopbackServer([
-			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", name: "M1" }]) },
+			{
+				path: "/v1/models?client_version=pi",
+				body: JSON.stringify([{ id: "m1", name: "M1" }]),
+			},
 		]);
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
@@ -19,11 +53,16 @@ describe("native oauth login", () => {
 				providerId: "llmgates",
 				providerName: "LLMGates",
 			});
-			const interaction = scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]);
+			const interaction = scriptedAuthInteraction([
+				`${server.baseUrl}/v1`,
+				"k-secret",
+			]);
 			const cred = await provider.auth.oauth!.login(interaction);
 			expect(cred.type).toBe("oauth");
 			expect(cred.access).toBe("k-secret");
-			expect(typeof (cred as { validationNonce?: string }).validationNonce).toBe("string");
+			expect(
+				typeof (cred as { validationNonce?: string }).validationNonce,
+			).toBe("string");
 			expect(interaction.prompts[0]?.type).toBe("text");
 			expect(interaction.prompts[1]?.type).toBe("secret");
 			expect(provider.getModels()).toHaveLength(0);
@@ -35,7 +74,10 @@ describe("native oauth login", () => {
 
 	it("retries remote http URL then accepts loopback", async () => {
 		const server = await startLoopbackServer([
-			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", name: "M1" }]) },
+			{
+				path: "/v1/models?client_version=pi",
+				body: JSON.stringify([{ id: "m1", name: "M1" }]),
+			},
 		]);
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
@@ -81,7 +123,9 @@ describe("native oauth login", () => {
 				answers.push(`${server.baseUrl}/v1`, "bad-key");
 			}
 			const interaction = scriptedAuthInteraction(answers);
-			await expect(provider.auth.oauth!.login(interaction)).rejects.toThrow(/401|failed|HTTP/i);
+			await expect(provider.auth.oauth!.login(interaction)).rejects.toThrow(
+				/401|failed|HTTP/i,
+			);
 			expect(hits).toBe(5);
 			expect(interaction.prompts).toHaveLength(10);
 		} finally {
@@ -92,7 +136,10 @@ describe("native oauth login", () => {
 
 	it("publishes models only after refresh consumes matching pending nonce", async () => {
 		const server = await startLoopbackServer([
-			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", name: "M1" }]) },
+			{
+				path: "/v1/models?client_version=pi",
+				body: JSON.stringify([{ id: "m1", name: "M1" }]),
+			},
 		]);
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
@@ -101,7 +148,10 @@ describe("native oauth login", () => {
 				providerId: "llmgates",
 				providerName: "LLMGates",
 			});
-			const interaction = scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]);
+			const interaction = scriptedAuthInteraction([
+				`${server.baseUrl}/v1`,
+				"k-secret",
+			]);
 			const cred = await provider.auth.oauth!.login(interaction);
 			expect(provider.getModels()).toHaveLength(0);
 
@@ -121,7 +171,10 @@ describe("native oauth login", () => {
 
 	it("rejects pending consume after beginSession bumps generation", async () => {
 		const server = await startLoopbackServer([
-			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", name: "M1" }]) },
+			{
+				path: "/v1/models?client_version=pi",
+				body: JSON.stringify([{ id: "m1", name: "M1" }]),
+			},
 		]);
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
@@ -130,7 +183,10 @@ describe("native oauth login", () => {
 				providerId: "llmgates",
 				providerName: "LLMGates",
 			});
-			const interaction = scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]);
+			const interaction = scriptedAuthInteraction([
+				`${server.baseUrl}/v1`,
+				"k-secret",
+			]);
 			const cred = await provider.auth.oauth!.login(interaction);
 			provider.beginSession("reload");
 			const store = createMemoryStore();
@@ -150,7 +206,10 @@ describe("native oauth login", () => {
 
 	it("rejects pending consume when nonce differs even if key/baseUrl match", async () => {
 		const server = await startLoopbackServer([
-			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "m1", name: "M1" }]) },
+			{
+				path: "/v1/models?client_version=pi",
+				body: JSON.stringify([{ id: "m1", name: "M1" }]),
+			},
 		]);
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
@@ -159,7 +218,10 @@ describe("native oauth login", () => {
 				providerId: "llmgates",
 				providerName: "LLMGates",
 			});
-			const interaction = scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]);
+			const interaction = scriptedAuthInteraction([
+				`${server.baseUrl}/v1`,
+				"k-secret",
+			]);
 			const cred = await provider.auth.oauth!.login(interaction);
 			const store = createMemoryStore();
 			await provider.refreshModels!({
@@ -185,7 +247,11 @@ describe("native oauth login", () => {
 						id: "kimi-k3",
 						name: "Kimi K3",
 						provider_id: "moonshotai",
-						supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }, { effort: "max" }],
+						supported_reasoning_levels: [
+							{ effort: "low" },
+							{ effort: "high" },
+							{ effort: "max" },
+						],
 					},
 					{ id: "gpt-4o", name: "GPT-4o", provider_id: "openai" },
 				]),
@@ -198,7 +264,10 @@ describe("native oauth login", () => {
 				providerId: "llmgates",
 				providerName: "LLMGates",
 			});
-			const interaction = scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]);
+			const interaction = scriptedAuthInteraction([
+				`${server.baseUrl}/v1`,
+				"k-secret",
+			]);
 			const cred = await provider.auth.oauth!.login(interaction);
 			const store = createMemoryStore();
 			await provider.refreshModels!({
@@ -244,7 +313,9 @@ describe("native oauth login", () => {
 				body: async function* () {
 					const request = requests;
 					if (request === 1) await staleGate;
-					yield Buffer.from(JSON.stringify([{ id: request === 1 ? "stale" : "validated" }]));
+					yield Buffer.from(
+						JSON.stringify([{ id: request === 1 ? "stale" : "validated" }]),
+					);
 				},
 			},
 		]);
@@ -280,8 +351,12 @@ describe("native oauth login", () => {
 			releaseStale();
 			await staleRefresh;
 
-			expect(provider.getModels().map((model) => model.id)).toEqual(["validated"]);
-			expect((await store.read())?.models.map((model) => model.id)).toEqual(["validated"]);
+			expect(provider.getModels().map((model) => model.id)).toEqual([
+				"validated",
+			]);
+			expect((await store.read())?.models.map((model) => model.id)).toEqual([
+				"validated",
+			]);
 		} finally {
 			delete process.env.LLMGATES_PRICING_AUTO_UPDATE;
 			releaseStale();
@@ -307,7 +382,9 @@ describe("native oauth login", () => {
 					requests += 1;
 				},
 				body: async function* () {
-					yield Buffer.from(JSON.stringify([{ id: requests === 1 ? "old" : "validated" }]));
+					yield Buffer.from(
+						JSON.stringify([{ id: requests === 1 ? "old" : "validated" }]),
+					);
 				},
 			},
 		]);
@@ -346,15 +423,25 @@ describe("native oauth login", () => {
 			const credential = await provider.auth.oauth!.login(
 				scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]),
 			);
-			const pendingConsume = provider.refreshModels!({ credential, store, allowNetwork: true });
+			const pendingConsume = provider.refreshModels!({
+				credential,
+				store,
+				allowNetwork: true,
+			});
 			await new Promise<void>((resolve) => setImmediate(resolve));
-			await provider.refreshModels!({ credential: ambientCredential, store, allowNetwork: false });
+			await provider.refreshModels!({
+				credential: ambientCredential,
+				store,
+				allowNetwork: false,
+			});
 			releaseWrite();
 			await Promise.all([oldRefresh, pendingConsume]);
 
 			expect(provider.getInternalState().hasPending).toBe(true);
 			await provider.refreshModels!({ credential, store, allowNetwork: true });
-			expect(provider.getModels().map((model) => model.id)).toEqual(["validated"]);
+			expect(provider.getModels().map((model) => model.id)).toEqual([
+				"validated",
+			]);
 		} finally {
 			delete process.env.LLMGATES_PRICING_AUTO_UPDATE;
 			releaseWrite();
@@ -365,7 +452,10 @@ describe("native oauth login", () => {
 
 	it("restores persisted models in the next session after a login cache write failure", async () => {
 		const server = await startLoopbackServer([
-			{ path: "/v1/models?client_version=pi", body: JSON.stringify([{ id: "validated" }]) },
+			{
+				path: "/v1/models?client_version=pi",
+				body: JSON.stringify([{ id: "validated" }]),
+			},
 		]);
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
@@ -395,13 +485,17 @@ describe("native oauth login", () => {
 			});
 			store.failNextWrite = new Error("disk full");
 			await provider.refreshModels!({ credential, store, allowNetwork: true });
-			expect(provider.getModels().map((model) => model.id)).toEqual(["validated"]);
+			expect(provider.getModels().map((model) => model.id)).toEqual([
+				"validated",
+			]);
 
 			await provider.shutdown();
 			provider.beginSession("next");
 			await provider.refreshModels!({ credential, store, allowNetwork: false });
 
-			expect(provider.getModels().map((model) => model.id)).toEqual(["persisted"]);
+			expect(provider.getModels().map((model) => model.id)).toEqual([
+				"persisted",
+			]);
 		} finally {
 			cleanup();
 			await server.close();
@@ -422,7 +516,10 @@ describe("native oauth login", () => {
 				providerId: "llmgates",
 				providerName: "LLMGates",
 			});
-			const interaction = scriptedAuthInteraction([`${server.baseUrl}/v1`, "k-secret"]);
+			const interaction = scriptedAuthInteraction([
+				`${server.baseUrl}/v1`,
+				"k-secret",
+			]);
 			const cred = await provider.auth.oauth!.login(interaction);
 			const store = createMemoryStore({
 				models: [
@@ -452,13 +549,22 @@ describe("native oauth login", () => {
 			const disk = await store.read();
 			expect(disk?.models.some((m) => m.id === "old")).toBe(true);
 
-			await provider.refreshModels!({ credential: cred, store, allowNetwork: false });
+			await provider.refreshModels!({
+				credential: cred,
+				store,
+				allowNetwork: false,
+			});
 			expect(provider.getModels().map((model) => model.id)).toEqual(["m1"]);
 
 			route.status = 500;
 			route.body = "failed refresh";
 			await expect(
-				provider.refreshModels!({ credential: cred, store, allowNetwork: true, force: true }),
+				provider.refreshModels!({
+					credential: cred,
+					store,
+					allowNetwork: true,
+					force: true,
+				}),
 			).rejects.toThrow();
 			expect(provider.getModels().map((model) => model.id)).toEqual(["m1"]);
 		} finally {

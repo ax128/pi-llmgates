@@ -116,7 +116,11 @@ export function buildSelectorSnapshot(
 				hasOverride: hasOverride(target, model.id),
 			}));
 		if (models.length > 0) {
-			groups.push({ providerId: target.providerId, label: target.label, models });
+			groups.push({
+				providerId: target.providerId,
+				label: target.label,
+				models,
+			});
 		}
 	}
 
@@ -127,7 +131,9 @@ export function buildSelectorSnapshot(
 	}
 	const byProvider = [...counts.entries()]
 		.map(([providerId, count]) => ({ providerId, count }))
-		.sort((a, b) => b.count - a.count || a.providerId.localeCompare(b.providerId));
+		.sort(
+			(a, b) => b.count - a.count || a.providerId.localeCompare(b.providerId),
+		);
 
 	return {
 		groups,
@@ -175,7 +181,10 @@ export async function runEndpointSettingCommand(
 			return;
 		}
 
-		const overrides = new Map<string, (modelId: string) => string | undefined>();
+		const overrides = new Map<
+			string,
+			(modelId: string) => string | undefined
+		>();
 		for (const target of targets) {
 			let lookup: (modelId: string) => string | undefined = () => undefined;
 			try {
@@ -189,11 +198,17 @@ export async function runEndpointSettingCommand(
 			overrides.set(target.providerId, lookup);
 		}
 
-		const snapshot = buildSelectorSnapshot(targets, ctx.getAllModels(), (target, modelId) =>
-			overrides.get(target.providerId)?.(modelId) !== undefined,
+		const snapshot = buildSelectorSnapshot(
+			targets,
+			ctx.getAllModels(),
+			(target, modelId) =>
+				overrides.get(target.providerId)?.(modelId) !== undefined,
 		);
 		if (snapshot.groups.length === 0) {
-			ctx.notify("No models are available to configure yet. Try again after a catalog refresh.", "error");
+			ctx.notify(
+				"No models are available to configure yet. Try again after a catalog refresh.",
+				"error",
+			);
 			return;
 		}
 
@@ -238,7 +253,9 @@ export async function runEndpointSettingCommand(
 		}
 
 		const write: ModelOverrideWrite =
-			chosen === "auto" ? { kind: "delete" } : { kind: "set", endpoint: WRITE_VALUE[chosen] };
+			chosen === "auto"
+				? { kind: "delete" }
+				: { kind: "set", endpoint: WRITE_VALUE[chosen] };
 		const current = ctx.getModel();
 		const outcomes: GroupOutcome[] = [];
 
@@ -246,7 +263,15 @@ export async function runEndpointSettingCommand(
 			const modelIds = byProvider.get(target.providerId);
 			if (!modelIds) continue;
 			outcomes.push(
-				await applyGroup(runtime, ctx, target, modelIds, chosen, write, current),
+				await applyGroup(
+					runtime,
+					ctx,
+					target,
+					modelIds,
+					chosen,
+					write,
+					current,
+				),
 			);
 		}
 
@@ -268,11 +293,23 @@ export async function runEndpointSettingCommand(
 async function pickViaEditor(
 	ctx: EndpointSettingContext,
 	snapshot: SelectorSnapshot,
-): Promise<{ selected: SelectorSelection[] | undefined; rejected: string[]; warnings: string[] }> {
-	const edited = await ctx.editor("/endpoint-setting", renderSelectorList(snapshot));
-	if (edited === undefined) return { selected: undefined, rejected: [], warnings: [] };
+): Promise<{
+	selected: SelectorSelection[] | undefined;
+	rejected: string[];
+	warnings: string[];
+}> {
+	const edited = await ctx.editor(
+		"/endpoint-setting",
+		renderSelectorList(snapshot),
+	);
+	if (edited === undefined)
+		return { selected: undefined, rejected: [], warnings: [] };
 	const parsed = parseSelectorList(edited, snapshot);
-	return { selected: parsed.selected, rejected: parsed.rejected, warnings: parsed.warnings };
+	return {
+		selected: parsed.selected,
+		rejected: parsed.rejected,
+		warnings: parsed.warnings,
+	};
 }
 
 async function applyGroup(
@@ -329,7 +366,11 @@ async function applyGroup(
 				? refresh.models.find((model) => model.id === modelId)?.api
 				: EXPECTED_API[chosen];
 		const actualApi = ctx.find(target.providerId, modelId)?.api;
-		if (expectedApi === undefined || actualApi === undefined || actualApi !== expectedApi) {
+		if (
+			expectedApi === undefined ||
+			actualApi === undefined ||
+			actualApi !== expectedApi
+		) {
 			notActivated.push(modelId);
 		}
 	}
@@ -341,14 +382,27 @@ async function applyGroup(
 		};
 	}
 
-	if (current?.provider === target.providerId && modelIds.includes(current.id)) {
+	if (
+		current?.provider === target.providerId &&
+		modelIds.includes(current.id)
+	) {
 		const updated = ctx.find(target.providerId, current.id);
 		if (!updated) {
-			return { ...base, status: "partial", detail: "saved and active, but the current model could not be rebound; use /model to reselect it" };
+			return {
+				...base,
+				status: "partial",
+				detail:
+					"saved and active, but the current model could not be rebound; use /model to reselect it",
+			};
 		}
 		try {
 			if (!(await ctx.setModel(updated))) {
-				return { ...base, status: "partial", detail: "saved and active, but the current model could not be rebound; use /model to reselect it" };
+				return {
+					...base,
+					status: "partial",
+					detail:
+						"saved and active, but the current model could not be rebound; use /model to reselect it",
+				};
 			}
 		} catch (error) {
 			return {
@@ -362,10 +416,15 @@ async function applyGroup(
 	return { ...base, status: "ok" };
 }
 
-function formatNotes(rejected: readonly string[], warnings: readonly string[]): string {
+function formatNotes(
+	rejected: readonly string[],
+	warnings: readonly string[],
+): string {
 	const parts: string[] = [];
 	if (rejected.length > 0) {
-		parts.push(`Ignored (not configurable by this extension): ${rejected.join("; ")}`);
+		parts.push(
+			`Ignored (not configurable by this extension): ${rejected.join("; ")}`,
+		);
 	}
 	if (warnings.length > 0) {
 		parts.push(`Ignored (unparseable lines): ${warnings.join(" | ")}`);
@@ -374,7 +433,9 @@ function formatNotes(rejected: readonly string[], warnings: readonly string[]): 
 }
 
 function describeChoice(choice: SelectorEndpointChoice): string {
-	return choice === "auto" ? "cleared the per-model endpoint" : `set the endpoint to ${choice}`;
+	return choice === "auto"
+		? "cleared the per-model endpoint"
+		: `set the endpoint to ${choice}`;
 }
 
 /**
@@ -388,13 +449,21 @@ export function mergeOutcomes(
 	choice: SelectorEndpointChoice,
 	notes: string,
 ): [string, "info" | "warning" | "error"] {
-	const total = outcomes.reduce((sum, outcome) => sum + outcome.modelIds.length, 0);
+	const total = outcomes.reduce(
+		(sum, outcome) => sum + outcome.modelIds.length,
+		0,
+	);
 	const failed = outcomes.filter((outcome) => outcome.status === "failed");
 	const ok = outcomes.filter((outcome) => outcome.status === "ok");
 
 	if (failed.length === outcomes.length) {
-		const detail = failed.map((outcome) => `${outcome.providerId}: ${outcome.detail}`).join("; ");
-		return [`Failed to change any endpoint (${detail}). No override files were modified.${notes}`, "error"];
+		const detail = failed
+			.map((outcome) => `${outcome.providerId}: ${outcome.detail}`)
+			.join("; ");
+		return [
+			`Failed to change any endpoint (${detail}). No override files were modified.${notes}`,
+			"error",
+		];
 	}
 
 	if (ok.length === outcomes.length) {
@@ -453,34 +522,44 @@ export function registerEndpointSettingCommand(
 		for (const [instanceId, provider] of compat?.providers ?? []) {
 			list.push({
 				providerId: instanceId,
-				label: `2API/${provider.name}`,
+				label: `gateway/${provider.name}`,
 				scope: { kind: "2api", instanceId },
 				// Routed through compat/index so the refreshed catalog is re-registered.
-				refreshEndpointForeground: () => compat!.refreshEndpointForeground(instanceId),
+				refreshEndpointForeground: () =>
+					compat!.refreshEndpointForeground(instanceId),
 			});
 		}
 		return list;
 	}
 
 	pi.registerCommand(ENDPOINT_SETTING_COMMAND, {
-		description: "Interactively switch the inference endpoint for multiple models",
+		description:
+			"Interactively switch the inference endpoint for multiple models",
 		handler: async (_args, ctx) => {
 			await runEndpointSettingCommand(
 				{
 					agentDir,
 					targets,
-					writeOverrides: (scope, writes) => writeModelOverrides(agentDir, scope, writes),
+					writeOverrides: (scope, writes) =>
+						writeModelOverrides(agentDir, scope, writes),
 				},
 				{
 					mode: ctx.mode,
 					waitForIdle: () => ctx.waitForIdle(),
 					getModel: () => ctx.model,
 					getAllModels: () => ctx.modelRegistry.getAll(),
-					find: (providerId, modelId) => ctx.modelRegistry.find(providerId, modelId),
+					find: (providerId, modelId) =>
+						ctx.modelRegistry.find(providerId, modelId),
 					setModel: (model) => pi.setModel(model),
 					pick: (snapshot) =>
-						ctx.ui.custom<SelectorSelection[] | undefined>((_tui, theme, keybindings, done) =>
-							createEndpointPicker({ snapshot, theme, keys: keybindings, done }),
+						ctx.ui.custom<SelectorSelection[] | undefined>(
+							(_tui, theme, keybindings, done) =>
+								createEndpointPicker({
+									snapshot,
+									theme,
+									keys: keybindings,
+									done,
+								}),
 						),
 					editor: (title, prefill) => ctx.ui.editor(title, prefill),
 					select: (title, selectOptions) => ctx.ui.select(title, selectOptions),

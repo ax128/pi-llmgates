@@ -147,7 +147,9 @@ function isPrivateOrLinkLocalIpLiteral(hostname: string): boolean {
 	return false;
 }
 
-export function assertUrlTransportAllowed(input: string): { ok: true; url: URL } | { ok: false; error: string } {
+export function assertUrlTransportAllowed(
+	input: string,
+): { ok: true; url: URL } | { ok: false; error: string } {
 	const trimmed = input.trim();
 	if (!trimmed) {
 		return { ok: false, error: "URL is empty" };
@@ -175,7 +177,10 @@ export function assertUrlTransportAllowed(input: string): { ok: true; url: URL }
 	}
 
 	if (protocol === "http:" && !isLoopbackHostname(hostname)) {
-		return { ok: false, error: "remote HTTP is not allowed; use HTTPS or loopback HTTP" };
+		return {
+			ok: false,
+			error: "remote HTTP is not allowed; use HTTPS or loopback HTTP",
+		};
 	}
 
 	const bareHost = hostname.replace(/^\[|\]$/g, "").toLowerCase();
@@ -194,7 +199,9 @@ export function assertUrlTransportAllowed(input: string): { ok: true; url: URL }
 	return { ok: true, url };
 }
 
-export function normalizeAndValidateBaseUrl(input: string | undefined): UrlValidationResult {
+export function normalizeAndValidateBaseUrl(
+	input: string | undefined,
+): UrlValidationResult {
 	const trimmed = input?.trim();
 	if (!trimmed) {
 		return { ok: false, error: "baseUrl is empty" };
@@ -233,7 +240,9 @@ export function encodeOAuthRefreshMeta(baseUrl: string): string {
 	return JSON.stringify(meta);
 }
 
-export function decodeOAuthRefreshMeta(refresh: string | undefined): { baseUrl: string } | null {
+export function decodeOAuthRefreshMeta(
+	refresh: string | undefined,
+): { baseUrl: string } | null {
 	if (!refresh?.trim()) {
 		return null;
 	}
@@ -270,7 +279,10 @@ export function readRawAuthFile(agentDir: string): unknown {
 	}
 }
 
-export function readRawAuthEntry(agentDir: string, providerId: string): unknown {
+export function readRawAuthEntry(
+	agentDir: string,
+	providerId: string,
+): unknown {
 	const parsed = readRawAuthFile(agentDir);
 	if (parsed === undefined) {
 		return undefined;
@@ -284,7 +296,9 @@ export function readRawAuthEntry(agentDir: string, providerId: string): unknown 
 export function detectLegacyApiKeyCredential(
 	agentDir: string,
 	providerId: string,
-): { blocked: true; reason: "legacy_api_key" | "malformed_auth" } | { blocked: false } {
+):
+	| { blocked: true; reason: "legacy_api_key" | "malformed_auth" }
+	| { blocked: false } {
 	try {
 		const entry = readRawAuthEntry(agentDir, providerId);
 		if (entry === undefined) {
@@ -327,14 +341,25 @@ export function loadValidatedConfigFile(agentDir: string): LLMGatesConfigFile {
 		if (config.apiKey !== undefined && typeof config.apiKey !== "string") {
 			throw new Error(`${CONFIG_FILE_NAME}.apiKey must be a string`);
 		}
-		if (config.providerId !== undefined && typeof config.providerId !== "string") {
+		if (
+			config.providerId !== undefined &&
+			typeof config.providerId !== "string"
+		) {
 			throw new Error(`${CONFIG_FILE_NAME}.providerId must be a string`);
 		}
-		if (config.providerName !== undefined && typeof config.providerName !== "string") {
+		if (
+			config.providerName !== undefined &&
+			typeof config.providerName !== "string"
+		) {
 			throw new Error(`${CONFIG_FILE_NAME}.providerName must be a string`);
 		}
-		if (config.pricingAutoUpdate !== undefined && typeof config.pricingAutoUpdate !== "boolean") {
-			throw new Error(`${CONFIG_FILE_NAME}.pricingAutoUpdate must be a boolean`);
+		if (
+			config.pricingAutoUpdate !== undefined &&
+			typeof config.pricingAutoUpdate !== "boolean"
+		) {
+			throw new Error(
+				`${CONFIG_FILE_NAME}.pricingAutoUpdate must be a boolean`,
+			);
 		}
 		return config;
 	} catch (error) {
@@ -356,7 +381,11 @@ export function resolveProviderIdentity(agentDir: string): ProviderIdentity {
 		);
 	}
 
-	const providerId = firstNonEmpty(process.env.LLMGATES_PROVIDER_ID, file.providerId, DEFAULT_PROVIDER_ID);
+	const providerId = firstNonEmpty(
+		process.env.LLMGATES_PROVIDER_ID,
+		file.providerId,
+		DEFAULT_PROVIDER_ID,
+	);
 	const providerName = firstNonEmpty(
 		process.env.LLMGATES_PROVIDER_NAME,
 		file.providerName,
@@ -365,6 +394,11 @@ export function resolveProviderIdentity(agentDir: string): ProviderIdentity {
 
 	if (!providerId) {
 		throw new Error("providerId is empty");
+	}
+	if (providerId.toLowerCase() === "llmgates-2api") {
+		throw new Error(
+			`providerId "${providerId}" is reserved by the LLMGates compatibility recovery provider`,
+		);
 	}
 	if (BUILTIN_PROVIDER_IDS.has(providerId)) {
 		throw new Error(
@@ -408,7 +442,12 @@ function connectionFromParts(
 	const validated = normalizeAndValidateBaseUrl(
 		normalizeGatewayBaseUrl(baseUrlCandidate) ?? DEFAULT_BASE_URL,
 	);
-	if (!validated.ok || !validated.inferenceBaseUrl || !validated.modelsUrl || !validated.balanceUrl) {
+	if (
+		!validated.ok ||
+		!validated.inferenceBaseUrl ||
+		!validated.modelsUrl ||
+		!validated.balanceUrl
+	) {
 		return null;
 	}
 
@@ -433,10 +472,16 @@ export function connectionFromOAuthCredential(credential: {
 	}
 	const meta = decodeOAuthRefreshMeta(credential.refresh);
 	// Missing/invalid metadata falls back to official default only — never env/file.
-	return connectionFromParts("oauth", access, meta?.baseUrl ?? DEFAULT_BASE_URL);
+	return connectionFromParts(
+		"oauth",
+		access,
+		meta?.baseUrl ?? DEFAULT_BASE_URL,
+	);
 }
 
-export function connectionFromAmbientEnv(env: NodeJS.ProcessEnv = process.env): CanonicalConnection | null {
+export function connectionFromAmbientEnv(
+	env: NodeJS.ProcessEnv = process.env,
+): CanonicalConnection | null {
 	const apiKey = env.LLMGATES_API_KEY;
 	if (!apiKey?.trim()) {
 		return null;
@@ -444,7 +489,9 @@ export function connectionFromAmbientEnv(env: NodeJS.ProcessEnv = process.env): 
 	return connectionFromParts("env", apiKey, env.LLMGATES_BASE_URL);
 }
 
-export function connectionFromConfigFile(agentDir: string): CanonicalConnection | null {
+export function connectionFromConfigFile(
+	agentDir: string,
+): CanonicalConnection | null {
 	let file: LLMGatesConfigFile;
 	try {
 		file = loadValidatedConfigFile(agentDir);
@@ -457,7 +504,10 @@ export function connectionFromConfigFile(agentDir: string): CanonicalConnection 
 	return connectionFromParts("file", file.apiKey, file.baseUrl);
 }
 
-export function resolveCanonicalConnection(agentDir: string, providerId: string): CanonicalConnection | null {
+export function resolveCanonicalConnection(
+	agentDir: string,
+	providerId: string,
+): CanonicalConnection | null {
 	// OAuth from raw auth.json — never via config-value resolver.
 	try {
 		const entry = readRawAuthEntry(agentDir, providerId);
@@ -465,7 +515,10 @@ export function resolveCanonicalConnection(agentDir: string, providerId: string)
 			const oauth = connectionFromOAuthCredential({
 				access: typeof entry.access === "string" ? entry.access : undefined,
 				refresh: typeof entry.refresh === "string" ? entry.refresh : undefined,
-				validationNonce: typeof entry.validationNonce === "string" ? entry.validationNonce : undefined,
+				validationNonce:
+					typeof entry.validationNonce === "string"
+						? entry.validationNonce
+						: undefined,
 			});
 			if (oauth) {
 				return oauth;

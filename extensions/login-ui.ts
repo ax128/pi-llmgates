@@ -39,7 +39,11 @@ export function translateLoginError(message: string): string {
 	return trimmed;
 }
 
-export function formatLoginValidationFailure(attempt: number, maxAttempts: number, error: unknown): string {
+export function formatLoginValidationFailure(
+	attempt: number,
+	maxAttempts: number,
+	error: unknown,
+): string {
 	const message = error instanceof Error ? error.message : String(error);
 	return `验证失败（${attempt}/${maxAttempts}）：${translateLoginError(message)}`;
 }
@@ -66,21 +70,66 @@ export const LLMGATES_LOGIN_UI = {
 	},
 } as const;
 
+/**
+ * Unified gateway picker shown as the first step of `/login LLMGates`. LLMGates
+ * is first so the default selection stays the core gateway; the remaining ids
+ * are the 2API compatibility schemes.
+ */
+export const GATEWAY_KIND_LOGIN_UI = {
+	message: "网关类型",
+	options: [
+		{ id: "llmgates", label: "LLMGates", description: "LLMGates 官方网关" },
+		{
+			id: "newapi",
+			label: "NewAPI",
+			description: "NewAPI 中转网关",
+		},
+		{
+			id: "cpa",
+			label: "CLIProxyAPI",
+			description: "CLIProxyAPI 本地/代理网关",
+		},
+		{
+			id: "sub2api",
+			label: "Sub2API",
+			description: "Sub2API 订阅网关",
+		},
+	],
+} as const;
+
+/**
+ * pi's interactive login dialog swallows exactly this error message instead of
+ * rendering a failure banner. The 2API branch of the LLMGates login persists
+ * its own auth.json entry and must NOT return a credential — returning one
+ * would overwrite the core LLMGates credential — so it ends the flow with this
+ * sentinel after reporting success through a session message.
+ */
+export const LOGIN_CANCELLED_MESSAGE = "Login cancelled";
+
+export function compatInstanceAddedMessage(instance: {
+	id: string;
+	name: string;
+	scheme: string;
+}): string {
+	return (
+		`已添加兼容网关实例「${instance.name}」（id=${instance.id}，类型 ${instance.scheme}）。` +
+		`使用 /llmgates list 查看，/login ${instance.id} 可重新配置。`
+	);
+}
+
 export const COMPAT_BOOTSTRAP_LOGIN_UI = {
-	providerName: "LLMGates 2API",
+	providerName: "LLMGates 兼容网关恢复",
 	loginLabel: "添加 OpenAI 兼容网关实例",
 	oauthName: "添加 OpenAI 兼容网关",
 	intro: {
 		message:
-			"正在添加 2API 兼容网关实例。请依次选择网关类型、填写实例 ID、显示名称（可留空）、网关地址与 API Key。",
+			"正在添加兼容网关实例。请依次选择网关类型、填写实例 ID、显示名称（可留空）、网关地址与 API Key。",
 	},
 	scheme: {
-		message: "网关类型",
-		options: [
-			{ id: "newapi", label: "NewAPI", description: "NewAPI 中转网关" },
-			{ id: "sub2api", label: "Sub2API", description: "Sub2API 订阅网关" },
-			{ id: "cpa", label: "CLIProxyAPI", description: "CLIProxyAPI 本地/代理网关" },
-		],
+		message: GATEWAY_KIND_LOGIN_UI.message,
+		options: GATEWAY_KIND_LOGIN_UI.options.filter(
+			(option) => option.id !== "llmgates",
+		),
 	},
 	instanceId: {
 		message: "实例 Provider ID（用于 /login <id>，须手动指定）",
