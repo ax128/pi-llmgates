@@ -117,6 +117,10 @@ export function compatInstanceAddedMessage(instance: {
 	);
 }
 
+/** Intro for the merged `/login LLMGates` branch once the gateway type is chosen. */
+export const COMPAT_MERGED_LOGIN_INTRO =
+	"正在添加兼容网关实例。请依次填写实例 ID、显示名称（可留空）、网关地址与 API Key。";
+
 export const COMPAT_BOOTSTRAP_LOGIN_UI = {
 	providerName: "LLMGates 兼容网关恢复",
 	loginLabel: "添加 OpenAI 兼容网关实例",

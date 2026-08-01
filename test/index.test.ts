@@ -20,7 +20,9 @@ afterEach(() => {
 });
 
 /** Minimal ExtensionAPI capturing registrations. The factory only uses these methods. */
-function fakePi(): {
+function fakePi(options?: {
+	onRegisterProvider?: (provider: unknown) => void;
+}): {
 	pi: ExtensionAPI;
 	commands: Map<string, unknown>;
 	providers: unknown[];
@@ -36,6 +38,7 @@ function fakePi(): {
 			commands.set(name, options);
 		}),
 		registerProvider: vi.fn((provider: unknown) => {
+			options?.onRegisterProvider?.(provider);
 			providers.push(provider);
 		}),
 		sendMessage: vi.fn((message: unknown, options: unknown) => {
@@ -190,6 +193,29 @@ describe("extension entrypoints", () => {
 			).toBe(false);
 		} finally {
 			fetchSpy.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("registers the compat recovery provider when core registration fails", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		const { pi, providers } = fakePi({
+			onRegisterProvider(provider) {
+				if ((provider as { id?: string }).id === "llmgates") {
+					throw new Error("core registration failed");
+				}
+			},
+		});
+		try {
+			expect(() => extensionFactory(pi)).toThrow(/core registration failed/i);
+			expect(
+				providers.some((p) => (p as { id?: string })?.id === "llmgates"),
+			).toBe(false);
+			expect(
+				providers.some((p) => (p as { id?: string })?.id === "llmgates-2api"),
+			).toBe(true);
+		} finally {
 			cleanup();
 		}
 	});

@@ -99,6 +99,7 @@ pi
 | `/model` | 选择已注册的 LLMGates 模型 |
 | `/calls` | 查看本轮或本会话的 per-model 用量与费用明细 |
 | `/reload` | 安装或更新插件后重载扩展 |
+| `/llmgates list \| remove <id> \| help` | 列出、删除或查看兼容网关实例帮助 |
 | `/llmgates-reload` | 强制刷新 core 与全部 2API 的模型 catalog（绕过 freshness window，重写 thinking 档位等缓存） |
 
 重新配置：随时再跑 `/login LLMGates`。`/logout` 清除 `auth.json` 登录凭证后，env / `llmgates/config.json` 中的 ambient 配置才会重新生效。交互式登录**不会**写入新的 API Key，也**不会**删除文件中已有的 ambient `apiKey`。

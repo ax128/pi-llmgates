@@ -9,8 +9,10 @@ import * as lockfile from "proper-lockfile";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { registerCompatGateways } from "../extensions/compat/index.js";
+import { runCompatInstanceLogin } from "../extensions/compat/provider.js";
 import { addInstance, listInstances } from "../extensions/compat/storage.js";
 import { BOOTSTRAP_PROVIDER_ID } from "../extensions/compat/types.js";
+import { COMPAT_MERGED_LOGIN_INTRO } from "../extensions/login-ui.js";
 import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
 import { DiskMergingCredentialStore } from "./helpers/disk-merging-credential-store.js";
@@ -511,5 +513,31 @@ describe("compat bootstrap transaction", () => {
 		} finally {
 			cleanup();
 		}
+	});
+});
+
+describe("runCompatInstanceLogin", () => {
+	it("uses the merged-login intro and skips the scheme prompt when scheme is preselected", async () => {
+		const interaction = scriptedAuthInteraction([
+			"merged-id",
+			"",
+			BASE_URL,
+			"merged-key",
+		]);
+		const onValidated = vi.fn(async () => {});
+		await runCompatInstanceLogin(interaction, {
+			scheme: "newapi",
+			fetchImpl: successfulFetch("merged-model"),
+			now: () => NOW,
+			onValidated,
+		});
+		expect(interaction.messages[0]).toBe(COMPAT_MERGED_LOGIN_INTRO);
+		expect(interaction.prompts.map((prompt) => prompt.type)).toEqual([
+			"text",
+			"text",
+			"text",
+			"secret",
+		]);
+		expect(onValidated).toHaveBeenCalledOnce();
 	});
 });

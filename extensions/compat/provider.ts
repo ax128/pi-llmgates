@@ -58,6 +58,7 @@ import {
 } from "../util.js";
 import {
 	COMPAT_BOOTSTRAP_LOGIN_UI,
+	COMPAT_MERGED_LOGIN_INTRO,
 	compatInstanceLoginUi,
 	formatLoginValidationFailure,
 	translateLoginError,
@@ -220,7 +221,9 @@ export async function runCompatInstanceLogin(
 		if (attempt === 1) {
 			interaction.notify({
 				type: "info",
-				message: COMPAT_BOOTSTRAP_LOGIN_UI.intro.message,
+				message: options.scheme
+					? COMPAT_MERGED_LOGIN_INTRO
+					: COMPAT_BOOTSTRAP_LOGIN_UI.intro.message,
 			});
 		}
 		const rawScheme =

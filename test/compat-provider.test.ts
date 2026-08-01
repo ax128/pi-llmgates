@@ -1,4 +1,10 @@
-import type { Api, Context, Model, OAuthCredential } from "@earendil-works/pi-ai";
+import type {
+	Api,
+	AuthContext,
+	Context,
+	Model,
+	OAuthCredential,
+} from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +18,7 @@ import {
 	addInstance,
 	encodeCompatRefreshMeta,
 	listInstances,
+	writeProviderOAuthCredential,
 } from "../extensions/compat/storage.js";
 import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
 import type { CompatInstance } from "../extensions/compat/types.js";
@@ -383,10 +390,35 @@ describe("compat instance provider", () => {
 
 			await provider.refreshModels!({ store: createMemoryStore(), allowNetwork: true, force: true });
 			expect(hits).toBe(0);
-			expect(provider.auth.apiKey).toBeUndefined();
+			expect(await provider.auth.apiKey!.check!({ ctx: {} as AuthContext })).toBeUndefined();
 		} finally {
 			cleanup();
 			await server.close();
+		}
+	});
+
+	it("exposes auth.apiKey check/resolve from auth.json for immediate use after login", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			await writeProviderOAuthCredential(
+				agentDir,
+				INSTANCE.id,
+				credential("stored-key", INSTANCE.baseUrl),
+			);
+			const provider = createCompatProvider({ agentDir, instance: INSTANCE });
+			const authCtx = {} as AuthContext;
+
+			expect(provider.auth.apiKey).toBeDefined();
+			expect(await provider.auth.apiKey!.check!({ ctx: authCtx })).toEqual({
+				source: "auth.json",
+				type: "api_key",
+			});
+			expect(await provider.auth.apiKey!.resolve({ ctx: authCtx })).toEqual({
+				auth: { apiKey: "stored-key", baseUrl: INSTANCE.baseUrl },
+				source: "auth.json",
+			});
+		} finally {
+			cleanup();
 		}
 	});
 
