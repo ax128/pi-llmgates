@@ -308,21 +308,53 @@ export function formatUsageBreakdownOptions(stats: ReadonlyMap<string, ModelUsag
 
 export function formatElapsed(totalSeconds: number): string {
 	const seconds = Math.max(0, Math.floor(totalSeconds));
-	if (seconds >= 86400) return `${Math.floor(seconds / 86400)}d`;
-	if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h`;
+	if (seconds >= 86400) {
+		const days = Math.floor(seconds / 86400);
+		const hours = Math.floor((seconds % 86400) / 3600);
+		const minutes = Math.floor((seconds % 3600) / 60);
+		let result = `${days}d`;
+		if (hours > 0) result += `${hours}h`;
+		if (minutes > 0) result += `${minutes}m`;
+		return result;
+	}
+	if (seconds >= 3600) {
+		const hours = Math.floor(seconds / 3600);
+		const minutes = Math.floor((seconds % 3600) / 60);
+		return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`;
+	}
 	if (seconds >= 60) return `${Math.floor(seconds / 60)}m`;
 	return `${seconds}s`;
+}
+
+function formatTpsScopeSegment(
+	scope: "turn" | "all",
+	elapsedSeconds: number,
+	stats: ReadonlyMap<string, ModelUsageEntry>,
+): string {
+	const elapsed = formatElapsed(elapsedSeconds);
+	const calls = totalModelCalls(stats);
+	const prefix = scope === "all" ? "All" : "Turn";
+	if (scope === "all") {
+		return `${prefix} ${elapsed}.${calls.toLocaleString()}c`;
+	}
+	return `${prefix} ${elapsed}.${calls.toLocaleString()}c.${formatCostUsd(totalCostUsd(stats))}`;
 }
 
 export function formatTpsStatusLine(
 	elapsedSeconds: number,
 	stats: ReadonlyMap<string, ModelUsageEntry>,
-	_sessionCostUsd?: number,
+	options?: { scope?: "turn" | "all" },
 ): string {
-	const elapsed = formatElapsed(elapsedSeconds);
-	const calls = totalModelCalls(stats);
-	const turnCost = totalCostUsd(stats);
-	return `${elapsed} · ${calls.toLocaleString()}c · ${formatCostUsd(turnCost)}`;
+	return formatTpsScopeSegment(options?.scope ?? "turn", elapsedSeconds, stats);
+}
+
+export function formatTpsSettledStatusLine(
+	sessionElapsedSeconds: number,
+	sessionStats: ReadonlyMap<string, ModelUsageEntry>,
+	turnElapsedSeconds: number,
+	turnStats: ReadonlyMap<string, ModelUsageEntry>,
+): string {
+	return `${formatTpsScopeSegment("all", sessionElapsedSeconds, sessionStats)}, ${formatTpsScopeSegment("turn", turnElapsedSeconds, turnStats)}`;
 }
 
 export function formatUsageScopeTitle(scope: "turn" | "session", stats: ReadonlyMap<string, ModelUsageEntry>): string {

@@ -27,6 +27,7 @@ import {
 import {
 	cloneModelUsageStats,
 	formatTpsStatusLine,
+	formatTpsSettledStatusLine,
 	formatUsageBreakdownOptions,
 	formatUsageScopeTitle,
 	formatUsageSummaryMessage,
@@ -64,6 +65,8 @@ function logTpsIssue(message: string): void {
 
 export default function (pi: ExtensionAPI) {
 	let requestStartMs: number | null = null;
+	let firstTurnStartMs: number | null = null;
+	let sessionElapsedSeconds = 0;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 	let statusCtx: ExtensionContext | null = null;
 	let turnStats: ModelUsageStats = createEmptyStats();
@@ -114,24 +117,52 @@ export default function (pi: ExtensionAPI) {
 		refreshTimer = undefined;
 	}
 
-	function getElapsedSeconds(): number {
+	function getTurnElapsedSeconds(): number {
 		if (requestStartMs === null) return 0;
 		return Math.floor((Date.now() - requestStartMs) / 1000);
+	}
+
+	function updateSessionElapsed(): void {
+		if (firstTurnStartMs === null) return;
+		sessionElapsedSeconds = Math.floor((Date.now() - firstTurnStartMs) / 1000);
 	}
 
 	function activeTurnStats(): ModelUsageStats {
 		return requestStartMs !== null ? turnStats : lastSettledTurnStats;
 	}
 
-	function setElapsedStatus(
+	function setTurnStatus(
 		ctx: ExtensionContext,
 		totalSeconds: number,
-		stats: ModelUsageStats = activeTurnStats(),
+		stats: ModelUsageStats,
 	): void {
 		safeUi(ctx, () => {
 			ctx.ui.setStatus(
 				STATUS_KEY,
-				ctx.ui.theme.fg("dim", formatTpsStatusLine(totalSeconds, stats)),
+				ctx.ui.theme.fg("dim", formatTpsStatusLine(totalSeconds, stats, { scope: "turn" })),
+			);
+		});
+	}
+
+	function setSettledStatus(
+		ctx: ExtensionContext,
+		sessionElapsed: number,
+		sessionStatsSnapshot: ModelUsageStats,
+		turnElapsed: number,
+		turnStatsSnapshot: ModelUsageStats,
+	): void {
+		safeUi(ctx, () => {
+			ctx.ui.setStatus(
+				STATUS_KEY,
+				ctx.ui.theme.fg(
+					"dim",
+					formatTpsSettledStatusLine(
+						sessionElapsed,
+						sessionStatsSnapshot,
+						turnElapsed,
+						turnStatsSnapshot,
+					),
+				),
 			);
 		});
 	}
@@ -158,7 +189,7 @@ export default function (pi: ExtensionAPI) {
 			) {
 				return;
 			}
-			setElapsedStatus(statusCtx, getElapsedSeconds(), targetStats);
+			setTurnStatus(statusCtx, getTurnElapsedSeconds(), targetStats);
 		});
 	}
 
@@ -344,6 +375,8 @@ export default function (pi: ExtensionAPI) {
 		clearRefreshTimer();
 		clearStatus(statusCtx);
 		requestStartMs = null;
+		firstTurnStartMs = null;
+		sessionElapsedSeconds = 0;
 		statusCtx = null;
 		resetTurnStats();
 		sessionStats = createEmptyStats();
@@ -410,10 +443,14 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		if (firstTurnStartMs === null) {
+			firstTurnStartMs = Date.now();
+		}
+
 		requestStartMs = Date.now();
 		statusCtx = ctx;
 		resetTurnStats();
-		setElapsedStatus(ctx, 0, turnStats);
+		setTurnStatus(ctx, 0, turnStats);
 
 		clearRefreshTimer();
 		refreshTimer = setInterval(() => refreshStatus(), REFRESH_INTERVAL_MS);
@@ -424,7 +461,7 @@ export default function (pi: ExtensionAPI) {
 		if (requestStartMs === null) return;
 
 		ensureSubagentWatcher();
-		const elapsedSeconds = Math.floor((Date.now() - requestStartMs) / 1000);
+		const turnElapsedSeconds = getTurnElapsedSeconds();
 
 		requestStartMs = null;
 		statusRefreshScheduled = false;
@@ -454,7 +491,14 @@ export default function (pi: ExtensionAPI) {
 			mergeModelUsageStats(sessionStats, settledTurnStats);
 			if (turnStats === settledTurnStats && requestStartMs === null) {
 				lastSettledTurnStats = settledStats;
-				setElapsedStatus(ctx, elapsedSeconds, settledStats);
+				updateSessionElapsed();
+				setSettledStatus(
+					ctx,
+					sessionElapsedSeconds,
+					sessionStats,
+					turnElapsedSeconds,
+					settledStats,
+				);
 				statusCtx = ctx;
 			}
 		});
