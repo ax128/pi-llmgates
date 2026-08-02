@@ -4,8 +4,10 @@ import { resolveModelCostRates } from "../extensions/model-pricing.js";
 import {
 	safeEstimateUsageCostUsd,
 	formatCostUsd,
+	formatElapsed,
 	formatModelUsageLine,
 	formatTpsStatusLine,
+	formatTpsSettledStatusLine,
 	formatUsageBreakdownOptions,
 	formatUsageScopeTitle,
 	mergeModelUsageStats,
@@ -36,7 +38,17 @@ describe("tps stats cost", () => {
 		expect(formatCostUsd(12.3)).toBe("$12.30");
 	});
 
-	it("formats a compact turn status", () => {
+	it("formats elapsed time with minutes when over one hour", () => {
+		expect(formatElapsed(45)).toBe("45s");
+		expect(formatElapsed(1_020)).toBe("17m");
+		expect(formatElapsed(3_600)).toBe("1h");
+		expect(formatElapsed(3_661)).toBe("1h1m");
+		expect(formatElapsed(7_920)).toBe("2h12m");
+		expect(formatElapsed(86_400)).toBe("1d");
+		expect(formatElapsed(90_061)).toBe("1d1h1m");
+	});
+
+	it("formats a compact status line with Turn or All prefix", () => {
 		const stats = new Map([
 			[
 				"llmgates/gpt-5.6-sol",
@@ -51,9 +63,13 @@ describe("tps stats cost", () => {
 				},
 			],
 		]);
-		expect(formatTpsStatusLine(45, stats, 99)).toBe("45s · 2c · $0.020");
-		expect(formatTpsStatusLine(1_020, stats)).toBe("17m · 2c · $0.020");
-		expect(formatTpsStatusLine(0, new Map())).toBe("0s · 0c · $0.000");
+		expect(formatTpsStatusLine(45, stats, { scope: "turn" })).toBe("Turn 45s.2c.$0.020");
+		expect(formatTpsStatusLine(1_020, stats, { scope: "turn" })).toBe("Turn 17m.2c.$0.020");
+		expect(formatTpsStatusLine(3_661, stats, { scope: "all" })).toBe("All 1h1m.2c");
+		expect(formatTpsStatusLine(0, new Map(), { scope: "turn" })).toBe("Turn 0s.0c.$0.000");
+		expect(formatTpsSettledStatusLine(3_661, stats, 1_800, stats)).toBe(
+			"All 1h1m.2c, Turn 30m.2c.$0.020",
+		);
 	});
 
 	it("includes per-model cost in breakdown", () => {
