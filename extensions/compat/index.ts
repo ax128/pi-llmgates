@@ -518,6 +518,8 @@ export function registerCompatGateways(
 
 	const bootstrapProvider = createCompatBootstrapProvider({
 		reservedProviderIds,
+		resolveExistingInstanceIds: () =>
+			listInstances(agentDir).map((instance) => instance.id),
 		fetchImpl: options.fetchImpl,
 		now: options.now,
 		onValidated: persistValidated,
@@ -546,6 +548,8 @@ export function registerCompatGateways(
 	): Promise<CompatInstance> {
 		return runCompatInstanceLogin(interaction, {
 			reservedProviderIds,
+			resolveExistingInstanceIds: () =>
+				listInstances(agentDir).map((instance) => instance.id),
 			fetchImpl: options.fetchImpl,
 			now: options.now,
 			scheme,

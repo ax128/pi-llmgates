@@ -92,7 +92,7 @@ pi
 
 | 命令 | 说明 |
 | --- | --- |
-| `/login LLMGates` | 选择并配置 LLMGates、NewAPI、CLIProxyAPI 或 Sub2API 网关 |
+| `/login LLMGates` | 选择并配置 LLMGates、NewAPI、CLIProxyAPI、Sub2API 或通用兼容网关 |
 | `/balance` | 查看钱包、订阅余额 |
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | 切换或清除一个 core 模型的推理出口 |
 | `/endpoint-setting` | 交互式多选，批量切换 core 与 2API 模型的推理出口 |
@@ -115,8 +115,9 @@ pi
 | [NewAPI](https://github.com/QuantumNous/new-api) | `newapi` | 自托管 AI 模型聚合与渠道管理 | [QuantumNous/new-api](https://github.com/QuantumNous/new-api) |
 | [Sub2API](https://github.com/Wei-Shaw/sub2api) | `sub2api` | 订阅配额分发与多账号中转 | [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) |
 | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA） | `cpa` | 本地 CLI 订阅代理，默认端口 `8317` | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) |
+| 通用 OpenAI 兼容网关 | `default` | 任意实现 `GET /v1/models` 的网关；仅需 URL + API Key，实例 ID 由 hostname 自动生成 | — |
 
-同一 scheme 可添加多个实例（例如 `work-newapi` 与 `home-newapi`），不同 scheme 也可并存。默认所有 scheme 共用 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名自动切换协议；如需改用 `messages` / `responses`，用 `/endpoint-setting` 显式配置（见 [2API 的出口覆盖](#2api-的出口覆盖)）。
+同一 scheme 可添加多个实例（例如 `work-newapi` 与 `home-newapi`，或两个不同 hostname 的 `default` 实例），不同 scheme 也可并存。`default` 同一 hostname 重复添加时会自动分配 `-2`、`-3` 后缀。Base URL 可不写 `/v1`，扩展会自动规范到 `/v1/models` 探测。默认所有 scheme 共用 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名自动切换协议；如需改用 `messages` / `responses`，用 `/endpoint-setting` 显式配置（见 [2API 的出口覆盖](#2api-的出口覆盖)）。
 
 ### 添加实例（通用流程）
 
@@ -125,9 +126,12 @@ pi
 /login LLMGates
 ```
 
-`/login` 列表中不再单独显示 `LLMGates 2API`。进入 `LLMGates` 后先选择网关类型，顺序为 **LLMGates**（默认、最上方）→ **NewAPI** → **CLIProxyAPI** → **Sub2API**。选择 LLMGates 会配置 core provider；选择其余类型会添加独立的 2API 实例。
+`/login` 列表中不再单独显示 `LLMGates 2API`。进入 `LLMGates` 后先选择网关类型，顺序为 **LLMGates**（默认、最上方）→ **NewAPI** → **CLIProxyAPI** → **Sub2API** → **通用网关**（`default`）。选择 LLMGates 会配置 core provider；选择其余类型会添加独立的 2API 实例。
 
-兼容实例的后续提示顺序：**实例 Provider ID** → **显示名称**（留空则使用 ID）→ **Base URL** → **API Key**。
+兼容实例的后续提示顺序：
+
+- **NewAPI / CLIProxyAPI / Sub2API**：实例 Provider ID → 显示名称（留空则使用 ID）→ Base URL → API Key
+- **通用网关（default）**：Base URL → API Key（实例 ID 由 URL hostname 自动生成，冲突时追加 `-2` 等后缀）
 
 | 字段 | 说明 |
 | --- | --- |

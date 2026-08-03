@@ -4,6 +4,7 @@ import {
 	BOOTSTRAP_PROVIDER_ID,
 	COMPAT_CONFIG_FILE,
 	COMPAT_SCHEMES,
+	deriveDefaultInstanceId,
 	normalizeCompatBaseUrl,
 	normalizeInstanceId,
 	normalizeInstanceName,
@@ -11,11 +12,12 @@ import {
 
 describe("compat constants", () => {
 	it("defines the supported schemes and prompt-only URL placeholders", () => {
-		expect(COMPAT_SCHEMES).toEqual(["newapi", "sub2api", "cpa"]);
+		expect(COMPAT_SCHEMES).toEqual(["newapi", "sub2api", "cpa", "default"]);
 		expect(BASE_URL_PLACEHOLDER_FOR_SCHEME).toEqual({
 			newapi: "https://your-newapi-host/v1",
 			sub2api: "https://your-sub2api-host/v1",
 			cpa: "http://127.0.0.1:8317/v1",
+			default: "https://your-gateway-host/v1",
 		});
 		expect(BOOTSTRAP_PROVIDER_ID).toBe("llmgates-2api");
 		expect(COMPAT_CONFIG_FILE).toBe("llmgates/2api.json");
@@ -69,5 +71,28 @@ describe("normalizeCompatBaseUrl", () => {
 	it("accepts remote HTTPS and normalizes exactly one trailing /v1", () => {
 		expect(normalizeCompatBaseUrl(" https://api.example/ ")).toBe("https://api.example/v1");
 		expect(normalizeCompatBaseUrl("https://api.example/v1/v1/")).toBe("https://api.example/v1");
+	});
+});
+
+describe("deriveDefaultInstanceId", () => {
+	it("derives the hostname and appends non-default ports", () => {
+		expect(
+			deriveDefaultInstanceId("https://api.example.com/v1", []),
+		).toBe("api.example.com");
+		expect(
+			deriveDefaultInstanceId("http://127.0.0.1:8317/v1", []),
+		).toBe("127.0.0.1-8317");
+	});
+
+	it("allocates numeric suffixes when the derived id is already occupied", () => {
+		expect(
+			deriveDefaultInstanceId("https://api.foo.com/v1", ["api.foo.com"]),
+		).toBe("api.foo.com-2");
+		expect(
+			deriveDefaultInstanceId("https://api.foo.com/v1", [
+				"api.foo.com",
+				"api.foo.com-2",
+			]),
+		).toBe("api.foo.com-3");
 	});
 });

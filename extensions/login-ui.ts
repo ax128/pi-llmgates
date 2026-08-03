@@ -94,6 +94,11 @@ export const GATEWAY_KIND_LOGIN_UI = {
 			label: "Sub2API",
 			description: "Sub2API 订阅网关",
 		},
+		{
+			id: "default",
+			label: "通用网关",
+			description: "任意 OpenAI 兼容网关（/v1/models）",
+		},
 	],
 } as const;
 
@@ -120,6 +125,10 @@ export function compatInstanceAddedMessage(instance: {
 /** Intro for the merged `/login LLMGates` branch once the gateway type is chosen. */
 export const COMPAT_MERGED_LOGIN_INTRO =
 	"正在添加兼容网关实例。请依次填写实例 ID、显示名称（可留空）、网关地址与 API Key。";
+
+/** Intro for the merged flow when the generic `default` gateway type is chosen. */
+export const COMPAT_DEFAULT_MERGED_LOGIN_INTRO =
+	"正在添加通用兼容网关。请依次输入网关地址与 API Key；将自动探测 /v1/models 并注册实例。";
 
 export const COMPAT_BOOTSTRAP_LOGIN_UI = {
 	providerName: "LLMGates 兼容网关恢复",

@@ -1,7 +1,7 @@
 import { BUILTIN_PROVIDER_IDS, normalizeAndValidateBaseUrl } from "../connection.js";
 import { LLMGATES_COMPAT_CONFIG_FILE } from "../util.js";
 
-export const COMPAT_SCHEMES = ["newapi", "sub2api", "cpa"] as const;
+export const COMPAT_SCHEMES = ["newapi", "sub2api", "cpa", "default"] as const;
 export type CompatScheme = (typeof COMPAT_SCHEMES)[number];
 
 export interface CompatInstance {
@@ -18,6 +18,7 @@ export const BASE_URL_PLACEHOLDER_FOR_SCHEME = {
 	newapi: "https://your-newapi-host/v1",
 	sub2api: "https://your-sub2api-host/v1",
 	cpa: "http://127.0.0.1:8317/v1",
+	default: "https://your-gateway-host/v1",
 } as const;
 
 const INSTANCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -51,4 +52,50 @@ export function normalizeCompatBaseUrl(raw: string): string {
 		throw new Error(validated.error ?? "baseUrl is invalid");
 	}
 	return validated.inferenceBaseUrl;
+}
+
+const INSTANCE_ID_SANITIZE = /[^A-Za-z0-9._-]/g;
+
+function sanitizeHostnameForInstanceId(hostname: string): string {
+	let part = hostname.toLowerCase().replace(INSTANCE_ID_SANITIZE, "-");
+	part = part.replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+	if (!part || !/^[A-Za-z0-9]/.test(part)) {
+		part = `h-${part || "gateway"}`;
+	}
+	return part;
+}
+
+/**
+ * Derive a unique provider id for the generic `default` gateway login flow from
+ * the normalized inference base URL (hostname, optional non-default port).
+ */
+export function deriveDefaultInstanceId(
+	baseUrl: string,
+	occupied: Iterable<string> = [],
+	extraReserved: Iterable<string> = [],
+): string {
+	const url = new URL(baseUrl);
+	let baseId = sanitizeHostnameForInstanceId(url.hostname);
+	const defaultPort = url.protocol === "https:" ? "443" : "80";
+	if (url.port && url.port !== defaultPort) {
+		const portSuffix = `-${url.port}`;
+		const maxBase = Math.max(1, 64 - portSuffix.length);
+		baseId = `${baseId.slice(0, maxBase)}${portSuffix}`;
+	}
+	if (baseId.length > 64) {
+		baseId = baseId.slice(0, 64);
+	}
+
+	const occupiedLower = new Set(
+		Array.from(occupied, (id) => id.toLowerCase()),
+	);
+	let candidate = baseId;
+	let suffix = 2;
+	while (occupiedLower.has(candidate.toLowerCase())) {
+		const numericSuffix = `-${suffix}`;
+		const maxBase = Math.max(1, 64 - numericSuffix.length);
+		candidate = `${baseId.slice(0, maxBase)}${numericSuffix}`;
+		suffix += 1;
+	}
+	return normalizeInstanceId(candidate, extraReserved);
 }

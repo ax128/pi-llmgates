@@ -12,7 +12,7 @@ import { registerCompatGateways } from "../extensions/compat/index.js";
 import { runCompatInstanceLogin } from "../extensions/compat/provider.js";
 import { addInstance, listInstances } from "../extensions/compat/storage.js";
 import { BOOTSTRAP_PROVIDER_ID } from "../extensions/compat/types.js";
-import { COMPAT_MERGED_LOGIN_INTRO } from "../extensions/login-ui.js";
+import { COMPAT_DEFAULT_MERGED_LOGIN_INTRO, COMPAT_MERGED_LOGIN_INTRO } from "../extensions/login-ui.js";
 import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
 import { DiskMergingCredentialStore } from "./helpers/disk-merging-credential-store.js";
@@ -539,5 +539,53 @@ describe("runCompatInstanceLogin", () => {
 			"secret",
 		]);
 		expect(onValidated).toHaveBeenCalledOnce();
+	});
+
+	it("adds a default gateway with only baseUrl and apiKey and derives the instance id", async () => {
+		const interaction = scriptedAuthInteraction([
+			"https://api.foo.com/v1",
+			"default-key",
+		]);
+		const onValidated = vi.fn(async () => {});
+		await runCompatInstanceLogin(interaction, {
+			scheme: "default",
+			fetchImpl: vi.fn(async (input) => {
+				expect(String(input)).toBe("https://api.foo.com/v1/models");
+				return new Response(JSON.stringify([{ id: "gpt-4o" }]));
+			}),
+			now: () => NOW,
+			onValidated,
+		});
+		expect(interaction.messages[0]).toBe(COMPAT_DEFAULT_MERGED_LOGIN_INTRO);
+		expect(interaction.prompts.map((prompt) => prompt.type)).toEqual([
+			"text",
+			"secret",
+		]);
+		expect(onValidated).toHaveBeenCalledWith(
+			expect.objectContaining({
+				instance: {
+					id: "api.foo.com",
+					name: "api.foo.com",
+					scheme: "default",
+					baseUrl: "https://api.foo.com/v1",
+				},
+			}),
+		);
+	});
+
+	it("reports model probe failures for default gateways", async () => {
+		const attemptAnswers = ["https://api.foo.com/v1", "bad-key"];
+		const interaction = scriptedAuthInteraction(
+			Array.from({ length: 5 }, () => attemptAnswers).flat(),
+		);
+		await expect(
+			runCompatInstanceLogin(interaction, {
+				scheme: "default",
+				fetchImpl: vi.fn(async () => new Response("nope", { status: 401 })),
+				now: () => NOW,
+				onValidated: vi.fn(async () => {}),
+			}),
+		).rejects.toThrow(/HTTP 401|login validation failed/i);
+		expect(interaction.messages.at(-1)).toMatch(/验证失败/);
 	});
 });
