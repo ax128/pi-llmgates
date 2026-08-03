@@ -32,6 +32,7 @@ describe("native oauth login", () => {
 					{ id: "newapi" },
 					{ id: "cpa" },
 					{ id: "sub2api" },
+					{ id: "default" },
 				],
 			});
 		} finally {

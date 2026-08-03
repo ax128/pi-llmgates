@@ -88,7 +88,7 @@ const API_STREAMS: Record<string, ProviderStreams> = {
 	"anthropic-messages": anthropicMessagesApi(),
 };
 
-export type CompatLoginScheme = "newapi" | "cpa" | "sub2api";
+export type CompatLoginScheme = "newapi" | "cpa" | "sub2api" | "default";
 
 export interface LLMGatesProviderOptions {
 	agentDir: string;
@@ -627,7 +627,8 @@ export function createLLMGatesProvider(
 				if (
 					gatewayKind !== "newapi" &&
 					gatewayKind !== "cpa" &&
-					gatewayKind !== "sub2api"
+					gatewayKind !== "sub2api" &&
+					gatewayKind !== "default"
 				) {
 					throw new Error("Invalid compatibility scheme");
 				}

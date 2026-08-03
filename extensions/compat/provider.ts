@@ -58,6 +58,7 @@ import {
 } from "../util.js";
 import {
 	COMPAT_BOOTSTRAP_LOGIN_UI,
+	COMPAT_DEFAULT_MERGED_LOGIN_INTRO,
 	COMPAT_MERGED_LOGIN_INTRO,
 	compatInstanceLoginUi,
 	formatLoginValidationFailure,
@@ -83,6 +84,7 @@ import {
 	BASE_URL_PLACEHOLDER_FOR_SCHEME,
 	BOOTSTRAP_PROVIDER_ID,
 	COMPAT_SCHEMES,
+	deriveDefaultInstanceId,
 	normalizeCompatBaseUrl,
 	normalizeInstanceId,
 	normalizeInstanceName,
@@ -177,6 +179,8 @@ export interface CompatBootstrapResult {
 
 export interface CompatBootstrapProviderOptions {
 	reservedProviderIds?: Iterable<string>;
+	/** Called when allocating a `default` instance id so collisions stay fresh. */
+	resolveExistingInstanceIds?: () => Iterable<string>;
 	fetchImpl?: typeof fetch;
 	now?: () => number;
 	onValidated(result: CompatBootstrapResult): Promise<void>;
@@ -214,18 +218,11 @@ export async function runCompatInstanceLogin(
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const now = options.now ?? (() => Date.now());
 	const reservedProviderIds = options.reservedProviderIds ?? [];
+	const existingInstanceIds = options.resolveExistingInstanceIds?.() ?? [];
 
 	let lastError: Error | undefined;
 	for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
 		if (interaction.signal?.aborted) throw abortError();
-		if (attempt === 1) {
-			interaction.notify({
-				type: "info",
-				message: options.scheme
-					? COMPAT_MERGED_LOGIN_INTRO
-					: COMPAT_BOOTSTRAP_LOGIN_UI.intro.message,
-			});
-		}
 		const rawScheme =
 			options.scheme ??
 			(await interaction.prompt({
@@ -233,17 +230,35 @@ export async function runCompatInstanceLogin(
 				message: COMPAT_BOOTSTRAP_LOGIN_UI.scheme.message,
 				options: COMPAT_BOOTSTRAP_LOGIN_UI.scheme.options,
 			}));
-		const rawId = await interaction.prompt({
-			type: "text",
-			message: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.message,
-			placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.placeholder,
-		});
-		const rawName = await interaction.prompt({
-			type: "text",
-			message: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.message,
-			placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.placeholder,
-		});
 		const scheme = isCompatScheme(rawScheme) ? rawScheme : undefined;
+		const isDefaultScheme = scheme === "default";
+
+		if (attempt === 1) {
+			const introMessage = options.scheme
+				? isDefaultScheme
+					? COMPAT_DEFAULT_MERGED_LOGIN_INTRO
+					: COMPAT_MERGED_LOGIN_INTRO
+				: COMPAT_BOOTSTRAP_LOGIN_UI.intro.message;
+			interaction.notify({
+				type: "info",
+				message: introMessage,
+			});
+		}
+
+		let rawId = "";
+		let rawName = "";
+		if (!isDefaultScheme) {
+			rawId = await interaction.prompt({
+				type: "text",
+				message: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.message,
+				placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.placeholder,
+			});
+			rawName = await interaction.prompt({
+				type: "text",
+				message: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.message,
+				placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.placeholder,
+			});
+		}
 		const rawBaseUrl = await interaction.prompt({
 			type: "text",
 			message: COMPAT_BOOTSTRAP_LOGIN_UI.baseUrl.message,
@@ -258,14 +273,21 @@ export async function runCompatInstanceLogin(
 		let instance: CompatInstance;
 		try {
 			if (!scheme) throw new Error("Invalid compatibility scheme");
-			const id = normalizeInstanceId(rawId, reservedProviderIds);
 			if (!rawBaseUrl.trim()) throw new Error("Base URL is required");
 			if (!apiKey.trim()) throw new Error("API key is required");
+			const baseUrl = normalizeCompatBaseUrl(rawBaseUrl);
+			const id = isDefaultScheme
+				? deriveDefaultInstanceId(
+						baseUrl,
+						existingInstanceIds,
+						reservedProviderIds,
+					)
+				: normalizeInstanceId(rawId, reservedProviderIds);
 			instance = {
 				id,
-				name: normalizeInstanceName(rawName, id),
+				name: isDefaultScheme ? id : normalizeInstanceName(rawName, id),
 				scheme,
-				baseUrl: normalizeCompatBaseUrl(rawBaseUrl),
+				baseUrl,
 			};
 		} catch (error) {
 			lastError = error instanceof Error ? error : new Error(String(error));
