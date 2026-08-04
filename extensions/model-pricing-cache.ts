@@ -26,9 +26,15 @@ export const LITELLM_PRICING_URL =
 	"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 /**
  * The upstream table grows with every model LiteLLM adds and exceeding this cap is
- * a silent loss of retail pricing, so keep real headroom over its current size.
+ * a silent loss of retail pricing, so it needs real headroom — but the body is
+ * buffered whole, decoded to a string, then `JSON.parse`d, so the cap is also the
+ * ceiling on a transient allocation spike inside a TUI process.
+ *
+ * Measured 2026-08-04: 1,670,646 bytes (~1.6 MiB). 8 MiB is ~5x that — the table
+ * would have to quintuple before a user silently loses pricing. Re-measure before
+ * raising it; a bigger number is not free.
  */
-export const LITELLM_PRICING_MAX_BYTES = 16 * 1024 * 1024;
+export const LITELLM_PRICING_MAX_BYTES = 8 * 1024 * 1024;
 
 
 
@@ -88,24 +94,30 @@ let memoryContextWindows: Record<string, number> | undefined;
 let pricingSyncChain: Promise<void> = Promise.resolve();
 const activePricingSyncs = new Map<string, Promise<ModelPricingFile | null>>();
 
-let warnedPricingSyncFailure = false;
+/** Failure classes that warn independently. */
+type PricingSyncIssue = "fetch" | "write";
+const warnedPricingSyncIssues = new Set<PricingSyncIssue>();
 
 /**
- * Debug builds log every failure. Otherwise warn exactly once per process: a sync
- * that fails permanently (offline, raw.githubusercontent blocked, a table that
- * outgrew the size cap) silently degrades every `/calls` cost estimate for the
- * rest of the session, and a one-line hint is what makes that visible without
+ * Debug builds log every failure. Otherwise warn once per process PER CLASS: a
+ * sync that fails permanently (offline, raw.githubusercontent blocked, a table
+ * that outgrew the size cap) silently degrades every `/calls` cost estimate for
+ * the rest of the session, and a one-line hint is what makes that visible without
  * turning a routine offline start into per-refresh noise.
+ *
+ * Per-class, not once overall: an unreachable table at startup and an unwritable
+ * `pricing.json` are different problems with different fixes, and a single flag
+ * would let a transient first one permanently silence a persistent second one.
  */
-function logPricingSyncIssue(message: string): void {
+function logPricingSyncIssue(kind: PricingSyncIssue, message: string): void {
 	if (envFlag("LLMGATES_DEBUG")) {
 		console.warn(`[pi-llmgates-provider] ${message}`);
 		return;
 	}
-	if (warnedPricingSyncFailure) {
+	if (warnedPricingSyncIssues.has(kind)) {
 		return;
 	}
-	warnedPricingSyncFailure = true;
+	warnedPricingSyncIssues.add(kind);
 	console.warn(
 		`[pi-llmgates-provider] ${message} Cost estimates fall back to cached or static rates; set LLMGATES_DEBUG=1 for details.`,
 	);
@@ -127,7 +139,7 @@ export function clearPricingCacheMemory(): void {
 export function resetPricingSyncChainForTests(): void {
 	pricingSyncChain = Promise.resolve();
 	activePricingSyncs.clear();
-	warnedPricingSyncFailure = false;
+	warnedPricingSyncIssues.clear();
 }
 
 export function mergePricingRates(file: ModelPricingFile): Record<string, ModelCostRates> {
@@ -515,6 +527,7 @@ export async function syncModelPricingCache(
 		// a degradation the user needs to hear about.
 		if (!isAbortLikeError(error)) {
 			logPricingSyncIssue(
+				"fetch",
 				`LiteLLM pricing sync failed; using cached rates. ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
@@ -559,6 +572,7 @@ export async function syncModelPricingCache(
 		writeModelPricingFile(agentDir, next);
 	} catch (error) {
 		logPricingSyncIssue(
+			"write",
 			`Failed to write ${MODEL_PRICING_CACHE_FILE}; using in-memory rates only. ${
 				error instanceof Error ? error.message : String(error)
 			}`,

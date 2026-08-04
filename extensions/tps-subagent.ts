@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, type Stats } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import {
 	emptyModelUsageEntry,
@@ -621,14 +621,24 @@ export const MAX_SUBAGENT_META_BYTES = 2 * 1024 * 1024;
  */
 export const MAX_SUBAGENT_META_READS_PER_SCAN = 256;
 
-export function readPiSubagentsMetaUsage(metaPath: string): SubagentUsageRecord | null {
+/**
+ * @param knownSizeBytes Size from a stat the caller already did. The scan loop
+ * stats every candidate for its mtime anyway, and this runs synchronously on the
+ * TUI thread — stat'ing the same file twice per scan is the cost this whole cap
+ * exists to avoid.
+ */
+export function readPiSubagentsMetaUsage(
+	metaPath: string,
+	knownSizeBytes?: number,
+): SubagentUsageRecord | null {
 	const sourceKey = metaFileSourceKey(metaPath.split(/[/\\]/).pop() ?? "");
 	if (!sourceKey) {
 		return null;
 	}
 	let parsed: unknown;
 	try {
-		if (statSync(metaPath).size > MAX_SUBAGENT_META_BYTES) {
+		const sizeBytes = knownSizeBytes ?? statSync(metaPath).size;
+		if (sizeBytes > MAX_SUBAGENT_META_BYTES) {
 			return null;
 		}
 		parsed = JSON.parse(readFileSync(metaPath, "utf8"));
@@ -669,14 +679,28 @@ export function isSubagentPathWithinWorkspace(candidate: string, cwd: string): b
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/**
+ * @param onTruncated Fired when the per-scan read cap cut this scan short AND the
+ * scan still ingested at least one record, so the caller can queue another scan
+ * instead of waiting for the next external event (which may never come — a backlog
+ * present at session start produces no watcher or tool events of its own).
+ *
+ * Forward progress is the termination condition, and it is why this is gated on
+ * `out.length > 0`: every fired callback means at least one more source key joins
+ * `ingested`, a monotonically growing set bounded by the file count. A scan that
+ * fills the cap without ingesting anything — e.g. every candidate is over
+ * `MAX_SUBAGENT_META_BYTES` — would otherwise reschedule itself forever.
+ */
 export function collectPiSubagentsMetaUsage(
 	artifactsDir: string,
 	sessionStartedAtMs: number,
 	ingested: ReadonlySet<string>,
 	allowedRunIds?: ReadonlySet<string>,
+	onTruncated?: () => void,
 ): SubagentUsageRecord[] {
 	const out: SubagentUsageRecord[] = [];
 	let reads = 0;
+	let truncated = false;
 	for (const metaPath of listPiSubagentMetaFiles(artifactsDir)) {
 		const sourceKey = metaFileSourceKey(metaPath.split(/[/\\]/).pop() ?? "");
 		const source = sourceKey ? parseMetaSourceKeyGranularity(sourceKey) : null;
@@ -687,26 +711,30 @@ export function collectPiSubagentsMetaUsage(
 		) {
 			continue;
 		}
-		let mtimeMs = 0;
+		let stats: Stats;
 		try {
-			mtimeMs = statSync(metaPath).mtimeMs;
+			stats = statSync(metaPath);
 		} catch {
 			continue;
 		}
-		if (mtimeMs < sessionStartedAtMs) {
+		if (stats.mtimeMs < sessionStartedAtMs) {
 			continue;
 		}
 		if (reads >= MAX_SUBAGENT_META_READS_PER_SCAN) {
 			// Not a silent truncation: everything skipped here is still un-ingested,
-			// so the next scan (debounced tool_execution_end / watcher event / settle)
-			// starts from it. Bail out rather than block the turn on the whole backlog.
+			// so the next scan starts from it. Bail out rather than block the turn on
+			// the whole backlog, and tell the caller to queue that next scan.
+			truncated = true;
 			break;
 		}
 		reads += 1;
-		const record = readPiSubagentsMetaUsage(metaPath);
+		const record = readPiSubagentsMetaUsage(metaPath, stats.size);
 		if (record) {
 			out.push(record);
 		}
+	}
+	if (truncated && out.length > 0) {
+		onTruncated?.();
 	}
 	return out;
 }

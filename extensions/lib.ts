@@ -3,7 +3,6 @@
  */
 
 import { dirname, join } from "node:path";
-import * as lockfile from "proper-lockfile";
 import {
 	CONFIG_FILE_NAME,
 	loadValidatedConfigFile,
@@ -13,9 +12,9 @@ import {
 	atomicWriteJson,
 	createFileIfMissingMode,
 	ensureDirMode,
-	LOCK_OPTIONS,
 	SECRET_DIR_MODE,
 	SECRET_FILE_MODE,
+	withFileLock,
 } from "./util.js";
 
 export const CREDENTIAL_TTL_MS = 100 * 365 * 24 * 60 * 60 * 1000;
@@ -25,13 +24,10 @@ export type { LLMGatesConfigFile };
 async function withConfigLock<T>(agentDir: string, fn: (configPath: string) => Promise<T> | T): Promise<T> {
 	const configPath = join(agentDir, CONFIG_FILE_NAME);
 	ensureDirMode(dirname(configPath), SECRET_DIR_MODE);
-	const release = await lockfile.lock(configPath, LOCK_OPTIONS);
-	try {
+	return withFileLock(configPath, () => {
 		createFileIfMissingMode(configPath, "{}\n", SECRET_FILE_MODE);
-		return await fn(configPath);
-	} finally {
-		await release();
-	}
+		return fn(configPath);
+	});
 }
 
 function mergeConfigPreservingSecrets(

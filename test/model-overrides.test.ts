@@ -17,14 +17,30 @@ import { tmpdir } from "node:os";
  * so a batch write can assert it acquires exactly one lock (spec rev 6 §7.1).
  * ESM exports cannot be spied on directly, hence the module mock.
  */
-const lockState = vi.hoisted(() => ({ calls: [] as string[], recording: false }));
+const lockState = vi.hoisted(() => ({
+	calls: [] as string[],
+	recording: false,
+	compromiseNextRelease: false,
+}));
 vi.mock("proper-lockfile", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("proper-lockfile")>();
 	return {
 		...actual,
-		lock: (path: string, opts?: unknown) => {
+		lock: async (path: string, opts?: unknown) => {
 			if (lockState.recording) lockState.calls.push(path);
-			return actual.lock(path, opts as never);
+			const release = await actual.lock(path, opts as never);
+			if (!lockState.compromiseNextRelease) return release;
+			lockState.compromiseNextRelease = false;
+			// After onCompromised fires, proper-lockfile has already set
+			// `lock.released`, so release() rejects with ERELEASED. Unlock for real
+			// first so the rest of the suite is not left holding a stale .lock dir —
+			// only the caller-visible rejection is being simulated here.
+			return async () => {
+				await release();
+				throw Object.assign(new Error("Lock is already released"), {
+					code: "ERELEASED",
+				});
+			};
 		},
 	};
 });
@@ -40,6 +56,7 @@ import {
 	writeModelOverrides,
 	type ModelOverrideFile,
 } from "../extensions/model-overrides.js";
+import { releaseLockQuietly, withFileLock } from "../extensions/util.js";
 
 describe("normalizeEndpointOverride", () => {
 	it("accepts aliases and canonical values", () => {
@@ -631,5 +648,128 @@ describe("writeModelOverrides (batch)", () => {
 	it("an empty batch is a no-op that does not create the file", async () => {
 		await expect(writeModelOverrides(dir, { kind: "core" }, [])).resolves.toBeUndefined();
 		expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+	});
+});
+
+describe("compromised lock release", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "llmgates-compromised-"));
+		mkdirSync(join(dir, "llmgates"), { recursive: true });
+	});
+	afterEach(() => {
+		lockState.compromiseNextRelease = false;
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("keeps a landed batch write successful when release() rejects with ERELEASED", async () => {
+		lockState.compromiseNextRelease = true;
+
+		await expect(
+			writeModelOverrides(dir, { kind: "core" }, [
+				{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+			]),
+		).resolves.toBeUndefined();
+
+		// The atomic rename already landed. Surfacing ERELEASED from the `finally`
+		// would report it as failed, and callers compensate a failed write by undoing
+		// what they wrote — compat's addInstance deletes the credential it just saved.
+		expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe("messages");
+	});
+
+	it("keeps deleteInstanceOverrides successful when release() rejects with ERELEASED", async () => {
+		await writeModelOverrides(dir, { kind: "2api", instanceId: "cpa" }, [
+			{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+		]);
+		lockState.compromiseNextRelease = true;
+
+		await expect(deleteInstanceOverrides(dir, "cpa")).resolves.toBeUndefined();
+		expect(readModelOverridesFile(dir, { kind: "2api", instanceId: "cpa" })).toBeNull();
+	});
+
+	it("still surfaces a release failure that is not ERELEASED", async () => {
+		await expect(
+			releaseLockQuietly(async () => {
+				throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+			}),
+		).rejects.toThrow(/permission denied/i);
+	});
+});
+
+describe("in-process lock queueing", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "llmgates-lockqueue-"));
+		mkdirSync(join(dir, "llmgates"), { recursive: true });
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("never lets two same-process holders overlap on one path", async () => {
+		// Concurrent lockfile.lock() on one path answers ELOCKED and burns the retry
+		// budget; the queue means only one caller ever reaches it.
+		let inFlight = 0;
+		let peak = 0;
+		const path = join(dir, "llmgates/queued.json");
+		const body = async () => {
+			inFlight += 1;
+			peak = Math.max(peak, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			inFlight -= 1;
+		};
+
+		await Promise.all([
+			withFileLock(path, body),
+			withFileLock(path, body),
+			withFileLock(path, body),
+		]);
+
+		expect(peak).toBe(1);
+	});
+
+	it("lets a rejected holder go without stalling the queue behind it", async () => {
+		const path = join(dir, "llmgates/queued-reject.json");
+		const failed = withFileLock(path, async () => {
+			throw new Error("body exploded");
+		});
+
+		await expect(failed).rejects.toThrow(/body exploded/i);
+		await expect(withFileLock(path, async () => "next")).resolves.toBe("next");
+	});
+
+	it("keeps different paths independent", async () => {
+		let concurrent = 0;
+		let peak = 0;
+		const body = async () => {
+			concurrent += 1;
+			peak = Math.max(peak, concurrent);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			concurrent -= 1;
+		};
+
+		await Promise.all([
+			withFileLock(join(dir, "llmgates/a.json"), body),
+			withFileLock(join(dir, "llmgates/b.json"), body),
+		]);
+
+		expect(peak).toBe(2);
+	});
+
+	it("serializes concurrent batch writes to one scope without losing either", async () => {
+		// /llmgates-reload now refreshes targets concurrently and /llmgates remove does
+		// not exclude /endpoint-setting, so same-path writes really do overlap.
+		await Promise.all([
+			writeModelOverrides(dir, { kind: "core" }, [
+				{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
+			]),
+			writeModelOverrides(dir, { kind: "core" }, [
+				{ targetId: "m2", write: { kind: "set", endpoint: "responses" } },
+			]),
+		]);
+
+		const file = readModelOverridesFile(dir);
+		expect(file?.models?.m1?.endpoint).toBe("messages");
+		expect(file?.models?.m2?.endpoint).toBe("responses");
 	});
 });

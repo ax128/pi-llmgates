@@ -243,6 +243,10 @@ export default function (pi: ExtensionAPI) {
 					startedAtMs,
 					subagentIngestState.keys,
 					sessionRunIds,
+					// A backlog already on disk at session start emits no watcher or
+					// tool events of its own, so without this the overflow past the
+					// per-scan cap would never be ingested.
+					scheduleSubagentMetaScan,
 				),
 				targetStats,
 			);

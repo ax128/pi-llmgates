@@ -1,5 +1,6 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import {
+	MODEL_PRICING_CACHE_FILE,
 	MODEL_PRICING_CACHE_TTL_MS,
 	applyPricingCacheToResolver,
 	catalogRefsFromGatewayModels,
@@ -18,9 +19,9 @@ import {
 	resetPricingSyncChainForTests,
 	syncModelPricingCache,
 } from "../extensions/model-pricing-cache.js";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { resolvePricingAutoUpdate } from "../extensions/connection.js";
 import { resolveModelCostRates } from "../extensions/model-pricing.js";
 
@@ -713,4 +714,72 @@ describe("pricing sync cancellation", () => {
 		const result = await pending;
 		expect(result?.rates?.["openai/gpt-5.6-sol"]).toBeUndefined();
 	});
+});
+
+describe("pricing sync warnings", () => {
+	beforeEach(() => {
+		resetPricingSyncChainForTests();
+		clearPricingCacheMemory();
+		delete process.env.LLMGATES_DEBUG;
+	});
+
+	const models = [{ id: "gpt-5.6-sol", provider_id: "openai" }];
+
+	it("warns once per process for a failing fetch", async () => {
+		const agentDir = tempAgentDir("llmgates-pricing-warn-fetch-");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const failing = {
+				pricingAutoUpdate: true,
+				loadLiteLLMTable: async () => {
+					throw new Error("offline");
+				},
+			};
+			await refreshModelPricing(agentDir, models, failing);
+			await refreshModelPricing(agentDir, models, failing);
+
+			expect(warn).toHaveBeenCalledOnce();
+			expect(String(warn.mock.calls[0]?.[0])).toMatch(/pricing sync failed/i);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	// Directory permissions do not constrain root, so the write cannot be made to fail.
+	it.skipIf(process.getuid?.() === 0)(
+		"does not let a fetch failure silence a later write failure",
+		async () => {
+			// One shared flag would mean a transient offline start permanently hides a
+			// persistent unwritable pricing.json — different problems, different fixes.
+			const agentDir = tempAgentDir("llmgates-pricing-warn-write-");
+			const cacheDir = dirname(join(agentDir, MODEL_PRICING_CACHE_FILE));
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				await refreshModelPricing(agentDir, models, {
+					pricingAutoUpdate: true,
+					loadLiteLLMTable: async () => {
+						throw new Error("offline");
+					},
+				});
+				expect(warn).toHaveBeenCalledOnce();
+
+				// r-x: the missing cache file still reads as ENOENT (→ null, no throw),
+				// but atomicWriteJson cannot create its temp file. That isolates the
+				// write leg, which is the whole point of the second flag.
+				mkdirSync(cacheDir, { recursive: true });
+				chmodSync(cacheDir, 0o500);
+
+				await refreshModelPricing(agentDir, models, {
+					pricingAutoUpdate: true,
+					loadLiteLLMTable: async () => MOCK_LITELLM,
+				});
+
+				expect(warn).toHaveBeenCalledTimes(2);
+				expect(String(warn.mock.calls[1]?.[0])).toMatch(/failed to write/i);
+			} finally {
+				chmodSync(cacheDir, 0o700);
+				warn.mockRestore();
+			}
+		},
+	);
 });

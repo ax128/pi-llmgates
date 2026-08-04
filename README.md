@@ -196,7 +196,7 @@ pi
 
 ### 已知限制
 
-- 正常启动时 `/login` 列表**不再**显示 `llmgates-2api`；仅当 core 不可用（`llmgates/config.json` identity 解析失败，或 legacy `api_key` / 损坏的 auth.json 触发 fail-closed）时，才显示恢复入口「LLMGates 兼容网关恢复」，用于在无 core 的情况下添加兼容实例。
+- 正常启动时 `/login` 列表**不再**显示 `llmgates-2api`；仅当 core 不可用（`llmgates/config.json` identity 解析失败、legacy `api_key` / 损坏的 auth.json 触发 fail-closed，或 core provider 注册本身抛错）时，才显示恢复入口「LLMGates 兼容网关恢复」，用于在无 core 的情况下添加兼容实例。注册抛错这一种不会中断扩展加载：2API 网关与已注册命令保持可用，控制台会打印失败原因，修好后 `/reload` 即可。
 - Pi 的 `/logout` 不提供扩展清理回调；本扩展通过监听 `auth.json` 变更清理已登出的 2API registry、provider 和 endpoint override。若监听未运行，`/reload` 或重启会补做清理；不会保留原实例作为可恢复配置。
 - 若 `auth.json` 整体缺失或暂时损坏（如手动重置凭证、同步工具改写中途），本轮清理会被跳过以防止误删全部实例；文件恢复可读后清理自动继续。
 - `/llmgates remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能短暂列出已删除的 ID，执行 `/reload` 后会完成清理。

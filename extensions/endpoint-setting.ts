@@ -246,7 +246,14 @@ export async function runEndpointSettingCommand(
 		}
 
 		if (!(await waitForIdleBounded(() => ctx.waitForIdle(), ctx.idleWaitTimeoutMs))) {
-			ctx.notify(IDLE_WAIT_TIMEOUT_MESSAGE, "error");
+			// The idle wait sits after step 1 and step 2 by design (§7.1) — being idle
+			// matters at write time, not at pick time — so a timeout here throws away
+			// interaction the user already finished. Say so, and say how much, rather
+			// than leaving them to rediscover it by reopening the picker.
+			ctx.notify(
+				`${IDLE_WAIT_TIMEOUT_MESSAGE} Your selection of ${selection.length} model(s) was not saved.`,
+				"error",
+			);
 			return;
 		}
 
@@ -494,6 +501,48 @@ export function mergeOutcomes(
 	return [`Endpoint change was partial:\n${perProvider}${notes}`, "warning"];
 }
 
+export interface InteractionCancellation {
+	/** Resolve the interaction that is currently open, if any, to `undefined`. */
+	cancel(): void;
+	/** Run one interaction under cancellation. Nesting is not supported (none exists). */
+	wrap<T>(open: () => Promise<T | undefined>): Promise<T | undefined>;
+}
+
+/**
+ * Every `/endpoint-setting` interaction surface — `ui.custom`, `ui.select`, and the
+ * rpc `ui.editor` — resolves only when the user acts. If pi tears one down without
+ * resolving it (a session ending while it is open), the await never settles, and
+ * because the command holds the shared in-flight guard across all of them that
+ * would disable `/endpoint`, `/endpoint-setting`, and `/llmgates-reload` for the
+ * rest of the PROCESS, not just the session — the guard is module state and pi
+ * restarts sessions in place.
+ *
+ * Resolving to `undefined` is exactly the "user cancelled" path each step already
+ * handles, so the command unwinds through its normal cancel branch and releases the
+ * guard in its `finally`.
+ */
+export function createInteractionCancellation(): InteractionCancellation {
+	let cancelOpen: (() => void) | undefined;
+	return {
+		cancel() {
+			cancelOpen?.();
+		},
+		async wrap<T>(open: () => Promise<T | undefined>): Promise<T | undefined> {
+			// Captured so a settled wrap() cannot clear a newer one's canceller.
+			let cancelThis!: () => void;
+			const cancelled = new Promise<undefined>((resolve) => {
+				cancelThis = () => resolve(undefined);
+			});
+			cancelOpen = cancelThis;
+			try {
+				return await Promise.race([open(), cancelled]);
+			} finally {
+				if (cancelOpen === cancelThis) cancelOpen = undefined;
+			}
+		},
+	};
+}
+
 /**
  * Registration handle. The command is registered at most once, but the core
  * provider may only become available later in startup (see index.ts): the handle
@@ -515,32 +564,10 @@ export function registerEndpointSettingCommand(
 	let core = options.core;
 	const compat = options.compat;
 
-	/**
-	 * `ui.custom` resolves only when the component calls `done`. If pi tears the
-	 * component down without doing so — a session ending while the picker is open —
-	 * the await would never settle, and because the command holds the shared
-	 * in-flight guard across step 1 that would disable `/endpoint`,
-	 * `/endpoint-setting`, and `/llmgates-reload` for the rest of the process.
-	 * Resolving to `undefined` here is exactly the "user cancelled" path, so the
-	 * command unwinds through its normal cancel branch and releases the guard.
-	 */
-	let cancelOpenPicker: (() => void) | undefined;
+	const interaction = createInteractionCancellation();
 	pi.on("session_shutdown", () => {
-		cancelOpenPicker?.();
+		interaction.cancel();
 	});
-
-	async function withPickerCancellation(
-		open: () => Promise<SelectorSelection[] | undefined>,
-	): Promise<SelectorSelection[] | undefined> {
-		const cancelled = new Promise<undefined>((resolve) => {
-			cancelOpenPicker = () => resolve(undefined);
-		});
-		try {
-			return await Promise.race([open(), cancelled]);
-		} finally {
-			cancelOpenPicker = undefined;
-		}
-	}
 
 	function targets(): EndpointSettingTarget[] {
 		const list: EndpointSettingTarget[] = [];
@@ -586,7 +613,7 @@ export function registerEndpointSettingCommand(
 						ctx.modelRegistry.find(providerId, modelId),
 					setModel: (model) => pi.setModel(model),
 					pick: (snapshot) =>
-						withPickerCancellation(() =>
+						interaction.wrap(() =>
 							ctx.ui.custom<SelectorSelection[] | undefined>(
 								(_tui, theme, keybindings, done) =>
 									createEndpointPicker({
@@ -597,8 +624,10 @@ export function registerEndpointSettingCommand(
 									}),
 							),
 						),
-					editor: (title, prefill) => ctx.ui.editor(title, prefill),
-					select: (title, selectOptions) => ctx.ui.select(title, selectOptions),
+					editor: (title, prefill) =>
+						interaction.wrap(() => ctx.ui.editor(title, prefill)),
+					select: (title, selectOptions) =>
+						interaction.wrap(() => ctx.ui.select(title, selectOptions)),
 					notify: (message, level) => ctx.ui.notify(message, level),
 				},
 			);

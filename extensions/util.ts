@@ -115,6 +115,77 @@ export const LOCK_OPTIONS: lockfile.LockOptions = {
 	},
 };
 
+/**
+ * Release a proper-lockfile lock without letting a compromised lock turn into a
+ * caller-visible failure.
+ *
+ * `setLockAsCompromised` flips `lock.released` BEFORE it calls `onCompromised`, so
+ * every later `release()` rejects with `ERELEASED`. Since release runs in a
+ * `finally`, that rejection would either report an already-landed atomic write as
+ * failed, or replace the real error from the critical section. Both are worse than
+ * the compromise itself: `addInstance`'s caller compensates a "failed" write by
+ * deleting the credential it just wrote, which would leave a registry entry with no
+ * auth entry. `onCompromised` has already warned, so swallow exactly this code and
+ * let every other release failure through.
+ */
+export async function releaseLockQuietly(release: () => Promise<void>): Promise<void> {
+	try {
+		await release();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ERELEASED") {
+			return;
+		}
+		throw error;
+	}
+}
+
+/** Tail of the in-process queue per lock path; deleted once nothing is waiting. */
+const fileLockQueues = new Map<string, Promise<void>>();
+
+/**
+ * Take the cross-process lock on `path`, run `fn`, release.
+ *
+ * Same-process callers for the same path are queued in memory FIRST, so only one
+ * of them ever reaches `lockfile.lock()`. Without that queue they race for the
+ * same `.lock` directory and lose: proper-lockfile answers ELOCKED and burns the
+ * retry budget (`LOCK_OPTIONS.retries`, up to ~10s a step), and an exhausted budget
+ * turns a routine write into a reported failure. That is not hypothetical —
+ * `/llmgates-reload` refreshes its targets concurrently and every 2API instance
+ * persists into the same `2api.json`, and `/llmgates remove` and
+ * `/endpoint-setting` are guarded by different mechanisms so they do not exclude
+ * each other either. Queueing also restores the invariant the endpoint-interactive
+ * spec (§8.7) states outright: this extension never holds two file locks at once.
+ *
+ * `fn` MUST NOT call back into `withFileLock` for the same path — a self-wait
+ * cannot be broken. Every current body is a self-contained read/modify/atomic
+ * write, and §8.7 forbids nesting.
+ */
+export async function withFileLock<T>(path: string, fn: () => Promise<T> | T): Promise<T> {
+	// Read the tail and publish the new one with no await in between, so concurrent
+	// callers cannot both chain onto the same predecessor.
+	const previous = fileLockQueues.get(path);
+	const run = (async () => {
+		// The stored tail never rejects, so a failed predecessor cannot skip our turn.
+		if (previous) await previous;
+		const release = await lockfile.lock(path, LOCK_OPTIONS);
+		try {
+			return await fn();
+		} finally {
+			await releaseLockQuietly(release);
+		}
+	})();
+	const tail = run.then(
+		() => undefined,
+		() => undefined,
+	);
+	fileLockQueues.set(path, tail);
+	try {
+		return await run;
+	} finally {
+		if (fileLockQueues.get(path) === tail) fileLockQueues.delete(path);
+	}
+}
+
 const ENV_TRUE = new Set(["1", "true", "yes", "on"]);
 const ENV_FALSE = new Set(["0", "false", "no", "off"]);
 

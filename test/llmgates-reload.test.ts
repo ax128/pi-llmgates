@@ -252,30 +252,33 @@ describe("catalog reload concurrency", () => {
 		releaseEndpointInFlight();
 		const { ctx, notifications } = makeCtx();
 
+		// Concurrency is asserted structurally rather than by wall clock: every target
+		// must be in flight before ANY of them is allowed to finish. Serial execution
+		// deadlocks this barrier instead of merely running slower, so the test cannot
+		// pass by accident on a loaded machine or fail by accident on a slow one.
+		const TARGETS = ["core", "gw-1", "gw-2", "gw-3"];
 		let inFlightNow = 0;
 		let peakConcurrency = 0;
-		const slowRefresh = (label: string): CatalogReloadTarget => ({
+		let releaseAll!: () => void;
+		const allStarted = new Promise<void>((resolve) => {
+			releaseAll = resolve;
+		});
+		const gatedRefresh = (label: string): CatalogReloadTarget => ({
 			providerId: label,
 			label,
 			refreshEndpointForeground: async () => {
 				inFlightNow += 1;
 				peakConcurrency = Math.max(peakConcurrency, inFlightNow);
-				await new Promise((resolve) => setTimeout(resolve, 25));
+				if (inFlightNow === TARGETS.length) releaseAll();
+				await allStarted;
 				inFlightNow -= 1;
 				return okRefresh([]);
 			},
 		});
 
-		const started = Date.now();
-		await runCatalogReloadCommand(
-			() => [slowRefresh("core"), slowRefresh("gw-1"), slowRefresh("gw-2"), slowRefresh("gw-3")],
-			ctx,
-		);
-		const elapsed = Date.now() - started;
+		await runCatalogReloadCommand(() => TARGETS.map(gatedRefresh), ctx);
 
-		// Serially this is 4 × 25ms; concurrently it is one 25ms wait plus overhead.
-		expect(peakConcurrency).toBe(4);
-		expect(elapsed).toBeLessThan(90);
+		expect(peakConcurrency).toBe(TARGETS.length);
 		expect(notifications.at(-1)?.level).toBe("info");
 	});
 

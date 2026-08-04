@@ -33,6 +33,17 @@ cleanup — these locks sit next to pi-owned `auth.json`). `LOCK_OPTIONS` now se
 either already landed through an atomic rename or failed loudly at its own call
 site.
 
+Not throwing is only half of it. `setLockAsCompromised` flips `lock.released`
+*before* it calls `onCompromised`, so every later `release()` rejects with
+`ERELEASED` — and release runs in a `finally`, where that rejection would either
+report an already-landed write as failed or replace the critical section's real
+error. That matters beyond the message: `compat/index.ts` compensates a failed
+`addInstance` by deleting the credential it just wrote, so a compromise there
+would leave a registry entry with no auth entry. Every lock release therefore goes
+through `releaseLockQuietly()` (`util.ts`), which swallows exactly `ERELEASED` and
+rethrows everything else — `compat/storage.ts`, `lib.ts`, and both sites in
+`model-overrides.ts`.
+
 ### 2. Pricing sync is cancellable
 
 `refreshModelPricing` / `syncModelPricingCache` / `fetchLiteLLMPriceTable` take an
@@ -64,6 +75,12 @@ idle exists to prevent.
 The guard order is deliberately unchanged: a second command is still refused
 immediately rather than queueing behind the first.
 
+The wait's position is also unchanged: it sits after `/endpoint-setting`'s two
+interactive steps, because being idle matters at write time, not at pick time. A
+timeout there therefore discards a selection the user already finished, so that
+one message says how many models were dropped instead of leaving them to
+rediscover it by reopening the picker.
+
 ### 4. Concurrent catalog reload
 
 `/llmgates-reload` refreshes its targets with `Promise.all` instead of a `for`
@@ -72,13 +89,29 @@ the command's worst case is now the slowest single target rather than the sum. T
 shared guard still excludes other endpoint commands for the duration, and outcome
 order still follows display order.
 
-### 5. Picker cancellation
+Concurrent targets do reach shared files: every 2API instance persists into the
+same `2api.json`. The endpoint-interactive spec (§8.7) states this extension never
+holds two file locks at once, and concurrency would have broken that — same-process
+callers racing one `.lock` get ELOCKED and burn `LOCK_OPTIONS.retries`, which on
+exhaustion turns a routine write into a reported failure. So `withFileLock()`
+(`util.ts`) now queues same-path callers in memory *before* anyone calls
+`lockfile.lock`, making the invariant true by construction rather than by
+convention. All four lock sites use it — `compat/storage.ts`, `lib.ts`, and both in
+`model-overrides.ts`, the last of which had the same exposure already, since
+`/llmgates remove` and `/endpoint-setting` are guarded by different mechanisms and
+do not exclude each other. Bodies must not re-enter the same path; every current
+one is a self-contained read/modify/atomic write, as §8.7 requires.
+
+### 5. Interaction cancellation
 
 `ui.custom` resolves only when the component calls `done`. If pi tears the
 component down without doing so, the await never settles and the guard is
-stranded. The registration wires a `session_shutdown` handler that resolves the
-open picker to `undefined` — the existing "user cancelled" path — so the command
-unwinds normally and releases the guard.
+stranded — for the rest of the *process*, since the guard is module state and pi
+restarts sessions in place. `ui.select` and the rpc `ui.editor` have the same
+property, so all three go through one `createInteractionCancellation()` helper
+rather than only the picker. The registration wires a `session_shutdown` handler
+that resolves whichever interaction is open to `undefined` — the existing "user
+cancelled" path — so the command unwinds normally and releases the guard.
 
 ### 6. Bounded subagent meta scanning
 
@@ -91,6 +124,15 @@ grows for the lifetime of a workspace. Two bounds:
 - `MAX_SUBAGENT_META_READS_PER_SCAN` (256) — applied **after** the
   ingested/run-id/mtime filters, so every scan makes forward progress and skipped
   files are picked up by the next scan rather than dropped.
+
+"The next scan" cannot be left to chance: a backlog already on disk at session
+start emits no watcher or `tool_execution_end` event of its own, so the overflow
+would never be ingested. A truncated scan therefore calls back into
+`scheduleSubagentMetaScan`. That callback fires only when the scan *also* ingested
+at least one record — forward progress is what guarantees termination, since each
+firing adds a key to a monotonically growing `ingested` set bounded by the file
+count. A scan that fills the cap having ingested nothing (every candidate over the
+size cap) does not reschedule, and waits for a real event instead of spinning.
 
 ### 7. Handles never hold the process open
 
@@ -117,24 +159,39 @@ same failure mode README documents for `pi install git:`.
 
 ### Adjacent
 
-`LITELLM_PRICING_MAX_BYTES` 8 MiB → 16 MiB: the upstream table grows with every
-model added and exceeding the cap is a silent loss of retail pricing.
+`LITELLM_PRICING_MAX_BYTES` stays at 8 MiB. Exceeding the cap is a silent loss of
+retail pricing, so the table needs headroom — but the body is buffered whole,
+decoded, and `JSON.parse`d, so the cap is also the ceiling on a transient
+allocation spike inside a TUI process. Measured 2026-08-04 the table is 1,670,646
+bytes (~1.6 MiB), i.e. 8 MiB is already ~5x headroom; it would have to quintuple
+before anyone loses pricing. Re-measure before raising it.
 
-A pricing sync failure warns once per process when `LLMGATES_DEBUG` is off.
-A permanently failing sync silently degraded every `/calls` estimate with no
-visible sign; once-per-process keeps a routine offline start from becoming
-per-refresh noise.
+A pricing sync failure warns once per process **per failure class** when
+`LLMGATES_DEBUG` is off. A permanently failing sync silently degraded every
+`/calls` estimate with no visible sign; once-per-process keeps a routine offline
+start from becoming per-refresh noise. Per-class because an unreachable table and
+an unwritable `pricing.json` are different problems with different fixes — one
+flag would let a transient first one permanently silence a persistent second.
 
 ## Acceptance
 
-- `LOCK_OPTIONS.onCompromised` is a function and does not throw.
+- `LOCK_OPTIONS.onCompromised` is a function and does not throw, and a release that
+  rejects with `ERELEASED` still leaves the guarded write reported as successful;
+  any other release failure still propagates.
 - An already-aborted pricing signal issues no fetch; aborting mid-fetch resolves
   (never hangs, never rejects) and keeps cached rates.
 - A `waitForIdle` that never settles: all three commands notify "still busy",
   write nothing, and release the guard.
+- An interaction (`ui.custom`, `ui.select`, or the rpc `ui.editor`) torn down
+  without resolving: the command unwinds through its cancel branch, writes
+  nothing, and releases the guard.
 - `/llmgates-reload` reaches peak concurrency equal to its target count, and
   outcome order still follows display order.
+- Same-process callers never hold one file lock concurrently: two overlapping
+  writes to one scope both land, and a rejected holder does not stall the queue.
 - Meta files over the size cap are skipped; a backlog over the per-scan cap is
-  fully ingested across successive scans with nothing dropped.
+  fully ingested across successive scans with nothing dropped, and a truncated
+  scan queues the next one itself — unless it ingested nothing, which must not
+  reschedule.
 - Core registration failure does not throw out of the extension factory, still
   registers the recovery provider, and warns.

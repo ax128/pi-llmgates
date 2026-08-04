@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	SUBAGENT_TOOL_NAMES,
 	asyncRunSourceKey,
@@ -20,6 +20,7 @@ import {
 	normalizeRunIdForSourceKey,
 	normalizeUsageFromPartial,
 	parsePiSubagentsMetaJson,
+	readPiSubagentsMetaUsage,
 	recordSubagentUsageRecords,
 	selectFreshSubagentRecords,
 	sessionFileSourceKey,
@@ -1123,5 +1124,123 @@ describe("tps subagent meta scan bounds", () => {
 
 		expect(ingested.size).toBe(total);
 		expect(collectPiSubagentsMetaUsage(artifactsDir, sessionStartedAtMs, ingested)).toHaveLength(0);
+	});
+});
+
+describe("tps subagent meta scan rescheduling", () => {
+	function seedMetaFiles(count: number, startAt = 0): string {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-resched-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		for (let i = startAt; i < startAt + count; i++) {
+			writeFileSync(
+				join(artifactsDir, `aaaa${i.toString(16).padStart(4, "0")}_worker_0_meta.json`),
+				JSON.stringify({
+					agent: "worker",
+					model: "llmgates/gpt-5.6-sol",
+					usage: { turns: 1, input: i + 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
+				}),
+			);
+		}
+		return artifactsDir;
+	}
+
+	it("asks for another scan when the read cap cut the scan short", () => {
+		// A backlog already on disk at session start emits no watcher or tool events
+		// of its own, so without this signal the overflow is never ingested.
+		const artifactsDir = seedMetaFiles(MAX_SUBAGENT_META_READS_PER_SCAN + 5);
+		const onTruncated = vi.fn();
+
+		const first = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			Date.now() - 60_000,
+			new Set<string>(),
+			undefined,
+			onTruncated,
+		);
+
+		expect(first).toHaveLength(MAX_SUBAGENT_META_READS_PER_SCAN);
+		expect(onTruncated).toHaveBeenCalledOnce();
+	});
+
+	it("does not ask again once the backlog fits in one scan", () => {
+		const artifactsDir = seedMetaFiles(3);
+		const onTruncated = vi.fn();
+
+		collectPiSubagentsMetaUsage(artifactsDir, Date.now() - 60_000, new Set<string>(), undefined, onTruncated);
+
+		expect(onTruncated).not.toHaveBeenCalled();
+	});
+
+	it("does not ask again when a full scan ingested nothing", () => {
+		// Every candidate is over the size cap: rescheduling here would spin forever,
+		// because no scan can ever grow the ingested set. Forward progress is the
+		// termination condition.
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-stuck-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const total = MAX_SUBAGENT_META_READS_PER_SCAN + 5;
+		for (let i = 0; i < total; i++) {
+			writeFileSync(
+				join(artifactsDir, `aaaa${i.toString(16).padStart(4, "0")}_worker_0_meta.json`),
+				JSON.stringify({
+					agent: "worker",
+					model: "llmgates/gpt-5.6-sol",
+					usage: { turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
+					_pad: "x".repeat(MAX_SUBAGENT_META_BYTES + 1),
+				}),
+			);
+		}
+		const onTruncated = vi.fn();
+
+		const records = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			Date.now() - 60_000,
+			new Set<string>(),
+			undefined,
+			onTruncated,
+		);
+
+		expect(records).toHaveLength(0);
+		expect(onTruncated).not.toHaveBeenCalled();
+	});
+});
+
+describe("readPiSubagentsMetaUsage size cap", () => {
+	function writeOne(artifactsDir: string, runId: string, padBytes: number): string {
+		const path = join(artifactsDir, `${runId}_worker_0_meta.json`);
+		writeFileSync(
+			path,
+			JSON.stringify({
+				agent: "worker",
+				model: "llmgates/gpt-5.6-sol",
+				usage: { turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
+				...(padBytes > 0 ? { _pad: "x".repeat(padBytes) } : {}),
+			}),
+		);
+		return path;
+	}
+
+	it("uses a size the caller already stat'd instead of stat'ing again", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-size-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const path = writeOne(artifactsDir, "aaaa1111", 0);
+
+		// The scan loop stats every candidate for its mtime anyway; the size rides
+		// along, so the read must trust it rather than pay a second syscall.
+		expect(readPiSubagentsMetaUsage(path, MAX_SUBAGENT_META_BYTES + 1)).toBeNull();
+		expect(readPiSubagentsMetaUsage(path, 10)?.sourceKey).toBe("meta:aaaa1111:worker:0");
+	});
+
+	it("still stats for itself when no size is supplied", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-size-own-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+
+		expect(readPiSubagentsMetaUsage(writeOne(artifactsDir, "aaaa2222", 0))?.sourceKey)
+			.toBe("meta:aaaa2222:worker:0");
+		expect(readPiSubagentsMetaUsage(writeOne(artifactsDir, "aaaa3333", MAX_SUBAGENT_META_BYTES + 1)))
+			.toBeNull();
 	});
 });

@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { dirname, join } from "node:path";
 import type { OAuthCredential } from "@earendil-works/pi-ai";
-import * as lockfile from "proper-lockfile";
 import {
 	COMPAT_CONFIG_FILE,
 	COMPAT_SCHEMES,
@@ -17,9 +16,9 @@ import {
 	createFileIfMissingMode,
 	ensureDirMode,
 	isPlainObject,
-	LOCK_OPTIONS,
 	SECRET_DIR_MODE,
 	SECRET_FILE_MODE,
+	withFileLock,
 } from "../util.js";
 
 // Re-exported so instance lifecycle callers have one storage entrypoint. The path
@@ -52,13 +51,10 @@ async function withLock<T>(
 	fn: () => Promise<T> | T,
 ): Promise<T> {
 	ensureDirMode(dirname(path), SECRET_DIR_MODE);
-	const release = await lockfile.lock(path, LOCK_OPTIONS);
-	try {
+	return withFileLock(path, () => {
 		createFileIfMissingMode(path, initialContent, SECRET_FILE_MODE);
-		return await fn();
-	} finally {
-		await release();
-	}
+		return fn();
+	});
 }
 
 function canonicalizeInstance(instance: CompatInstance): CompatInstance {

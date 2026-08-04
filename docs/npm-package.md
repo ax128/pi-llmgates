@@ -167,7 +167,7 @@ npm pack --dry-run
 | `./scripts/pre-publish-gate.sh` / `npm run gate` | **发布前门禁（§2）**：`check` + `npm pack` + tarball 断言 + `.gate/pre-publish-build.json` |
 | `./scripts/gate-record-pass.sh` / `npm run gate:record` | §4 通过后写入 `.gate/pre-publish-pass.json` |
 | `node ./scripts/npm-publish-auth-link.mjs` | 取出浏览器认证链接（给用户） |
-| `./scripts/publish-npm.sh` | 校验 gate + check + publish（可跟 `--otp=...`；bump 后 re-pack） |
+| `./scripts/publish-npm.sh` | 校验 gate + check + **build** + publish（可跟 `--otp=...`；bump 后 re-pack）。build 是显式的：`npm publish --ignore-scripts` 不跑 `prepack`，脚本会断言 `dist/index.js` 与 `dist/tps.js` 存在，否则拒绝发布 |
 
 ```bash
 ./scripts/publish-npm.sh --otp="<用户验证码>"
