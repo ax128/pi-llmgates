@@ -48,6 +48,7 @@ vi.mock("proper-lockfile", async (importOriginal) => {
 import { createLLMGatesProvider } from "../extensions/provider.js";
 import {
 	createModelOverrideLookup,
+	createPerModelOverrideIds,
 	deleteInstanceOverrides,
 	normalizeEndpointOverride,
 	readModelOverridesFile,
@@ -110,6 +111,42 @@ describe("createModelOverrideLookup", () => {
 	it("empty file clears lookup", () => {
 		const lookup = createModelOverrideLookup(null);
 		expect(lookup("x")).toBeUndefined();
+	});
+});
+
+describe("createPerModelOverrideIds", () => {
+	it("excludes defaults.endpoint, which the lookup would apply to every model", () => {
+		const file = {
+			defaults: { endpoint: "responses" },
+			models: { "claude-sonnet-4-6": { endpoint: "messages" } },
+		};
+		const ids = createPerModelOverrideIds(file);
+		expect([...ids]).toEqual(["claude-sonnet-4-6"]);
+		expect(ids.has("gpt-5.6-sol")).toBe(false);
+		// The lookup answers a different question and still resolves the default.
+		expect(createModelOverrideLookup(file)("gpt-5.6-sol")).toBe("responses");
+	});
+
+	it("drops entries the lookup would not honour (unusable values, blank ids)", () => {
+		const ids = createPerModelOverrideIds({
+			models: {
+				m1: { endpoint: "also-bogus" },
+				"  ": { endpoint: "messages" },
+				m2: { endpoint: "chat" },
+			},
+		});
+		expect([...ids]).toEqual(["m2"]);
+	});
+
+	it("trims ids the same way the lookup does", () => {
+		const ids = createPerModelOverrideIds({
+			models: { "  padded  ": { endpoint: "messages" } },
+		});
+		expect(ids.has("padded")).toBe(true);
+	});
+
+	it("empty file yields no ids", () => {
+		expect([...createPerModelOverrideIds(null)]).toEqual([]);
 	});
 });
 

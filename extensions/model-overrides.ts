@@ -102,17 +102,42 @@ export function normalizeEndpointOverride(value: unknown): string | undefined {
 	return undefined;
 }
 
-export function createModelOverrideLookup(
-	file: ModelOverrideFile | null,
-): ModelOverrideLookup {
-	const defaultEndpoint = normalizeEndpointOverride(file?.defaults?.endpoint);
+/** Per-model entries that actually resolve to an endpoint; `defaults` is not consulted. */
+function perModelEndpoints(file: ModelOverrideFile | null): Map<string, string> {
 	const endpoints = new Map<string, string>();
 	for (const [id, entry] of Object.entries(file?.models ?? {})) {
 		const endpoint = normalizeEndpointOverride(entry?.endpoint);
 		const key = id.trim();
 		if (endpoint && key) endpoints.set(key, endpoint);
 	}
+	return endpoints;
+}
+
+export function createModelOverrideLookup(
+	file: ModelOverrideFile | null,
+): ModelOverrideLookup {
+	const defaultEndpoint = normalizeEndpointOverride(file?.defaults?.endpoint);
+	const endpoints = perModelEndpoints(file);
 	return (modelId) => endpoints.get(modelId.trim()) ?? defaultEndpoint;
+}
+
+/**
+ * Ids that carry their OWN endpoint entry — deliberately NOT the same question as
+ * `createModelOverrideLookup`, which answers "what endpoint does this model end up
+ * with" and therefore falls back to `defaults.endpoint` for every model in the
+ * catalog. Deriving "has an override" from that lookup marks EVERY row as soon as
+ * `defaults.endpoint` exists, contradicting what the `/endpoint-setting` `*` marker
+ * tells the user (this model is individually configured, and `auto` has something
+ * to clear on it).
+ *
+ * Shares `perModelEndpoints` with the lookup so a marked id is exactly an id whose
+ * entry the lookup would honour (same trimming, same alias normalization, same
+ * silent drop of unusable values).
+ */
+export function createPerModelOverrideIds(
+	file: ModelOverrideFile | null,
+): ReadonlySet<string> {
+	return new Set(perModelEndpoints(file).keys());
 }
 
 export function readModelOverridesFile(

@@ -44,7 +44,7 @@ import {
 	type SelectorSnapshot,
 } from "./endpoint-selector.js";
 import {
-	createModelOverrideLookup,
+	createPerModelOverrideIds,
 	readModelOverridesFile,
 	writeModelOverrides,
 	type ModelOverrideWrite,
@@ -185,28 +185,28 @@ export async function runEndpointSettingCommand(
 			return;
 		}
 
-		const overrides = new Map<
-			string,
-			(modelId: string) => string | undefined
-		>();
+		// Per-model entries only: a `defaults.endpoint` applies to the whole catalog and
+		// marking every row with it would tell the user nothing about which models are
+		// individually configured (and imply `auto` has something to clear on each).
+		const overrides = new Map<string, ReadonlySet<string>>();
 		for (const target of targets) {
-			let lookup: (modelId: string) => string | undefined = () => undefined;
+			let ids: ReadonlySet<string> = new Set<string>();
 			try {
 				const file = readModelOverridesFile(runtime.agentDir, target.scope);
 				// `undefined` means malformed: treat it as "no known overrides" for
 				// display only. The `*` marker is cosmetic and must not block the flow.
-				if (file !== undefined) lookup = createModelOverrideLookup(file);
+				if (file !== undefined) ids = createPerModelOverrideIds(file);
 			} catch {
 				// Unreadable override file: fall back to showing no markers.
 			}
-			overrides.set(target.providerId, lookup);
+			overrides.set(target.providerId, ids);
 		}
 
 		const snapshot = buildSelectorSnapshot(
 			targets,
 			ctx.getAllModels(),
 			(target, modelId) =>
-				overrides.get(target.providerId)?.(modelId) !== undefined,
+				overrides.get(target.providerId)?.has(modelId.trim()) === true,
 		);
 		if (snapshot.groups.length === 0) {
 			ctx.notify(

@@ -343,7 +343,7 @@ pi
 - 两步交互：第一步勾选要修改的模型（支持跨 provider 多选），第二步选择 `chat` / `messages` / `responses` / `auto`。
 - 第一步在 TUI 下是交互式勾选列表：`↑↓` 移动、空格勾选、`Tab` 整组勾选、`Ctrl+A` 全选、`Ctrl+D` 清空（这三个操作在过滤时只作用于当前过滤结果）、直接输入即过滤（`Backspace` / `Ctrl+U` 清除搜索）、`Enter` 确认、`Esc` 取消。RPC 模式没有组件通道，回退为文本清单：把要修改的模型前的 `[ ]` 改成 `[x]`。
 - 覆盖 **core + 全部 2API 实例**的模型；两步中任意一步取消或零选中都不会写入任何文件。
-- 列表按 provider 分组，显示「model-id · 名字 · 当前出口」，`*` 表示已有 override。第三方扩展与 pi 内置 provider 的模型没有 `api` 写入通道，因此只作汇总披露、不可勾选；在文本清单中手工写入这些 id 会被明确拒绝并说明原因。
+- 列表按 provider 分组，显示「model-id · 名字 · 当前出口」，`*` 表示该模型在 override 文件里有**单独的 per-model 条目**；只由 `defaults.endpoint` 决定出口的模型不打标（这类模型选 `auto` 也没有 per-model 条目可清）。第三方扩展与 pi 内置 provider 的模型没有 `api` 写入通道，因此只作汇总披露、不可勾选；在文本清单中手工写入这些 id 会被明确拒绝并说明原因。
 - 需要交互式界面：TUI 与 RPC 模式可用；`print` / `json` 模式会提示改用 `/endpoint`，不会报错也不会写文件。
 - 每个 provider 只加一次锁、写一次文件、刷新一次，分组串行执行。
 - 三态结果：全部成功为 info；**文件已写入但未激活（离线 / provider 未就绪 / 被更新的刷新取代 / 部分模型未生效 / 当前模型重绑失败）一律为 warning**，不会误报成功；只有**所有** provider 都写入失败才是 error。跨 provider 部分成功时逐 provider 说明状态，已成功的部分保持生效，不回滚。
