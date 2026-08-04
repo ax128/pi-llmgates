@@ -19,7 +19,8 @@
 
 | 文档 | 状态 |
 | --- | --- |
-| [endpoint-command-design.md](./superpowers/specs/2026-07-28-endpoint-command-design.md) | **当前有效** — `/endpoint` 单模型出口切换/清除、持久化与 runtime 生效规格 |
+| [blocking-and-liveness-hardening-design.md](./superpowers/specs/2026-08-04-blocking-and-liveness-hardening-design.md) | **当前有效** — 锁 compromise、定价同步取消、有界 idle 等待、并发 reload、扫描上限与句柄 unref |
+| [endpoint-command-design.md](./superpowers/specs/2026-07-28-endpoint-command-design.md) | **当前有效** — `/endpoint` 单模型出口切换/清除、持久化与 runtime 生效规格（idle 等待改为有界，见上一行） |
 | [endpoint-interactive-design.md](./superpowers/specs/2026-07-29-endpoint-interactive-design.md) | **当前有效** — `/endpoint-setting` 跨 provider 批量出口 + 2API 多出口（扩展 endpoint-command，非取代） |
 | [runtime-lifecycle-usage-races-design.md](./superpowers/specs/2026-07-27-runtime-lifecycle-usage-races-design.md) | **当前有效** — 运行时生命周期与用量竞态修复 |
 | [subagent-usage-tps-design.md](./superpowers/specs/2026-07-24-subagent-usage-tps-design.md) | **当前有效** — TPS 子代理全路径用量采集（含 async 旁路） |

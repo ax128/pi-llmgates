@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
+	acquireEndpointInFlight,
 	createModelSelectReconciler,
 	parseEndpointArgs,
+	releaseEndpointInFlight,
 	runEndpointCommand,
+	waitForIdleBounded,
 	type EndpointCommandContext,
 	type EndpointModelLookup,
 	type EndpointRuntime,
@@ -644,6 +647,59 @@ describe("model_select reconciliation", () => {
 			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/reconciliation failed/i));
 		} finally {
 			warn.mockRestore();
+		}
+	});
+});
+
+describe("waitForIdleBounded", () => {
+	it("resolves true when the agent settles", async () => {
+		await expect(waitForIdleBounded(async () => {}, 50)).resolves.toBe(true);
+	});
+
+	it("resolves false instead of hanging when the agent never settles", async () => {
+		await expect(waitForIdleBounded(() => new Promise<void>(() => {}), 20)).resolves.toBe(false);
+	});
+
+	it("propagates a waitForIdle rejection to the caller's catch-all", async () => {
+		await expect(
+			waitForIdleBounded(async () => {
+				throw new Error("idle wait exploded");
+			}, 50),
+		).rejects.toThrow(/idle wait exploded/i);
+	});
+});
+
+describe("/endpoint idle-wait guard release", () => {
+	it("aborts without writing and frees the shared guard when idle never arrives", async () => {
+		const { agentDir, cleanup } = withDir();
+		try {
+			const { ctx, notifications } = makeCtx({ registry: [model("m1", "openai-completions")] });
+			// An agent turn that never settles used to hold the guard for the rest of
+			// the session, permanently disabling all three endpoint commands.
+			ctx.waitForIdle = vi.fn(() => new Promise<void>(() => {}));
+			ctx.idleWaitTimeoutMs = 20;
+			const writeOverride = vi.fn(async () => {});
+
+			await runEndpointCommand(
+				"messages m1",
+				{
+					coreProviderId: CORE,
+					refreshEndpointForeground: async () => ({ status: "ok", models: [] }),
+					writeOverride,
+				},
+				ctx,
+			);
+
+			expect(writeOverride).not.toHaveBeenCalled();
+			expect(notifications).toEqual([
+				{ message: expect.stringMatching(/still busy/i), level: "error" },
+			]);
+			// Guard released → the next command can run.
+			expect(acquireEndpointInFlight()).toBe(true);
+			releaseEndpointInFlight();
+			expect(existsSync(join(agentDir, "llmgates/models.json"))).toBe(false);
+		} finally {
+			cleanup();
 		}
 	});
 });

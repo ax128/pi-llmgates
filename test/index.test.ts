@@ -207,15 +207,25 @@ describe("extension entrypoints", () => {
 				}
 			},
 		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			expect(() => extensionFactory(pi)).toThrow(/core registration failed/i);
+			// The factory runs inside pi's extension loader: rethrowing here can abort
+			// the load and take the 2API providers and every registered command with
+			// it. Degrade to "core unavailable, recovery login present" and warn.
+			expect(() => extensionFactory(pi)).not.toThrow();
 			expect(
 				providers.some((p) => (p as { id?: string })?.id === "llmgates"),
 			).toBe(false);
 			expect(
 				providers.some((p) => (p as { id?: string })?.id === "llmgates-2api"),
 			).toBe(true);
+			expect(
+				warn.mock.calls.some(([message]) =>
+					/core registration failed/i.test(String(message)),
+				),
+			).toBe(true);
 		} finally {
+			warn.mockRestore();
 			cleanup();
 		}
 	});

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	buildSelectorSnapshot,
+	createInteractionCancellation,
 	runEndpointSettingCommand,
 	type EndpointSettingContext,
 	type EndpointSettingRuntime,
@@ -31,6 +32,7 @@ import {
 } from "../extensions/model-overrides.js";
 import {
 	parseSelectorList,
+	SELECTOR_ENDPOINT_OPTIONS,
 	type SelectorSelection,
 } from "../extensions/endpoint-selector.js";
 import type { EndpointRefreshResult } from "../extensions/provider.js";
@@ -38,6 +40,10 @@ import { runCatalogReloadCommand } from "../extensions/llmgates-reload.js";
 
 const CORE = "llmgates";
 const TWO_API = "cpa";
+/** Step-2 label for `messages`, straight from SELECTOR_ENDPOINT_OPTIONS. */
+const MESSAGES_CHOICE = SELECTOR_ENDPOINT_OPTIONS.find(
+	(option) => option.choice === "messages",
+)!.label;
 
 afterEach(() => {
 	releaseEndpointInFlight();
@@ -1040,6 +1046,114 @@ describe("endpoint in-flight guard", () => {
 
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
+			expect(acquireEndpointInFlight()).toBe(true);
+		} finally {
+			releaseEndpointInFlight();
+			cleanup();
+		}
+	});
+});
+
+describe("/endpoint-setting bounded idle wait", () => {
+	it("aborts without writing and frees the shared guard when idle never arrives", async () => {
+		const { dir, cleanup } = tempDir();
+		try {
+			const h = harness({
+				agentDir: dir,
+				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				registry: [model("m1", "openai-completions")],
+				editor: "[x] m1",
+				select: MESSAGES_CHOICE,
+			});
+			// An agent turn that never settles used to hold the guard for the rest of
+			// the process, permanently disabling all three endpoint commands.
+			h.ctx.waitForIdle = vi.fn(() => new Promise<void>(() => {}));
+			h.ctx.idleWaitTimeoutMs = 20;
+
+			await runEndpointSettingCommand(h.runtime, h.ctx);
+
+			expect(h.writeCalls).toHaveLength(0);
+			expect(h.refreshCalls).toHaveLength(0);
+			expect(h.notifications.at(-1)).toEqual({
+				message: expect.stringMatching(/still busy/i),
+				level: "error",
+			});
+			expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+			// Guard released → the next command can run.
+			expect(acquireEndpointInFlight()).toBe(true);
+		} finally {
+			releaseEndpointInFlight();
+			cleanup();
+		}
+	});
+});
+
+describe("createInteractionCancellation", () => {
+	it("resolves an interaction pi tore down without resolving it", async () => {
+		const interaction = createInteractionCancellation();
+		const pending = interaction.wrap(() => new Promise<string | undefined>(() => {}));
+		interaction.cancel();
+		await expect(pending).resolves.toBeUndefined();
+	});
+
+	it("passes a normal result through untouched", async () => {
+		const interaction = createInteractionCancellation();
+		await expect(interaction.wrap(async () => "picked")).resolves.toBe("picked");
+	});
+
+	it("is inert once the interaction has settled", async () => {
+		const interaction = createInteractionCancellation();
+		await interaction.wrap(async () => "picked");
+		// No open interaction: cancel() must not throw or leak into the next wrap().
+		expect(() => interaction.cancel()).not.toThrow();
+		await expect(interaction.wrap(async () => "again")).resolves.toBe("again");
+	});
+
+	it("propagates a rejection from the interaction itself", async () => {
+		const interaction = createInteractionCancellation();
+		await expect(
+			interaction.wrap(async () => {
+				throw new Error("ui.custom exploded");
+			}),
+		).rejects.toThrow(/ui\.custom exploded/i);
+	});
+});
+
+describe("/endpoint-setting interaction teardown", () => {
+	it.each([
+		["step 1 picker", "pick"],
+		["the endpoint select", "select"],
+	] as const)("unwinds and frees the guard when %s is cancelled", async (_label, step) => {
+		const { dir, cleanup } = tempDir();
+		try {
+			const interaction = createInteractionCancellation();
+			const h = harness({
+				agentDir: dir,
+				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				registry: [model("m1", "openai-completions")],
+				editor: "[x] m1",
+				select: MESSAGES_CHOICE,
+			});
+
+			// Wire the surface under test the way registerEndpointSettingCommand does,
+			// then have it hang the way a torn-down pi component does.
+			const hang = () => new Promise<never>(() => {});
+			if (step === "pick") {
+				h.ctx.pick = () => interaction.wrap(hang);
+			} else {
+				h.ctx.select = () => interaction.wrap(hang);
+			}
+
+			const run = runEndpointSettingCommand(h.runtime, h.ctx);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			interaction.cancel(); // what the session_shutdown handler does
+			await run;
+
+			expect(h.writeCalls).toHaveLength(0);
+			expect(h.notifications.at(-1)).toEqual({
+				message: expect.stringMatching(/cancelled/i),
+				level: "info",
+			});
 			expect(acquireEndpointInFlight()).toBe(true);
 		} finally {
 			releaseEndpointInFlight();

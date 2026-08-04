@@ -85,10 +85,27 @@ export const MAX_LOGIN_ATTEMPTS = 5;
 export const PENDING_TTL_MS = 5 * 60 * 1000;
 export const CATALOG_BACKGROUND_REFRESH_MS = 5 * 60 * 1000;
 
-/** Cross-process file lock options for credentials/config written under the agent dir. */
+/**
+ * Cross-process file lock options for credentials/config written under the agent dir.
+ *
+ * `onCompromised` MUST be set. proper-lockfile's default is `(err) => { throw err }`,
+ * and it is invoked from the lock's mtime-refresh timer callback — a path with no
+ * try/catch above it, so the throw surfaces as an uncaughtException and takes the
+ * whole pi process down. A lock goes "compromised" for reasons that are routine
+ * rather than exceptional: the refresh missing the `stale` window after a laptop
+ * suspend, a blocked event loop, a slow network filesystem, or the .lock directory
+ * being removed by an external cleanup (these locks sit next to pi-owned auth.json).
+ * Losing a lock is recoverable — the write it guarded either already landed through
+ * an atomic rename or failed loudly at its own call site — so warn and carry on.
+ */
 export const LOCK_OPTIONS: lockfile.LockOptions = {
 	realpath: false,
 	stale: 30_000,
+	onCompromised: (error: Error) => {
+		console.warn(
+			`[pi-llmgates-provider] file lock was compromised and has been released: ${error.message}`,
+		);
+	},
 	retries: {
 		retries: 10,
 		factor: 2,
@@ -97,6 +114,77 @@ export const LOCK_OPTIONS: lockfile.LockOptions = {
 		randomize: true,
 	},
 };
+
+/**
+ * Release a proper-lockfile lock without letting a compromised lock turn into a
+ * caller-visible failure.
+ *
+ * `setLockAsCompromised` flips `lock.released` BEFORE it calls `onCompromised`, so
+ * every later `release()` rejects with `ERELEASED`. Since release runs in a
+ * `finally`, that rejection would either report an already-landed atomic write as
+ * failed, or replace the real error from the critical section. Both are worse than
+ * the compromise itself: `addInstance`'s caller compensates a "failed" write by
+ * deleting the credential it just wrote, which would leave a registry entry with no
+ * auth entry. `onCompromised` has already warned, so swallow exactly this code and
+ * let every other release failure through.
+ */
+export async function releaseLockQuietly(release: () => Promise<void>): Promise<void> {
+	try {
+		await release();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ERELEASED") {
+			return;
+		}
+		throw error;
+	}
+}
+
+/** Tail of the in-process queue per lock path; deleted once nothing is waiting. */
+const fileLockQueues = new Map<string, Promise<void>>();
+
+/**
+ * Take the cross-process lock on `path`, run `fn`, release.
+ *
+ * Same-process callers for the same path are queued in memory FIRST, so only one
+ * of them ever reaches `lockfile.lock()`. Without that queue they race for the
+ * same `.lock` directory and lose: proper-lockfile answers ELOCKED and burns the
+ * retry budget (`LOCK_OPTIONS.retries`, up to ~10s a step), and an exhausted budget
+ * turns a routine write into a reported failure. That is not hypothetical —
+ * `/llmgates-reload` refreshes its targets concurrently and every 2API instance
+ * persists into the same `2api.json`, and `/llmgates remove` and
+ * `/endpoint-setting` are guarded by different mechanisms so they do not exclude
+ * each other either. Queueing also restores the invariant the endpoint-interactive
+ * spec (§8.7) states outright: this extension never holds two file locks at once.
+ *
+ * `fn` MUST NOT call back into `withFileLock` for the same path — a self-wait
+ * cannot be broken. Every current body is a self-contained read/modify/atomic
+ * write, and §8.7 forbids nesting.
+ */
+export async function withFileLock<T>(path: string, fn: () => Promise<T> | T): Promise<T> {
+	// Read the tail and publish the new one with no await in between, so concurrent
+	// callers cannot both chain onto the same predecessor.
+	const previous = fileLockQueues.get(path);
+	const run = (async () => {
+		// The stored tail never rejects, so a failed predecessor cannot skip our turn.
+		if (previous) await previous;
+		const release = await lockfile.lock(path, LOCK_OPTIONS);
+		try {
+			return await fn();
+		} finally {
+			await releaseLockQuietly(release);
+		}
+	})();
+	const tail = run.then(
+		() => undefined,
+		() => undefined,
+	);
+	fileLockQueues.set(path, tail);
+	try {
+		return await run;
+	} finally {
+		if (fileLockQueues.get(path) === tail) fileLockQueues.delete(path);
+	}
+}
 
 const ENV_TRUE = new Set(["1", "true", "yes", "on"]);
 const ENV_FALSE = new Set(["0", "false", "no", "off"]);
@@ -135,6 +223,11 @@ export function keysEqual(a: string, b: string): boolean {
 
 export function abortError(message = "The operation was aborted."): DOMException {
 	return new DOMException(message, "AbortError");
+}
+
+/** AbortSignal.timeout() rejects with TimeoutError; caller aborts reject with AbortError. */
+export function isAbortLikeError(error: unknown): boolean {
+	return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
 export function ensureDirMode(dir: string, mode: number): void {

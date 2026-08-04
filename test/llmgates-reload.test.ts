@@ -246,3 +246,84 @@ describe("catalog reload in-flight guard", () => {
 		expect(notifications[0]?.message).toMatch(/already running/i);
 	});
 });
+
+describe("catalog reload concurrency", () => {
+	it("refreshes every target concurrently instead of serially", async () => {
+		releaseEndpointInFlight();
+		const { ctx, notifications } = makeCtx();
+
+		// Concurrency is asserted structurally rather than by wall clock: every target
+		// must be in flight before ANY of them is allowed to finish. Serial execution
+		// deadlocks this barrier instead of merely running slower, so the test cannot
+		// pass by accident on a loaded machine or fail by accident on a slow one.
+		const TARGETS = ["core", "gw-1", "gw-2", "gw-3"];
+		let inFlightNow = 0;
+		let peakConcurrency = 0;
+		let releaseAll!: () => void;
+		const allStarted = new Promise<void>((resolve) => {
+			releaseAll = resolve;
+		});
+		const gatedRefresh = (label: string): CatalogReloadTarget => ({
+			providerId: label,
+			label,
+			refreshEndpointForeground: async () => {
+				inFlightNow += 1;
+				peakConcurrency = Math.max(peakConcurrency, inFlightNow);
+				if (inFlightNow === TARGETS.length) releaseAll();
+				await allStarted;
+				inFlightNow -= 1;
+				return okRefresh([]);
+			},
+		});
+
+		await runCatalogReloadCommand(() => TARGETS.map(gatedRefresh), ctx);
+
+		expect(peakConcurrency).toBe(TARGETS.length);
+		expect(notifications.at(-1)?.level).toBe("info");
+	});
+
+	it("keeps per-target outcomes in display order when one fails", async () => {
+		releaseEndpointInFlight();
+		const { ctx, notifications } = makeCtx();
+
+		await runCatalogReloadCommand(
+			() => [
+				{ providerId: CORE, label: "core", refreshEndpointForeground: async () => okRefresh([model("m1")]) },
+				{
+					providerId: TWO_API,
+					label: "gateway/cpa",
+					refreshEndpointForeground: async () => {
+						throw new Error("gateway unreachable");
+					},
+				},
+			],
+			ctx,
+		);
+
+		const message = notifications.at(-1)?.message ?? "";
+		expect(notifications.at(-1)?.level).toBe("warning");
+		expect(message.indexOf("core")).toBeLessThan(message.indexOf("gateway/cpa"));
+		expect(message).toMatch(/gateway unreachable/i);
+	});
+
+	it("aborts and frees the guard when the agent never settles", async () => {
+		releaseEndpointInFlight();
+		const { ctx, notifications } = makeCtx();
+		ctx.waitForIdle = vi.fn(() => new Promise<void>(() => {}));
+		ctx.idleWaitTimeoutMs = 20;
+		const refresh = vi.fn(async () => okRefresh([]));
+
+		await runCatalogReloadCommand(
+			() => [{ providerId: CORE, label: "core", refreshEndpointForeground: refresh }],
+			ctx,
+		);
+
+		expect(refresh).not.toHaveBeenCalled();
+		expect(notifications[0]).toEqual({
+			message: expect.stringMatching(/still busy/i),
+			level: "error",
+		});
+		expect(acquireEndpointInFlight()).toBe(true);
+		releaseEndpointInFlight();
+	});
+});

@@ -8,7 +8,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	acquireEndpointInFlight,
+	IDLE_WAIT_TIMEOUT_MESSAGE,
 	releaseEndpointInFlight,
+	waitForIdleBounded,
 } from "./endpoint.js";
 import type { CompatGatewayRegistration } from "./compat/index.js";
 import type { EndpointRefreshResult, LLMGatesProvider } from "./provider.js";
@@ -32,6 +34,8 @@ export interface CatalogReloadOutcome {
 
 export interface CatalogReloadContext {
 	waitForIdle(): Promise<void>;
+	/** Overrides IDLE_WAIT_TIMEOUT_MS; the pi wiring leaves it unset. */
+	idleWaitTimeoutMs?: number;
 	getModel(): Model<Api> | undefined;
 	find(providerId: string, modelId: string): Model<Api> | undefined;
 	setModel(model: Model<Api>): Promise<boolean>;
@@ -128,36 +132,44 @@ export async function runCatalogReloadCommand(
 			return;
 		}
 
-		await ctx.waitForIdle();
+		if (!(await waitForIdleBounded(() => ctx.waitForIdle(), ctx.idleWaitTimeoutMs))) {
+			ctx.notify(IDLE_WAIT_TIMEOUT_MESSAGE, "error");
+			return;
+		}
 
-		const outcomes: CatalogReloadOutcome[] = [];
-		for (const target of list) {
-			try {
-				const refresh = await target.refreshEndpointForeground();
-				if (refresh.status === "ok") {
-					outcomes.push({
+		// Targets are independent providers, each with its own connection and its own
+		// 15s models-request timeout. Refreshing them sequentially made the command's
+		// worst case the SUM of those timeouts (a core plus four unreachable gateways
+		// froze it for ~75s); concurrently it is the slowest single one. The shared
+		// in-flight guard still keeps other endpoint commands out for the duration.
+		const outcomes: CatalogReloadOutcome[] = await Promise.all(
+			list.map(async (target): Promise<CatalogReloadOutcome> => {
+				try {
+					const refresh = await target.refreshEndpointForeground();
+					if (refresh.status === "ok") {
+						return {
+							providerId: target.providerId,
+							label: target.label,
+							status: "ok",
+							modelCount: refresh.models.length,
+						};
+					}
+					return {
 						providerId: target.providerId,
 						label: target.label,
-						status: "ok",
-						modelCount: refresh.models.length,
-					});
-					continue;
+						status: "partial",
+						detail: refreshFailureReason(refresh),
+					};
+				} catch (error) {
+					return {
+						providerId: target.providerId,
+						label: target.label,
+						status: "failed",
+						detail: errorSummary(error),
+					};
 				}
-				outcomes.push({
-					providerId: target.providerId,
-					label: target.label,
-					status: "partial",
-					detail: refreshFailureReason(refresh),
-				});
-			} catch (error) {
-				outcomes.push({
-					providerId: target.providerId,
-					label: target.label,
-					status: "failed",
-					detail: errorSummary(error),
-				});
-			}
-		}
+			}),
+		);
 
 		const current = ctx.getModel();
 		let rebindWarning: string | undefined;

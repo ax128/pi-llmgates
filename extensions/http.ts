@@ -3,7 +3,7 @@
  */
 
 import { assertUrlTransportAllowed } from "./connection.js";
-import { abortError } from "./util.js";
+import { abortError, isAbortLikeError } from "./util.js";
 
 export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 export const MODELS_REQUEST_TIMEOUT_MS = 15_000;
@@ -45,11 +45,6 @@ export class ResponseLimitError extends Error {
 
 export function isUnauthorizedStatus(error: unknown): boolean {
 	return error instanceof HttpStatusError && (error.status === 401 || error.status === 403);
-}
-
-/** AbortSignal.timeout() rejects with TimeoutError; caller aborts reject with AbortError. */
-function isAbortLike(error: unknown): boolean {
-	return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
 function originOf(url: string): string {
@@ -236,7 +231,7 @@ export async function requestLimitedJson(options: {
 		}
 	} catch (error) {
 		// Caller abort wins; otherwise an abort while the timeout is lit is a timeout.
-		if (isAbortLike(error) && timeoutSignal.aborted && !externalSignal?.aborted) {
+		if (isAbortLikeError(error) && timeoutSignal.aborted && !externalSignal?.aborted) {
 			throw new RequestTimeoutError(operation, timeoutMs);
 		}
 		throw error;

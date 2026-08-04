@@ -686,8 +686,16 @@ export function createCompatProvider(
 			id: ref.id,
 			...(ref.providerId ? { provider_id: ref.providerId } : {}),
 		}));
+		// Bind to the session controller so shutdown() — which awaits every tracked
+		// task — cancels the 30s LiteLLM fetch instead of blocking teardown on it.
+		// pricingSyncChain is module-global, so without this the wait was serialized
+		// across every registered instance.
 		void track(
-			refreshModelPricing(agentDir, gatewayModels, { fetchImpl, now })
+			refreshModelPricing(agentDir, gatewayModels, {
+				fetchImpl,
+				now,
+				signal: sessionController?.signal,
+			})
 				.then(() =>
 					withCommit(async () => {
 						if (!lifecycleMatches(fetchGeneration)) return;

@@ -196,7 +196,7 @@ pi
 
 ### 已知限制
 
-- 正常启动时 `/login` 列表**不再**显示 `llmgates-2api`；仅当 core 不可用（`llmgates/config.json` identity 解析失败，或 legacy `api_key` / 损坏的 auth.json 触发 fail-closed）时，才显示恢复入口「LLMGates 兼容网关恢复」，用于在无 core 的情况下添加兼容实例。
+- 正常启动时 `/login` 列表**不再**显示 `llmgates-2api`；仅当 core 不可用（`llmgates/config.json` identity 解析失败、legacy `api_key` / 损坏的 auth.json 触发 fail-closed，或 core provider 注册本身抛错）时，才显示恢复入口「LLMGates 兼容网关恢复」，用于在无 core 的情况下添加兼容实例。注册抛错这一种不会中断扩展加载：2API 网关与已注册命令保持可用，控制台会打印失败原因，修好后 `/reload` 即可。
 - Pi 的 `/logout` 不提供扩展清理回调；本扩展通过监听 `auth.json` 变更清理已登出的 2API registry、provider 和 endpoint override。若监听未运行，`/reload` 或重启会补做清理；不会保留原实例作为可恢复配置。
 - 若 `auth.json` 整体缺失或暂时损坏（如手动重置凭证、同步工具改写中途），本轮清理会被跳过以防止误删全部实例；文件恢复可读后清理自动继续。
 - `/llmgates remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能短暂列出已删除的 ID，执行 `/reload` 后会完成清理。
@@ -346,7 +346,7 @@ pi
 - 需要交互式界面：TUI 与 RPC 模式可用；`print` / `json` 模式会提示改用 `/endpoint`，不会报错也不会写文件。
 - 每个 provider 只加一次锁、写一次文件、刷新一次，分组串行执行。
 - 三态结果：全部成功为 info；**文件已写入但未激活（离线 / provider 未就绪 / 被更新的刷新取代 / 部分模型未生效 / 当前模型重绑失败）一律为 warning**，不会误报成功；只有**所有** provider 都写入失败才是 error。跨 provider 部分成功时逐 provider 说明状态，已成功的部分保持生效，不回滚。
-- 与 `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 共用同一把 in-flight 锁：任一命令执行期间，其余命令会被拒绝。
+- 与 `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 共用同一把 in-flight 锁：任一命令执行期间，其余命令会被拒绝。等待 agent 空闲最多 120s，超时则不写入任何文件并释放锁。
 - 2API 的上游是否支持 `messages` / `responses` 取决于你自己的中转部署，本扩展不探测、不拦截；选错了用 `/endpoint-setting` 选 `auto`，或对 core 模型用 `/endpoint chat <model-id>` 回退。
 
 #### 强制刷新 catalog：`/llmgates-reload`
@@ -357,9 +357,9 @@ pi
 
 - 强制刷新 **core + 全部 2API 实例**的模型 catalog，绕过 background freshness window；会联网拉取 `/v1/models` 并写入各 provider store（含 thinking 档位等 metadata）。
 - 不接受参数；与 `/reload` 不同——`/reload` 只重载扩展代码，不刷新 catalog。
-- 每个 provider 串行执行一次 `refreshEndpointForeground()`；执行前会 `waitForIdle()`。
+- 各 provider **并发**执行 `refreshEndpointForeground()`（每个自带 15s models 超时），命令耗时取决于最慢的那个，而不是所有超时之和；执行前会等待 agent 空闲。
 - 三态结果：全部刷新成功为 **info**；至少一个 provider 成功、其余 offline / 未就绪 / 被取代 / 抛错为 **warning**（文案含 *partial*）；**零** provider 刷新成功且并非全部 hard-fail 时为 **warning**（*did not update any provider*，不含 *partial*）；全部 provider hard-fail 为 **error**。
-- 与 `/endpoint`、`/endpoint-setting` 共用 in-flight 锁；任一命令执行期间会被拒绝。
+- 与 `/endpoint`、`/endpoint-setting` 共用 in-flight 锁；任一命令执行期间会被拒绝。等待 agent 空闲最多 120s，超时则**不写入任何文件**、释放锁并提示稍后重试（避免一轮不结束的对话把这三个命令永久锁死）。
 - 若当前模型的 provider 刷新成功但该 model id 已不在新 catalog 中，追加 **warning** 提示用 `/model` 重选（不会 silent 保留 stale binding）。
 
 也可手工编辑 `~/.pi/agent/llmgates/models.json`：
@@ -458,6 +458,9 @@ Pi 内置 footer 在 OAuth 登录时可能仍显示 `(sub)`，该标记与 LLMGa
 | 看不到 image / video 模型 | 预期行为 — 生成类模型按 `capability_tags` 过滤 |
 | 列表出现意外生成模型 | 网关 catalog 须用 `image_generation`、`video_*` 等 tag 标记；未标记的模型会保留 |
 | 费用与账单不一致 | TUI 费用为上游零售价估算；账户消费看 `/balance` |
+| `LiteLLM pricing sync failed`（每进程只提示一次） | 定价表拉不到（离线 / `raw.githubusercontent.com` 被墙）；费用回退到已缓存或静态价，功能不受影响。`LLMGATES_DEBUG=1` 看详情，或手工编辑 `~/.pi/agent/llmgates/pricing.json` |
+| `The agent is still busy` | `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 等待当前对话轮结束超过 120s；未写入任何文件，等这一轮结束后重跑即可 |
+| `file lock was compromised` | 锁在续期窗口内没能刷新（机器休眠、事件循环长时间阻塞、网络盘）。已自动释放并继续，不影响写入；反复出现时检查 `~/.pi/agent/` 是否在网络文件系统上 |
 | 需要调试日志 | `LLMGATES_DEBUG=1` 后 `/reload` |
 
 ## 开发

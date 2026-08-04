@@ -324,8 +324,14 @@ export function createLLMGatesProvider(
 	}
 
 	function schedulePricingSync(gatewayModels: readonly GatewayModel[]): void {
+		// Bind to the session controller so shutdown() — which awaits every tracked
+		// task — cancels the 30s LiteLLM fetch instead of blocking teardown on it.
 		void track(
-			refreshModelPricing(agentDir, gatewayModels, { fetchImpl, now })
+			refreshModelPricing(agentDir, gatewayModels, {
+				fetchImpl,
+				now,
+				signal: sessionController?.signal,
+			})
 				.then(() => {
 					if (shutDown || models.length === 0) {
 						return;

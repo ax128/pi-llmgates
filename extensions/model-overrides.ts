@@ -21,16 +21,15 @@
 
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import * as lockfile from "proper-lockfile";
 import { normalizeInstanceId } from "./compat/types.js";
 import {
 	atomicWriteJson,
 	createFileIfMissingMode,
 	ensureDirMode,
 	isPlainObject,
-	LOCK_OPTIONS,
 	SECRET_DIR_MODE,
 	SECRET_FILE_MODE,
+	withFileLock,
 } from "./util.js";
 
 export const LLMGATES_MODELS_FILE = "llmgates/models.json";
@@ -215,8 +214,7 @@ export async function writeModelOverrides(
 	const path = overridePath(agentDir, scope);
 	const label = scopeLabel(scope);
 	ensureDirMode(dirname(path), SECRET_DIR_MODE);
-	const release = await lockfile.lock(path, LOCK_OPTIONS);
-	try {
+	await withFileLock(path, () => {
 		createFileIfMissingMode(path, "{}\n", SECRET_FILE_MODE);
 
 		let raw: string;
@@ -294,9 +292,7 @@ export async function writeModelOverrides(
 			fileMode: SECRET_FILE_MODE,
 			dirMode: SECRET_DIR_MODE,
 		});
-	} finally {
-		await release();
-	}
+	});
 }
 
 /** Single-target convenience wrapper — the shape `/endpoint` has always used. */
@@ -329,12 +325,9 @@ export async function deleteInstanceOverrides(
 	const path = overridePath(agentDir, { kind: "2api", instanceId });
 	if (!existsSync(path)) return;
 	ensureDirMode(dirname(path), SECRET_DIR_MODE);
-	const release = await lockfile.lock(path, LOCK_OPTIONS);
-	try {
+	await withFileLock(path, () => {
 		rmSync(path, { force: true });
-	} finally {
-		await release();
-	}
+	});
 }
 
 export function reloadModelOverridesFromDisk(
