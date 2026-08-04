@@ -680,16 +680,18 @@ export function isSubagentPathWithinWorkspace(candidate: string, cwd: string): b
 }
 
 /**
- * @param onTruncated Fired when the per-scan read cap cut this scan short AND the
- * scan still ingested at least one record, so the caller can queue another scan
- * instead of waiting for the next external event (which may never come — a backlog
- * present at session start produces no watcher or tool events of its own).
+ * @param onTruncated Fired when the per-scan read cap cut this scan short and the
+ * scan produced at least one record, so the caller can queue another scan instead
+ * of waiting for the next external event (which may never come — a backlog present
+ * at session start produces no watcher or tool events of its own).
  *
- * Forward progress is the termination condition, and it is why this is gated on
- * `out.length > 0`: every fired callback means at least one more source key joins
- * `ingested`, a monotonically growing set bounded by the file count. A scan that
- * fills the cap without ingesting anything — e.g. every candidate is over
- * `MAX_SUBAGENT_META_BYTES` — would otherwise reschedule itself forever.
+ * This signal alone does NOT establish forward progress, and a caller that treats
+ * it as permission to re-queue unconditionally will spin: a record read here is not
+ * a record ingested, and the consumer drops whole classes of them (see
+ * `selectFreshSubagentRecords`, which suppresses meta aggregate ↔ per-child pairs
+ * for the same run). The caller must gate re-queuing on `ingested` having actually
+ * grown — that set is monotonic and bounded by the file count, which is what makes
+ * the chain terminate.
  */
 export function collectPiSubagentsMetaUsage(
 	artifactsDir: string,
@@ -844,10 +846,18 @@ export function selectFreshSubagentRecords(
 		}
 		const meta = parseMetaSourceKeyGranularity(record.sourceKey);
 		if (meta) {
+			// A cross-granularity drop is permanent — the run is already counted at the
+			// other granularity — so record the key as seen rather than only skipping
+			// it. `state.keys` is what `collectPiSubagentsMetaUsage` filters candidates
+			// by, and a dropped key that never lands there means the file behind it is
+			// re-stat'd, re-read and re-parsed by every later scan, forever, competing
+			// for the per-scan read budget with files that still have something to add.
 			if (meta.kind === "aggregate" && state.perChildRunIds.has(meta.runId)) {
+				state.keys.add(record.sourceKey);
 				continue;
 			}
 			if (meta.kind === "child" && state.aggregateRunIds.has(meta.runId)) {
+				state.keys.add(record.sourceKey);
 				continue;
 			}
 		}

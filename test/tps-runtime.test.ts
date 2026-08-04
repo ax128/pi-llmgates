@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import registerTps from "../extensions/tps.js";
+import { MAX_SUBAGENT_META_READS_PER_SCAN } from "../extensions/tps-subagent.js";
 
 type Handler = (event: any, ctx: ExtensionContext) => void | Promise<void>;
 type Command = { handler: (args: string, ctx: ExtensionContext) => void | Promise<void> };
@@ -364,6 +365,101 @@ describe("tps runtime subagent ordering", () => {
 				expect(options.some((line) => line.includes("old-session-model"))).toBe(false);
 			}
 		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("stops re-queuing the truncated meta scan once it can no longer make progress", async () => {
+		// The re-queue exists because a backlog already on disk emits no watcher or
+		// tool event of its own. Its gate must be forward progress in `ingested`, not
+		// records read: the two differ because `selectFreshSubagentRecords` drops meta
+		// aggregate <-> per-child duplicates for a run, and `tool_execution_end`
+		// ingests the aggregate routinely. Gate on records read and a duplicate
+		// backlog larger than the per-scan cap re-reads the same files, ingests
+		// nothing, and re-queues itself every debounce forever — synchronous stat +
+		// read + parse on the TUI thread. `collectPiSubagentsMetaUsage` and
+		// `selectFreshSubagentRecords` are covered on their own; this is the wiring
+		// between them, which is where the loop would actually live.
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-scan-converge-"));
+		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const runtime = createRuntime(cwd);
+		// Mirrors SUBAGENT_META_SCAN_DEBOUNCE_MS in extensions/tps.ts (module-local).
+		// The fake clock is cumulative, so a longer debounce there costs extra loop
+		// iterations rather than breaking this test.
+		const scanDebounceMs = 250;
+		// The meta scan debounce is the only setTimeout in the tps path, so the faked
+		// timer count is exactly "a scan is queued". Fake nothing else: the extension
+		// stamps sessionStartedAtMs from Date.now() and compares it against real file
+		// mtimes, and the status refresh interval is unrelated to this loop.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		// Nothing here is timer-driven — the usage work is a promise chain — so drain
+		// it with real macrotasks rather than by advancing the fake clock.
+		const drainUsageTasks = async () => {
+			for (let i = 0; i < 5; i++) {
+				await new Promise((resolve) => setImmediate(resolve));
+			}
+		};
+		try {
+			await runtime.emit("session_start");
+
+			// One per-child meta file per run, more than one scan's read budget.
+			const total = MAX_SUBAGENT_META_READS_PER_SCAN + 20;
+			const runIds: string[] = [];
+			const artifactTime = (Date.now() + 1000) / 1000;
+			for (let i = 0; i < total; i++) {
+				const runId = `aaaa${i.toString(16).padStart(4, "0")}`;
+				runIds.push(runId);
+				const meta = join(artifactsDir, `${runId}_worker_0_meta.json`);
+				writeFileSync(
+					meta,
+					JSON.stringify({
+						agent: "worker",
+						model: "duplicate-child-model",
+						usage: { turns: 1, input: 5, output: 1, cost: 0 },
+					}),
+				);
+				utimesSync(meta, artifactTime, artifactTime);
+			}
+
+			// Every run is now counted at run-aggregate granularity, which makes every
+			// per-child file on disk a duplicate the consumer must drop. Sync results
+			// (no async marker) so this takes the details.totalChildUsage branch.
+			for (const runId of runIds) {
+				runtime.emitNow("tool_execution_end", {
+					toolName: "subagent",
+					toolCallId: `call-${runId}`,
+					result: { details: { runId, totalChildUsage: { turns: 1, input: 7, output: 2, cost: 0 } } },
+				});
+			}
+			await drainUsageTasks();
+
+			// Guard against a vacuous pass: a scan really is queued before we start.
+			expect(vi.getTimerCount()).toBe(1);
+
+			let scans = 0;
+			while (vi.getTimerCount() > 0 && scans < 8) {
+				scans += 1;
+				await vi.advanceTimersByTimeAsync(scanDebounceMs);
+				await drainUsageTasks();
+			}
+
+			// Converged. The first scan fills the cap and re-queues because the dropped
+			// keys grew `ingested`; the second takes the remainder and stops. Before the
+			// fix this stayed at 1 forever and `scans` ran into the bound.
+			expect(vi.getTimerCount()).toBe(0);
+			expect(scans).toBeLessThanOrEqual(4);
+
+			// ...and recording the dropped keys did not start counting the duplicates.
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This session");
+			await calls.handler("", runtime.ctx);
+			expect(runtime.selections).toHaveLength(1);
+			expect(runtime.selections[0].some((line) => line.includes(`${total} calls`))).toBe(true);
+			expect(runtime.selections[0].some((line) => line.includes("duplicate-child-model"))).toBe(false);
+		} finally {
+			vi.useRealTimers();
 			await runtime.emit("session_shutdown");
 			rmSync(cwd, { recursive: true, force: true });
 		}

@@ -128,11 +128,27 @@ grows for the lifetime of a workspace. Two bounds:
 "The next scan" cannot be left to chance: a backlog already on disk at session
 start emits no watcher or `tool_execution_end` event of its own, so the overflow
 would never be ingested. A truncated scan therefore calls back into
-`scheduleSubagentMetaScan`. That callback fires only when the scan *also* ingested
-at least one record — forward progress is what guarantees termination, since each
-firing adds a key to a monotonically growing `ingested` set bounded by the file
-count. A scan that fills the cap having ingested nothing (every candidate over the
-size cap) does not reschedule, and waits for a real event instead of spinning.
+`scheduleSubagentMetaScan`.
+
+Forward progress is what makes that chain terminate, and progress means the
+`ingested` set grew — not that records were read. The two are not the same: the
+consumer (`selectFreshSubagentRecords`) drops meta aggregate ↔ per-child pairs for
+the same run, and `tool_execution_end` routinely ingests the aggregate first (its
+`details.totalChildUsage` branch), so a run's per-child meta files can be read and
+dropped on every scan. Gating the re-queue on records read would let a scan whose
+whole 256-read budget went to such duplicates re-queue itself unchanged, forever,
+at the debounce interval — synchronous stat + read + parse on the TUI thread.
+
+So two things hold, and the second is what the loop rests on:
+
+- A cross-granularity drop records its key in `ingested`. The decision is
+  permanent, so the file behind it never needs reading again; leaving it out is
+  also what let those files compete for the read budget with files that still had
+  something to add, starving them indefinitely once the duplicates exceeded 256.
+- `tps.ts` re-queues only when `ingested.size` grew across the scan. That set is
+  monotonic and bounded by the file count, so the chain ends. A scan that fills
+  the cap without growing it — every candidate over the size cap — does not
+  reschedule and waits for a real event instead of spinning.
 
 ### 7. Handles never hold the process open
 
@@ -143,11 +159,18 @@ of these can be the reason pi fails to exit.
 
 ### 8. The extension entry does not rethrow
 
-`pi.registerProvider` failure for the core provider no longer propagates out of
-the default export: that runs inside pi's extension loader, where an exception can
-abort the load and take the 2API providers and every registered command with it.
-It degrades to "core unavailable, recovery login present" and warns with the
-reason.
+Core provider failure no longer propagates out of the default export: that runs
+inside pi's extension loader, where an exception can abort the load and take the
+2API providers and every registered command with it. It degrades to "core
+unavailable, recovery login present" and warns with the reason.
+
+That covers construction as well as registration. `createLLMGatesProvider` is not
+just wiring — it reads `llmgates/pricing.json` and `llmgates/models.json` at
+construction, and both readers rethrow everything that is not `ENOENT`. A
+permission error, an `EISDIR`, or an I/O error on either file escapes the factory
+by exactly the path a failed `pi.registerProvider` would, so both go through one
+`degradeToRecoveryLogin` helper. The compat side already sat inside the
+`registerCompatGateways` try, despite making the same read.
 
 ### 9. Publish builds explicitly
 
@@ -191,7 +214,10 @@ flag would let a transient first one permanently silence a persistent second.
   writes to one scope both land, and a rejected holder does not stall the queue.
 - Meta files over the size cap are skipped; a backlog over the per-scan cap is
   fully ingested across successive scans with nothing dropped, and a truncated
-  scan queues the next one itself — unless it ingested nothing, which must not
+  scan queues the next one itself — unless it grew nothing, which must not
   reschedule.
-- Core registration failure does not throw out of the extension factory, still
-  registers the recovery provider, and warns.
+- A scan whose entire read budget goes to cross-granularity duplicates still
+  converges: the dropped keys join `ingested`, the next scan reaches the
+  remainder, and the one after it is empty.
+- Core provider failure — construction *or* registration — does not throw out of
+  the extension factory, still registers the recovery provider, and warns.

@@ -1008,6 +1008,12 @@ describe("tps subagent usage", () => {
 		const state2 = createSubagentIngestState();
 		expect(selectFreshSubagentRecords(state2, [child])).toEqual([child]);
 		expect(selectFreshSubagentRecords(state2, [aggregate])).toEqual([]);
+
+		// A cross-granularity drop is permanent, so the dropped key must be recorded
+		// as seen: `state.keys` is what the meta scan filters candidates by, and a
+		// key that never lands there leaves its file eligible for every later scan.
+		expect(state.keys.has(child.sourceKey)).toBe(true);
+		expect(state2.keys.has(aggregate.sourceKey)).toBe(true);
 	});
 
 	it("rejects filesystem fallbacks outside the workspace root", () => {
@@ -1203,6 +1209,54 @@ describe("tps subagent meta scan rescheduling", () => {
 
 		expect(records).toHaveLength(0);
 		expect(onTruncated).not.toHaveBeenCalled();
+	});
+
+	it("converges when the whole read budget goes to cross-granularity duplicates", () => {
+		// The run aggregates were already ingested from tool_execution_end
+		// (details.totalChildUsage -> subagentRunAggregateSourceKey), so every
+		// per-child meta file on disk is a duplicate the consumer must drop. Reading
+		// a record is not ingesting one: if a dropped key never lands in `ingested`,
+		// its file stays eligible and each scan re-reads the identical 256 files,
+		// re-fires onTruncated, and the re-queued scan repeats it forever.
+		const total = MAX_SUBAGENT_META_READS_PER_SCAN + 20;
+		const artifactsDir = seedMetaFiles(total);
+		const state = createSubagentIngestState();
+		for (let i = 0; i < total; i++) {
+			state.aggregateRunIds.add(`aaaa${i.toString(16).padStart(4, "0")}`);
+		}
+		const startedAtMs = Date.now() - 60_000;
+
+		const onTruncated = vi.fn();
+		const first = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			startedAtMs,
+			state.keys,
+			undefined,
+			onTruncated,
+		);
+		expect(first).toHaveLength(MAX_SUBAGENT_META_READS_PER_SCAN);
+		expect(onTruncated).toHaveBeenCalledOnce();
+
+		// Nothing is counted, but the scan still made progress: the dropped keys are
+		// now known, which is the growth the caller re-queues on.
+		expect(selectFreshSubagentRecords(state, first)).toHaveLength(0);
+		expect(state.keys.size).toBe(MAX_SUBAGENT_META_READS_PER_SCAN);
+
+		// The re-queued scan therefore reaches the remainder instead of repeating
+		// itself, and the chain ends one scan later.
+		const onTruncatedAgain = vi.fn();
+		const second = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			startedAtMs,
+			state.keys,
+			undefined,
+			onTruncatedAgain,
+		);
+		expect(second).toHaveLength(total - MAX_SUBAGENT_META_READS_PER_SCAN);
+		expect(onTruncatedAgain).not.toHaveBeenCalled();
+		expect(selectFreshSubagentRecords(state, second)).toHaveLength(0);
+		expect(state.keys.size).toBe(total);
+		expect(collectPiSubagentsMetaUsage(artifactsDir, startedAtMs, state.keys)).toHaveLength(0);
 	});
 });
 

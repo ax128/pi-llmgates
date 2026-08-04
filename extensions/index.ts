@@ -114,32 +114,15 @@ export default function (pi: ExtensionAPI): void {
 		}
 	}
 
-	const provider: LLMGatesProvider = createLLMGatesProvider({
-		agentDir,
-		providerId: identity.providerId,
-		providerName: identity.providerName,
-		compatLogin: compat
-			? async (interaction, scheme) => {
-					const instance = await compat.loginInstance(interaction, scheme);
-					pi.sendMessage(
-						{
-							customType: "llmgates-login",
-							content: compatInstanceAddedMessage(instance),
-							display: true,
-						},
-						{ triggerTurn: false },
-					);
-				}
-			: undefined,
-		onModelsChanged: reregisterCoreProvider,
-	});
-
-	// Native Provider overload (pi 0.81+)
-	try {
-		pi.registerProvider(provider);
-	} catch (error) {
-		// Keep the recovery login entry available when core registration fails
-		// (the bootstrap provider is not registered on the normal path anymore).
+	/**
+	 * Do NOT rethrow out of the extension entry point: this runs inside pi's
+	 * extension loader, where an exception can abort loading and take the 2API
+	 * providers and every command registered above down with it. Degrade to
+	 * "core unavailable, recovery login present" and report why.
+	 */
+	function degradeToRecoveryLogin(reason: string, error: unknown): void {
+		// Keep the recovery login entry available when core is unusable (the
+		// bootstrap provider is not registered on the normal path anymore).
 		try {
 			compat?.registerBootstrapProvider();
 		} catch (bootstrapError) {
@@ -147,13 +130,54 @@ export default function (pi: ExtensionAPI): void {
 				`Failed to register the recovery login entry: ${bootstrapError instanceof Error ? bootstrapError.message : String(bootstrapError)}`,
 			);
 		}
-		// Do NOT rethrow out of the extension entry point: this runs inside pi's
-		// extension loader, where an exception can abort loading and take the 2API
-		// providers and every command registered above down with it. Degrade to
-		// "core unavailable, recovery login present" and report why.
 		logWarn(
+			`${reason} ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	let provider: LLMGatesProvider;
+	try {
+		// Construction is not just wiring: it reads llmgates/pricing.json and
+		// llmgates/models.json, and both readers rethrow everything that is not
+		// ENOENT — a permission error, an EISDIR, a bad sector. Unguarded, that
+		// escapes the factory exactly like the registration failure below does,
+		// which is the load-aborting path this whole branch exists to prevent.
+		provider = createLLMGatesProvider({
+			agentDir,
+			providerId: identity.providerId,
+			providerName: identity.providerName,
+			compatLogin: compat
+				? async (interaction, scheme) => {
+						const instance = await compat.loginInstance(interaction, scheme);
+						pi.sendMessage(
+							{
+								customType: "llmgates-login",
+								content: compatInstanceAddedMessage(instance),
+								display: true,
+							},
+							{ triggerTurn: false },
+						);
+					}
+				: undefined,
+			onModelsChanged: reregisterCoreProvider,
+		});
+	} catch (error) {
+		degradeToRecoveryLogin(
+			`Failed to initialize provider ${identity.providerId}; the 2API gateways and the recovery login stay available. ` +
+				"Run /reload after fixing it.",
+			error,
+		);
+		return;
+	}
+
+	// Native Provider overload (pi 0.81+)
+	try {
+		pi.registerProvider(provider);
+	} catch (error) {
+		degradeToRecoveryLogin(
 			`Failed to register provider ${identity.providerId}; the 2API gateways and the recovery login stay available. ` +
-				`Run /reload after fixing it. ${error instanceof Error ? error.message : String(error)}`,
+				"Run /reload after fixing it.",
+			error,
 		);
 		return;
 	}
