@@ -330,7 +330,8 @@ pi
 - `auto` 只清除该模型的 per-model endpoint；若存在 `defaults.endpoint`，会回落到 defaults，而非跳过它直达网关值。
 - 命令先原子保存 `~/.pi/agent/llmgates/models.json`，再联网强制刷新 catalog、写入 provider store、发布并校验；目标是当前模型时还会重新绑定 registry 中的新对象。只有全部完成才显示成功。
 - `PI_OFFLINE`、网络失败、provider 尚未就绪、store 写入失败或当前模型重绑失败时显示 warning：配置已保存但未完全激活，可联网后重试命令；重绑失败也可用 `/model` 重新选择。
-- 命令进行中再次执行会被拒绝；本命令本身不支持批量，批量请用 `/endpoint-setting`。
+- 与 `/endpoint-setting`、`/llmgates-reload` 共用同一把 in-flight 锁：任一命令执行期间，其余命令会被拒绝。等待 agent 空闲最多 120s，超时则不写入任何文件并释放锁。
+- 本命令本身不支持批量，批量请用 `/endpoint-setting`。
 - 仅修改 core provider；2API 模型请用 `/endpoint-setting`。
 
 #### 批量切换：`/endpoint-setting`
