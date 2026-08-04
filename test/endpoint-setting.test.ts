@@ -34,6 +34,7 @@ import {
 	parseSelectorList,
 	SELECTOR_ENDPOINT_OPTIONS,
 	type SelectorSelection,
+	type SelectorSnapshot,
 } from "../extensions/endpoint-selector.js";
 import type { EndpointRefreshResult } from "../extensions/provider.js";
 import { runCatalogReloadCommand } from "../extensions/llmgates-reload.js";
@@ -260,6 +261,100 @@ describe("buildSelectorSnapshot", () => {
 			() => false,
 		);
 		expect(snapshot.groups).toEqual([]);
+	});
+});
+
+describe("/endpoint-setting override marker", () => {
+	/** Intercept step 1 to keep the snapshot the picker was handed. */
+	function captureSnapshot(h: ReturnType<typeof harness>) {
+		let captured: SelectorSnapshot | undefined;
+		const pick = h.ctx.pick;
+		h.ctx.pick = async (snapshot) => {
+			captured = snapshot;
+			return pick(snapshot);
+		};
+		return () => captured;
+	}
+
+	it("marks only per-model entries, never rows that just inherit defaults.endpoint", async () => {
+		const { dir, cleanup } = tempDir();
+		try {
+			writeFileSync(
+				join(dir, "llmgates/models.json"),
+				JSON.stringify({
+					defaults: { endpoint: "responses" },
+					models: { m2: { endpoint: "messages" } },
+				}),
+			);
+			const h = harness({
+				agentDir: dir,
+				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				registry: [
+					model("m1", "openai-responses"),
+					model("m2", "anthropic-messages"),
+				],
+				// Cancelling at step 1 is enough: the snapshot is what this asserts.
+				pick: undefined,
+			});
+			const snapshot = captureSnapshot(h);
+
+			await runEndpointSettingCommand(h.runtime, h.ctx);
+
+			expect(snapshot()?.groups[0]?.models).toEqual([
+				{ id: "m1", name: "m1", endpoint: "responses", hasOverride: false },
+				{ id: "m2", name: "m2", endpoint: "messages", hasOverride: true },
+			]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("reads each target's own override file", async () => {
+		const { dir, cleanup } = tempDir();
+		try {
+			writeFileSync(
+				join(dir, "llmgates/models.json"),
+				JSON.stringify({ models: { m1: { endpoint: "messages" } } }),
+			);
+			mkdirSync(join(dir, "llmgates/2api-models"), {
+				recursive: true,
+				mode: 0o700,
+			});
+			writeFileSync(
+				join(dir, `llmgates/2api-models/${TWO_API}.json`),
+				JSON.stringify({ models: { x1: { endpoint: "responses" } } }),
+			);
+			const h = harness({
+				agentDir: dir,
+				targets: [
+					{ providerId: CORE, scope: { kind: "core" } },
+					{ providerId: TWO_API, scope: { kind: "2api", instanceId: TWO_API } },
+				],
+				registry: [
+					model("m1", "anthropic-messages"),
+					model("x1", "openai-responses", TWO_API),
+					model("x2", "openai-completions", TWO_API),
+				],
+				pick: undefined,
+			});
+			const snapshot = captureSnapshot(h);
+
+			await runEndpointSettingCommand(h.runtime, h.ctx);
+
+			expect(
+				snapshot()?.groups.map((group) =>
+					group.models.map((entry) => [entry.id, entry.hasOverride]),
+				),
+			).toEqual([
+				[["m1", true]],
+				[
+					["x1", true],
+					["x2", false],
+				],
+			]);
+		} finally {
+			cleanup();
+		}
 	});
 });
 

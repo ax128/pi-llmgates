@@ -65,7 +65,7 @@ export interface SelectorParseResult {
 
 const HEADER_LINES = [
 	"# /endpoint-setting · 在要修改的模型前把 [ ] 改成 [x]，保存后进入下一步",
-	"# 格式: [ ] <model-id>  <显示名>  <当前出口>       * = 已有 override",
+	"# 格式: [ ] <model-id>  <显示名>  <当前出口>       * = 该模型有单独 override（defaults 不计）",
 	"# 以 # 开头的行会被忽略；不要修改 model-id",
 ];
 
