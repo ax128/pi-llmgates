@@ -237,19 +237,30 @@ export default function (pi: ExtensionAPI) {
 			if (!sessionActive || sessionArtifactsDir !== artifactsDir) {
 				return;
 			}
+			let truncated = false;
+			const ingestedBefore = subagentIngestState.keys.size;
 			applySubagentRecords(
 				collectPiSubagentsMetaUsage(
 					artifactsDir,
 					startedAtMs,
 					subagentIngestState.keys,
 					sessionRunIds,
-					// A backlog already on disk at session start emits no watcher or
-					// tool events of its own, so without this the overflow past the
-					// per-scan cap would never be ingested.
-					scheduleSubagentMetaScan,
+					() => {
+						truncated = true;
+					},
 				),
 				targetStats,
 			);
+			// A backlog already on disk at session start emits no watcher or tool
+			// events of its own, so the overflow past the per-scan cap needs this
+			// scan to queue the next one. Gate that on `ingested` having grown, not
+			// on records having been read: the consumer drops cross-granularity
+			// duplicates, whose files stay eligible, so a scan whose whole read
+			// budget went to them would otherwise re-queue itself unchanged forever.
+			// `keys` is monotonic and bounded by the file count, so this terminates.
+			if (truncated && subagentIngestState.keys.size > ingestedBefore) {
+				scheduleSubagentMetaScan();
+			}
 		});
 	}
 

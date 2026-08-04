@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Provider } from "@earendil-works/pi-ai";
@@ -222,6 +222,38 @@ describe("extension entrypoints", () => {
 			expect(
 				warn.mock.calls.some(([message]) =>
 					/core registration failed/i.test(String(message)),
+				),
+			).toBe(true);
+		} finally {
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("registers the compat recovery provider when core construction fails", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		// Provider construction reads llmgates/pricing.json before pi.registerProvider
+		// is ever reached, and that reader rethrows everything that is not ENOENT. A
+		// directory in the file's place is the portable way to produce one of those
+		// (EISDIR); a permission or I/O error lands in the same branch.
+		mkdirSync(join(agentDir, "llmgates", "pricing.json"), { recursive: true });
+		const { pi, providers } = fakePi();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			// Same contract as a failed registration: the factory runs inside pi's
+			// extension loader, so throwing here can abort the load and take the 2API
+			// providers and every registered command with it.
+			expect(() => extensionFactory(pi)).not.toThrow();
+			expect(
+				providers.some((p) => (p as { id?: string })?.id === "llmgates"),
+			).toBe(false);
+			expect(
+				providers.some((p) => (p as { id?: string })?.id === "llmgates-2api"),
+			).toBe(true);
+			expect(
+				warn.mock.calls.some(([message]) =>
+					/failed to initialize provider/i.test(String(message)),
 				),
 			).toBe(true);
 		} finally {
