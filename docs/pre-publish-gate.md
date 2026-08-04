@@ -184,7 +184,54 @@ Agent **可以**在本机执行 §2 脚本、用 §3 命令安装 `.tgz`、根�
 2. §4 完成后运行 `./scripts/gate-record-pass.sh --tests "login,smoke-reload,..."`（或 `npm run gate:record -- --tests "..."`），并在对话中贴 **§5 回执**  
 3. 若缺少 LLMGates 凭证或无法启动 pi，**不得**跳过门禁直接 publish；应请用户补测或代测
 
-### 4.4 失败处理
+### 4.4 rpc 驱动的隔离验证（Agent 推荐做法）
+
+`/endpoint-setting` 这类交互式命令没法用 `pi -p` 驱动，但 `pi --mode rpc` 会把扩展的 UI 请求以 JSON 事件吐到 stdout，可直接断言。**务必配合 `PI_CODING_AGENT_DIR` 用隔离 agent dir**——否则 `/endpoint …` 会真的写进用户的 `~/.pi/agent/llmgates/models.json`。
+
+准备隔离环境（只复制验证所需，不碰用户配置）：
+
+```bash
+ISO=/tmp/llg-iso-agent
+rm -rf "$ISO" && mkdir -p "$ISO/llmgates" && chmod 700 "$ISO"
+cp ~/.pi/agent/auth.json "$ISO/auth.json"              # LLMGates 凭证
+cp ~/.pi/agent/models-store.json "$ISO/" 2>/dev/null   # 省一次联网 catalog
+printf '{"packages":["/tmp/llg-gate"]}\n' > "$ISO/settings.json"   # 只加载待验包
+# 按本次改动构造 override 前置状态，例如验 `*` 标记就要先有 defaults：
+cat >"$ISO/llmgates/models.json" <<'JSON'
+{ "defaults": { "endpoint": "messages" },
+  "models": { "glm-5": { "endpoint": "chat_completions" } } }
+JSON
+```
+
+驱动一条 slash 命令并捕获事件（**stdin 必须保持打开**，否则进程会在 UI 请求到达前就退出）：
+
+```bash
+node -e 'process.stdout.write(JSON.stringify({type:"prompt",id:"p1",message:"/endpoint-setting"})+"\n"); setTimeout(()=>{},45000)' \
+  | PI_CODING_AGENT_DIR="$ISO" timeout 45 pi --mode rpc --no-session >out.jsonl 2>&1
+```
+
+注意字段名是 `message` 不是 `text`（传错会报 `Cannot read properties of undefined`）。`out.jsonl` 里的 `extension_ui_request` 事件就是断言对象：
+
+| `method` | 载荷字段 | 用途 |
+| --- | --- | --- |
+| `editor` | `prefill` | `/endpoint-setting` 第一步的完整清单文本——可直接断言 `*` 标记、行数、分组 |
+| `notify` | `message` | 命令结果与取消提示，如 `Cancelled; no configuration was changed.` |
+
+非交互命令（`/endpoint <ep> <model>`、`/llmgates-reload`、`/llmgates list`、`/balance`）同样走 `prompt`，结果落在 `notify` 的 `message`；写入类命令验完直接 `cat "$ISO/llmgates/models.json"` 比对前后差异。命令是否注册可用 `{"type":"get_commands"}` 一次性列出。
+
+若要绕过 pi 直接对 `dist/` 做纯函数断言（如 override 解析），需把 peer 依赖软链进解包目录再 import——`npm install --omit=dev` **不会**安装 root 包自己的 `peerDependencies`，那是 pi 在运行时提供的：
+
+```bash
+mkdir -p <pkgdir>/node_modules/@earendil-works
+ln -s "$PWD/node_modules/@earendil-works/pi-ai" <pkgdir>/node_modules/@earendil-works/pi-ai
+ln -s "$PWD/node_modules/@earendil-works/pi-coding-agent" <pkgdir>/node_modules/@earendil-works/pi-coding-agent
+```
+
+这种旁路副本要另建目录，别往 §3 那份已注册进 settings 的安装目录里塞 `node_modules`，以免运行时遮蔽 pi 自己的模块；用 `diff -r` 确认两份 `dist/` 一致即可代表验的是同一产物。
+
+**收尾必做：** `rm -rf "$ISO"` —— 里面有 `auth.json` 的明文副本。
+
+### 4.5 失败处理
 
 - 发现问题 → 在 `main` 上修复 → 重新从 §2 完整跑一遍门禁（重新 `npm pack`）  
 - **禁止**带着已知缺陷升版本 publish

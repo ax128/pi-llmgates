@@ -1,6 +1,6 @@
 {
   "name": "@llmgates_api/pi-llmgates-provider",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "Pi provider extension for LLMGates: dynamic models from /v1/models and /login setup",
   "type": "module",
   "keywords": [
@@ -43,8 +43,8 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.81.0 <0.82.0",
-    "@earendil-works/pi-coding-agent": ">=0.81.0 <0.82.0"
+    "@earendil-works/pi-ai": ">=0.81.0 <0.84.0",
+    "@earendil-works/pi-coding-agent": ">=0.81.0 <0.84.0"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.81.1",
@@ -60,6 +60,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ]
 }

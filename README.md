@@ -38,7 +38,7 @@ pi
 
 ## 安装
 
-**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.82.0**（基线 0.81.1）。
+**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.84.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1 与 0.83.0 也已验证）。
 
 本扩展使用 **native Provider** API，**不支持 pi 0.80.x**。
 
@@ -46,7 +46,7 @@ pi
 
 ```bash
 pi install npm:@llmgates_api/pi-llmgates-provider          # 最新版
-pi install npm:@llmgates_api/pi-llmgates-provider@0.2.11   # 指定版本
+pi install npm:@llmgates_api/pi-llmgates-provider@0.2.12   # 指定版本
 pi install -l npm:@llmgates_api/pi-llmgates-provider      # 仅当前项目（否则装到 ~/.pi/agent/）
 ```
 
