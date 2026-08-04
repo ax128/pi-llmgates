@@ -10,7 +10,7 @@
  * Flow (spec §7.1):
  *   in-flight guard → mode guard → step 1 (frozen id→provider snapshot) →
  *   tui: ui.custom checkbox picker · rpc: ui.editor checklist + parse →
- *   ui.select → waitForIdle → group by provider →
+ *   ui.select → bounded waitForIdle → group by provider →
  *   per group: one locked batch write, then one foreground refresh →
  *   verify each api → rebind current model → merge tri-state → notify.
  *
@@ -27,7 +27,9 @@ import { createEndpointPicker } from "./endpoint-picker.js";
 import {
 	acquireEndpointInFlight,
 	EXPECTED_API,
+	IDLE_WAIT_TIMEOUT_MESSAGE,
 	releaseEndpointInFlight,
+	waitForIdleBounded,
 	WRITE_VALUE,
 } from "./endpoint.js";
 import {
@@ -74,6 +76,8 @@ export interface EndpointSettingRuntime {
 export interface EndpointSettingContext {
 	mode: string;
 	waitForIdle(): Promise<void>;
+	/** Overrides IDLE_WAIT_TIMEOUT_MS; the pi wiring leaves it unset. */
+	idleWaitTimeoutMs?: number;
 	getModel(): Model<Api> | undefined;
 	getAllModels(): Model<Api>[];
 	find(providerId: string, modelId: string): Model<Api> | undefined;
@@ -241,7 +245,10 @@ export async function runEndpointSettingCommand(
 			return;
 		}
 
-		await ctx.waitForIdle();
+		if (!(await waitForIdleBounded(() => ctx.waitForIdle(), ctx.idleWaitTimeoutMs))) {
+			ctx.notify(IDLE_WAIT_TIMEOUT_MESSAGE, "error");
+			return;
+		}
 
 		// Freeze the target set before any write, grouped by provider so each group
 		// takes its lock once and refreshes once.
@@ -508,6 +515,33 @@ export function registerEndpointSettingCommand(
 	let core = options.core;
 	const compat = options.compat;
 
+	/**
+	 * `ui.custom` resolves only when the component calls `done`. If pi tears the
+	 * component down without doing so — a session ending while the picker is open —
+	 * the await would never settle, and because the command holds the shared
+	 * in-flight guard across step 1 that would disable `/endpoint`,
+	 * `/endpoint-setting`, and `/llmgates-reload` for the rest of the process.
+	 * Resolving to `undefined` here is exactly the "user cancelled" path, so the
+	 * command unwinds through its normal cancel branch and releases the guard.
+	 */
+	let cancelOpenPicker: (() => void) | undefined;
+	pi.on("session_shutdown", () => {
+		cancelOpenPicker?.();
+	});
+
+	async function withPickerCancellation(
+		open: () => Promise<SelectorSelection[] | undefined>,
+	): Promise<SelectorSelection[] | undefined> {
+		const cancelled = new Promise<undefined>((resolve) => {
+			cancelOpenPicker = () => resolve(undefined);
+		});
+		try {
+			return await Promise.race([open(), cancelled]);
+		} finally {
+			cancelOpenPicker = undefined;
+		}
+	}
+
 	function targets(): EndpointSettingTarget[] {
 		const list: EndpointSettingTarget[] = [];
 		if (core) {
@@ -552,14 +586,16 @@ export function registerEndpointSettingCommand(
 						ctx.modelRegistry.find(providerId, modelId),
 					setModel: (model) => pi.setModel(model),
 					pick: (snapshot) =>
-						ctx.ui.custom<SelectorSelection[] | undefined>(
-							(_tui, theme, keybindings, done) =>
-								createEndpointPicker({
-									snapshot,
-									theme,
-									keys: keybindings,
-									done,
-								}),
+						withPickerCancellation(() =>
+							ctx.ui.custom<SelectorSelection[] | undefined>(
+								(_tui, theme, keybindings, done) =>
+									createEndpointPicker({
+										snapshot,
+										theme,
+										keys: keybindings,
+										done,
+									}),
+							),
 						),
 					editor: (title, prefill) => ctx.ui.editor(title, prefill),
 					select: (title, selectOptions) => ctx.ui.select(title, selectOptions),

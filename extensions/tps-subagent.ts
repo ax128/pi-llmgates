@@ -606,6 +606,21 @@ export function parsePiSubagentsMetaJson(raw: unknown, sourceKey: string): Subag
 	return recordFromPartial(raw, sourceKey);
 }
 
+/**
+ * Meta files are small usage rollups. The read and the JSON.parse below are
+ * synchronous and run on the TUI's thread, so a pathological file (a truncated
+ * write, an unrelated artifact that happens to match the name) must not be able to
+ * stall a turn for as long as it takes to parse it.
+ */
+export const MAX_SUBAGENT_META_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Per-scan ceiling on files actually read. The cap applies AFTER the ingested /
+ * run-id / mtime filters, so every scan makes forward progress and a skipped file
+ * is picked up by the next one rather than dropped.
+ */
+export const MAX_SUBAGENT_META_READS_PER_SCAN = 256;
+
 export function readPiSubagentsMetaUsage(metaPath: string): SubagentUsageRecord | null {
 	const sourceKey = metaFileSourceKey(metaPath.split(/[/\\]/).pop() ?? "");
 	if (!sourceKey) {
@@ -613,6 +628,9 @@ export function readPiSubagentsMetaUsage(metaPath: string): SubagentUsageRecord 
 	}
 	let parsed: unknown;
 	try {
+		if (statSync(metaPath).size > MAX_SUBAGENT_META_BYTES) {
+			return null;
+		}
 		parsed = JSON.parse(readFileSync(metaPath, "utf8"));
 	} catch {
 		return null;
@@ -658,6 +676,7 @@ export function collectPiSubagentsMetaUsage(
 	allowedRunIds?: ReadonlySet<string>,
 ): SubagentUsageRecord[] {
 	const out: SubagentUsageRecord[] = [];
+	let reads = 0;
 	for (const metaPath of listPiSubagentMetaFiles(artifactsDir)) {
 		const sourceKey = metaFileSourceKey(metaPath.split(/[/\\]/).pop() ?? "");
 		const source = sourceKey ? parseMetaSourceKeyGranularity(sourceKey) : null;
@@ -677,6 +696,13 @@ export function collectPiSubagentsMetaUsage(
 		if (mtimeMs < sessionStartedAtMs) {
 			continue;
 		}
+		if (reads >= MAX_SUBAGENT_META_READS_PER_SCAN) {
+			// Not a silent truncation: everything skipped here is still un-ingested,
+			// so the next scan (debounced tool_execution_end / watcher event / settle)
+			// starts from it. Bail out rather than block the turn on the whole backlog.
+			break;
+		}
+		reads += 1;
 		const record = readPiSubagentsMetaUsage(metaPath);
 		if (record) {
 			out.push(record);

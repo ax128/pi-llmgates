@@ -100,6 +100,21 @@ else
 	npm pack --dry-run
 fi
 
+# `npm publish --ignore-scripts` skips prepack, so the build does NOT run at publish
+# time — until now the freshness of dist/ rested entirely on a side effect of the
+# npm pack above. Build explicitly and assert the entry points exist: a stale or
+# missing dist/ publishes an extension that pi loads silently as a no-op, which is
+# the exact failure mode README documents for `pi install git:`.
+echo "==> building publish artifacts (publish runs with --ignore-scripts)"
+npm run build
+
+for entry in dist/index.js dist/tps.js; do
+	if [[ ! -f "$entry" ]]; then
+		echo "error: build did not produce $entry — refusing to publish" >&2
+		exit 1
+	fi
+done
+
 npm publish --access public --ignore-scripts "$@"
 
 REMOTE="$(npm view @llmgates_api/pi-llmgates-provider version)"

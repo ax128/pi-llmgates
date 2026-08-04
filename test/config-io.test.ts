@@ -42,7 +42,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadValidatedConfigFile } from "../extensions/connection.js";
 import { saveConfigFilePreservingSecrets } from "../extensions/lib.js";
-import { migrateLegacyConfigFiles } from "../extensions/util.js";
+import { LOCK_OPTIONS, migrateLegacyConfigFiles } from "../extensions/util.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
 
 describe("migrateLegacyConfigFiles", () => {
@@ -203,5 +203,31 @@ describe("saveConfigFilePreservingSecrets", () => {
 		} finally {
 			cleanup();
 		}
+	});
+});
+
+describe("LOCK_OPTIONS", () => {
+	it("handles a compromised lock without throwing", () => {
+		// proper-lockfile's default onCompromised is `(err) => { throw err }`, and it
+		// runs inside the lock's mtime-refresh timer callback — no try/catch above it,
+		// so the throw would surface as an uncaughtException and kill the pi process.
+		expect(typeof LOCK_OPTIONS.onCompromised).toBe("function");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(() =>
+				LOCK_OPTIONS.onCompromised!(new Error("Unable to update lock within the stale threshold")),
+			).not.toThrow();
+			expect(warn).toHaveBeenCalledOnce();
+			expect(String(warn.mock.calls[0]?.[0])).toMatch(/lock was compromised/i);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("keeps a bounded retry budget so a contended lock fails instead of hanging", () => {
+		const retries = LOCK_OPTIONS.retries as { retries: number; maxTimeout: number };
+		expect(retries.retries).toBeGreaterThan(0);
+		expect(Number.isFinite(retries.retries)).toBe(true);
+		expect(Number.isFinite(retries.maxTimeout)).toBe(true);
 	});
 });

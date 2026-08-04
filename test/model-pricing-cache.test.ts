@@ -653,3 +653,64 @@ describe("model-pricing-cache", () => {
 		expect(resolveModelCostRates("gpt-5.6-sol", "openai").input).toBe(1);
 	});
 });
+
+describe("pricing sync cancellation", () => {
+	beforeEach(() => {
+		resetPricingSyncChainForTests();
+		clearPricingCacheMemory();
+	});
+
+	const models = [{ id: "gpt-5.6-sol", provider_id: "openai" }];
+
+	it("short-circuits before fetching when the caller signal is already aborted", async () => {
+		const agentDir = tempAgentDir("llmgates-pricing-aborted-");
+		const controller = new AbortController();
+		controller.abort();
+		let loads = 0;
+
+		const result = await refreshModelPricing(agentDir, models, {
+			pricingAutoUpdate: true,
+			signal: controller.signal,
+			loadLiteLLMTable: async () => {
+				loads += 1;
+				return MOCK_LITELLM;
+			},
+		});
+
+		expect(loads).toBe(0);
+		expect(result?.rates?.["openai/gpt-5.6-sol"]).toBeUndefined();
+	});
+
+	it("forwards the signal down to the HTTP layer so an in-flight fetch is cancelled", async () => {
+		const agentDir = tempAgentDir("llmgates-pricing-cancel-");
+		const controller = new AbortController();
+		let sawSignal: AbortSignal | undefined;
+
+		// Goes through the real default loadTable → fetchLiteLLMPriceTable →
+		// requestLimitedJson path, which is where the signal has to arrive.
+		const pending = refreshModelPricing(agentDir, models, {
+			pricingAutoUpdate: true,
+			signal: controller.signal,
+			fetchImpl: ((_url: string, init?: { signal?: AbortSignal }) => {
+				sawSignal = init?.signal;
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener(
+						"abort",
+						() => reject(new DOMException("The operation was aborted.", "AbortError")),
+						{ once: true },
+					);
+				});
+			}) as unknown as typeof fetch,
+		});
+
+		// Give the fetch a tick to be issued, then cancel it the way shutdown does.
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(sawSignal).toBeDefined();
+		expect(sawSignal?.aborted).toBe(false);
+		controller.abort();
+
+		// Resolves rather than hanging or rejecting: shutdown must not block on pricing.
+		const result = await pending;
+		expect(result?.rates?.["openai/gpt-5.6-sol"]).toBeUndefined();
+	});
+});

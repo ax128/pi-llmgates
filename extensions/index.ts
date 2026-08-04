@@ -140,8 +140,22 @@ export default function (pi: ExtensionAPI): void {
 	} catch (error) {
 		// Keep the recovery login entry available when core registration fails
 		// (the bootstrap provider is not registered on the normal path anymore).
-		compat?.registerBootstrapProvider();
-		throw error;
+		try {
+			compat?.registerBootstrapProvider();
+		} catch (bootstrapError) {
+			logWarn(
+				`Failed to register the recovery login entry: ${bootstrapError instanceof Error ? bootstrapError.message : String(bootstrapError)}`,
+			);
+		}
+		// Do NOT rethrow out of the extension entry point: this runs inside pi's
+		// extension loader, where an exception can abort loading and take the 2API
+		// providers and every command registered above down with it. Degrade to
+		// "core unavailable, recovery login present" and report why.
+		logWarn(
+			`Failed to register provider ${identity.providerId}; the 2API gateways and the recovery login stay available. ` +
+				`Run /reload after fixing it. ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return;
 	}
 	registerBalanceCommand(pi, identity.providerId);
 	// /endpoint is registered only after the core provider is live: it needs the

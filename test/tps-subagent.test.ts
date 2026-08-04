@@ -14,6 +14,8 @@ import {
 	extractSubagentUsageFromSessionFile,
 	extractSubagentUsageFromToolExecution,
 	isSubagentPathWithinWorkspace,
+	MAX_SUBAGENT_META_BYTES,
+	MAX_SUBAGENT_META_READS_PER_SCAN,
 	metaFileSourceKey,
 	normalizeRunIdForSourceKey,
 	normalizeUsageFromPartial,
@@ -1065,5 +1067,61 @@ describe("tps subagent usage", () => {
 			}),
 		);
 		expect(extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0)).toBeNull();
+	});
+});
+
+describe("tps subagent meta scan bounds", () => {
+	function writeMeta(artifactsDir: string, runId: string, input: number, padBytes = 0): void {
+		writeFileSync(
+			join(artifactsDir, `${runId}_worker_0_meta.json`),
+			JSON.stringify({
+				agent: "worker",
+				model: "llmgates/gpt-5.6-sol",
+				usage: { turns: 1, input, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
+				...(padBytes > 0 ? { _pad: "x".repeat(padBytes) } : {}),
+			}),
+		);
+	}
+
+	it("skips a meta file that exceeds the size cap instead of parsing it", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-huge-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		writeMeta(artifactsDir, "aaaa1111", 1);
+		writeMeta(artifactsDir, "bbbb2222", 2, MAX_SUBAGENT_META_BYTES + 1);
+
+		const records = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			Date.now() - 60_000,
+			createSubagentIngestState().keys,
+		);
+
+		expect(records).toHaveLength(1);
+		expect(records[0]?.sourceKey).toBe("meta:aaaa1111:worker:0");
+	});
+
+	it("caps reads per scan and resumes on the next scan without dropping records", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-many-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const total = MAX_SUBAGENT_META_READS_PER_SCAN + 5;
+		// metaFileSourceKey only accepts a run id that normalizes to hex.
+		for (let i = 0; i < total; i++) {
+			writeMeta(artifactsDir, `aaaa${i.toString(16).padStart(4, "0")}`, i + 1);
+		}
+		const sessionStartedAtMs = Date.now() - 60_000;
+
+		const ingested = new Set<string>();
+		const first = collectPiSubagentsMetaUsage(artifactsDir, sessionStartedAtMs, ingested);
+		expect(first).toHaveLength(MAX_SUBAGENT_META_READS_PER_SCAN);
+		for (const record of first) ingested.add(record.sourceKey);
+
+		// The overflow is not dropped: it is still un-ingested, so the next scan takes it.
+		const second = collectPiSubagentsMetaUsage(artifactsDir, sessionStartedAtMs, ingested);
+		expect(second).toHaveLength(5);
+		for (const record of second) ingested.add(record.sourceKey);
+
+		expect(ingested.size).toBe(total);
+		expect(collectPiSubagentsMetaUsage(artifactsDir, sessionStartedAtMs, ingested)).toHaveLength(0);
 	});
 });

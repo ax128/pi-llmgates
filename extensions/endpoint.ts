@@ -5,7 +5,7 @@
  * Spec: docs/superpowers/specs/2026-07-28-endpoint-command-design.md (rev 3).
  *
  * Flow (spec §命令执行顺序):
- *   in-flight guard → parse → waitForIdle → resolve target → locked write →
+ *   in-flight guard → parse → bounded waitForIdle → resolve target → locked write →
  *   foreground refresh → registry verify → rebind current model → tri-state notify.
  *
  * The command targets ONLY the core provider (id passed in at registration; it
@@ -75,6 +75,8 @@ export interface EndpointRuntime {
 /** Context-side dependencies. `getModel` is a getter so post-rebind reads are fresh. */
 export interface EndpointCommandContext {
 	waitForIdle(): Promise<void>;
+	/** Overrides IDLE_WAIT_TIMEOUT_MS; the pi wiring leaves it unset. */
+	idleWaitTimeoutMs?: number;
 	getModel(): Model<Api> | undefined;
 	modelRegistry: EndpointModelLookup;
 	setModel(model: Model<Api>): Promise<boolean>;
@@ -109,6 +111,44 @@ export function releaseEndpointInFlight(): void {
 	inFlight = false;
 }
 
+/** How long a command waits for the agent to settle before giving the guard back. */
+export const IDLE_WAIT_TIMEOUT_MS = 120_000;
+
+export const IDLE_WAIT_TIMEOUT_MESSAGE =
+	"The agent is still busy; nothing was changed. Wait for the current turn to finish and run the command again.";
+
+/**
+ * Bounded `waitForIdle`. The in-flight guard above is taken BEFORE the idle wait
+ * (so a second command is refused immediately rather than queueing behind the
+ * first), which means an agent turn that never settles would otherwise hold the
+ * guard for the rest of the session and permanently disable `/endpoint`,
+ * `/endpoint-setting`, and `/llmgates-reload`.
+ *
+ * Resolves `true` when the agent settled and `false` on timeout. On `false` the
+ * caller MUST abort before writing anything: proceeding would apply an endpoint
+ * change underneath a running turn, which is exactly what waiting for idle exists
+ * to prevent. Rejections from `waitForIdle` propagate to the caller's catch-all.
+ */
+export async function waitForIdleBounded(
+	waitForIdle: () => Promise<void>,
+	timeoutMs: number = IDLE_WAIT_TIMEOUT_MS,
+): Promise<boolean> {
+	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+		timeoutMs = IDLE_WAIT_TIMEOUT_MS;
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timedOut = new Promise<false>((resolve) => {
+		timer = setTimeout(() => resolve(false), timeoutMs);
+		// Never let this watchdog be the reason the process stays alive.
+		timer.unref?.();
+	});
+	try {
+		return await Promise.race([waitForIdle().then(() => true), timedOut]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
 /**
  * Core command logic, separated from ctx wiring for testing. Always resolves with
  * a tri-state notification and never throws (every path goes through notify + the
@@ -131,7 +171,10 @@ export async function runEndpointCommand(
 			return;
 		}
 
-		await ctx.waitForIdle();
+		if (!(await waitForIdleBounded(() => ctx.waitForIdle(), ctx.idleWaitTimeoutMs))) {
+			ctx.notify(IDLE_WAIT_TIMEOUT_MESSAGE, "error");
+			return;
+		}
 
 		const target = resolveTarget(parsed, runtime.coreProviderId, ctx);
 		if (!target) return; // resolveTarget already notified (failed)

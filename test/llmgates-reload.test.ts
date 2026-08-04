@@ -246,3 +246,81 @@ describe("catalog reload in-flight guard", () => {
 		expect(notifications[0]?.message).toMatch(/already running/i);
 	});
 });
+
+describe("catalog reload concurrency", () => {
+	it("refreshes every target concurrently instead of serially", async () => {
+		releaseEndpointInFlight();
+		const { ctx, notifications } = makeCtx();
+
+		let inFlightNow = 0;
+		let peakConcurrency = 0;
+		const slowRefresh = (label: string): CatalogReloadTarget => ({
+			providerId: label,
+			label,
+			refreshEndpointForeground: async () => {
+				inFlightNow += 1;
+				peakConcurrency = Math.max(peakConcurrency, inFlightNow);
+				await new Promise((resolve) => setTimeout(resolve, 25));
+				inFlightNow -= 1;
+				return okRefresh([]);
+			},
+		});
+
+		const started = Date.now();
+		await runCatalogReloadCommand(
+			() => [slowRefresh("core"), slowRefresh("gw-1"), slowRefresh("gw-2"), slowRefresh("gw-3")],
+			ctx,
+		);
+		const elapsed = Date.now() - started;
+
+		// Serially this is 4 × 25ms; concurrently it is one 25ms wait plus overhead.
+		expect(peakConcurrency).toBe(4);
+		expect(elapsed).toBeLessThan(90);
+		expect(notifications.at(-1)?.level).toBe("info");
+	});
+
+	it("keeps per-target outcomes in display order when one fails", async () => {
+		releaseEndpointInFlight();
+		const { ctx, notifications } = makeCtx();
+
+		await runCatalogReloadCommand(
+			() => [
+				{ providerId: CORE, label: "core", refreshEndpointForeground: async () => okRefresh([model("m1")]) },
+				{
+					providerId: TWO_API,
+					label: "gateway/cpa",
+					refreshEndpointForeground: async () => {
+						throw new Error("gateway unreachable");
+					},
+				},
+			],
+			ctx,
+		);
+
+		const message = notifications.at(-1)?.message ?? "";
+		expect(notifications.at(-1)?.level).toBe("warning");
+		expect(message.indexOf("core")).toBeLessThan(message.indexOf("gateway/cpa"));
+		expect(message).toMatch(/gateway unreachable/i);
+	});
+
+	it("aborts and frees the guard when the agent never settles", async () => {
+		releaseEndpointInFlight();
+		const { ctx, notifications } = makeCtx();
+		ctx.waitForIdle = vi.fn(() => new Promise<void>(() => {}));
+		ctx.idleWaitTimeoutMs = 20;
+		const refresh = vi.fn(async () => okRefresh([]));
+
+		await runCatalogReloadCommand(
+			() => [{ providerId: CORE, label: "core", refreshEndpointForeground: refresh }],
+			ctx,
+		);
+
+		expect(refresh).not.toHaveBeenCalled();
+		expect(notifications[0]).toEqual({
+			message: expect.stringMatching(/still busy/i),
+			level: "error",
+		});
+		expect(acquireEndpointInFlight()).toBe(true);
+		releaseEndpointInFlight();
+	});
+});

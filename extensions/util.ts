@@ -85,10 +85,27 @@ export const MAX_LOGIN_ATTEMPTS = 5;
 export const PENDING_TTL_MS = 5 * 60 * 1000;
 export const CATALOG_BACKGROUND_REFRESH_MS = 5 * 60 * 1000;
 
-/** Cross-process file lock options for credentials/config written under the agent dir. */
+/**
+ * Cross-process file lock options for credentials/config written under the agent dir.
+ *
+ * `onCompromised` MUST be set. proper-lockfile's default is `(err) => { throw err }`,
+ * and it is invoked from the lock's mtime-refresh timer callback — a path with no
+ * try/catch above it, so the throw surfaces as an uncaughtException and takes the
+ * whole pi process down. A lock goes "compromised" for reasons that are routine
+ * rather than exceptional: the refresh missing the `stale` window after a laptop
+ * suspend, a blocked event loop, a slow network filesystem, or the .lock directory
+ * being removed by an external cleanup (these locks sit next to pi-owned auth.json).
+ * Losing a lock is recoverable — the write it guarded either already landed through
+ * an atomic rename or failed loudly at its own call site — so warn and carry on.
+ */
 export const LOCK_OPTIONS: lockfile.LockOptions = {
 	realpath: false,
 	stale: 30_000,
+	onCompromised: (error: Error) => {
+		console.warn(
+			`[pi-llmgates-provider] file lock was compromised and has been released: ${error.message}`,
+		);
+	},
 	retries: {
 		retries: 10,
 		factor: 2,
@@ -135,6 +152,11 @@ export function keysEqual(a: string, b: string): boolean {
 
 export function abortError(message = "The operation was aborted."): DOMException {
 	return new DOMException(message, "AbortError");
+}
+
+/** AbortSignal.timeout() rejects with TimeoutError; caller aborts reject with AbortError. */
+export function isAbortLikeError(error: unknown): boolean {
+	return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
 export function ensureDirMode(dir: string, mode: number): void {

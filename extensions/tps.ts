@@ -257,6 +257,7 @@ export default function (pi: ExtensionAPI) {
 			subagentMetaScanTimer = undefined;
 			scanSubagentMetaArtifacts();
 		}, SUBAGENT_META_SCAN_DEBOUNCE_MS);
+		subagentMetaScanTimer.unref?.();
 	}
 
 	function stopSubagentWatcher(): void {
@@ -275,11 +276,18 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		try {
-			subagentWatcher = watch(sessionArtifactsDir, (_, fileName) => {
-				if (typeof fileName === "string" && fileName.endsWith("_meta.json")) {
-					scheduleSubagentMetaScan();
-				}
-			});
+			// `persistent: false` (as the compat auth watcher already does): a watcher
+			// left open on an abnormal teardown path — one where session_shutdown never
+			// fires — would otherwise hold the event loop open and keep pi from exiting.
+			subagentWatcher = watch(
+				sessionArtifactsDir,
+				{ persistent: false },
+				(_, fileName) => {
+					if (typeof fileName === "string" && fileName.endsWith("_meta.json")) {
+						scheduleSubagentMetaScan();
+					}
+				},
+			);
 		} catch {
 			return;
 		}
@@ -454,6 +462,8 @@ export default function (pi: ExtensionAPI) {
 
 		clearRefreshTimer();
 		refreshTimer = setInterval(() => refreshStatus(), REFRESH_INTERVAL_MS);
+		// A cosmetic 1s footer tick must never be what keeps the process alive.
+		refreshTimer.unref?.();
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
