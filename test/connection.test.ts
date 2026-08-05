@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { join } from "node:path";
 import {
@@ -183,5 +183,70 @@ describe("legacy and identity", () => {
 		} finally {
 			cleanup();
 		}
+	});
+});
+
+describe("rejected baseUrl diagnostics", () => {
+	function resolveWithEnvBaseUrl(baseUrl: string) {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			process.env.LLMGATES_API_KEY = "env-key";
+			process.env.LLMGATES_BASE_URL = baseUrl;
+			const connection = resolveCanonicalConnection(agentDir, "llmgates");
+			return {
+				connection,
+				warnings: warn.mock.calls.map((call) => String(call[0])),
+			};
+		} finally {
+			warn.mockRestore();
+			cleanup();
+		}
+	}
+
+	it("explains why a remote http gateway was dropped instead of reporting it as unconfigured", () => {
+		// The caller-visible failure is "LLMGates is not configured. Use /login or set
+		// LLMGATES_API_KEY" — misleading when the key IS set and only the URL failed policy.
+		const { connection, warnings } = resolveWithEnvBaseUrl(
+			"http://rejected-remote.example/v1",
+		);
+
+		expect(connection).toBeNull();
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("env");
+		expect(warnings[0]).toContain("http://rejected-remote.example/v1");
+		expect(warnings[0]).toContain("remote HTTP is not allowed");
+	});
+
+	it("never echoes credentials embedded in the rejected URL", () => {
+		const { connection, warnings } = resolveWithEnvBaseUrl(
+			"https://someone:hunter2@rejected-creds.example/v1",
+		);
+
+		expect(connection).toBeNull();
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).not.toContain("hunter2");
+		expect(warnings[0]).not.toContain("someone");
+		expect(warnings[0]).toContain("<redacted>@rejected-creds.example");
+		expect(warnings[0]).toContain("must not include credentials");
+	});
+
+	it("warns once per distinct rejection so repeated refreshes cannot spam the log", () => {
+		const first = resolveWithEnvBaseUrl("http://rejected-repeat.example/v1");
+		const second = resolveWithEnvBaseUrl("http://rejected-repeat.example/v1");
+
+		expect(first.connection).toBeNull();
+		expect(second.connection).toBeNull();
+		expect(first.warnings).toHaveLength(1);
+		expect(second.warnings).toEqual([]);
+	});
+
+	it("stays silent when the baseUrl is accepted", () => {
+		const { connection, warnings } = resolveWithEnvBaseUrl(
+			"https://accepted.example/v1",
+		);
+
+		expect(connection?.source).toBe("env");
+		expect(warnings).toEqual([]);
 	});
 });

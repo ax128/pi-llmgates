@@ -429,6 +429,44 @@ export function resolvePricingAutoUpdate(agentDir: string): boolean {
 	return true;
 }
 
+/**
+ * A rejected baseUrl is resolved again on every refresh, so warn once per distinct
+ * (source, url, reason) instead of turning one misconfiguration into log spam.
+ */
+const reportedBaseUrlRejections = new Set<string>();
+
+/**
+ * Never echo userinfo: "URL must not include credentials" is itself one of the
+ * rejection reasons, and that URL carries the secret the check exists to refuse.
+ */
+function redactUrlCredentials(raw: string): string {
+	return raw.replace(/\/\/[^/@]*@/, "//<redacted>@");
+}
+
+/**
+ * A dropped connection is indistinguishable from "no credential at all" by the time
+ * callers report it — `/balance` and the provider both say "LLMGates is not configured.
+ * Use /login or set LLMGATES_API_KEY", which is actively misleading when the key IS set
+ * and only the URL failed policy. The validator already produced the precise reason
+ * (e.g. "remote HTTP is not allowed; use HTTPS or loopback HTTP"); surface it here
+ * rather than discarding it with the connection.
+ */
+function reportRejectedBaseUrl(
+	source: ConnectionSource,
+	candidate: string,
+	error: string,
+): void {
+	const safeUrl = redactUrlCredentials(candidate);
+	const key = `${source} ${safeUrl} ${error}`;
+	if (reportedBaseUrlRejections.has(key)) {
+		return;
+	}
+	reportedBaseUrlRejections.add(key);
+	console.warn(
+		`[pi-llmgates-provider] ignoring ${source} baseUrl "${safeUrl}": ${error}. LLMGates stays unconfigured until this is fixed.`,
+	);
+}
+
 function connectionFromParts(
 	source: ConnectionSource,
 	apiKey: string,
@@ -439,15 +477,15 @@ function connectionFromParts(
 		return null;
 	}
 
-	const validated = normalizeAndValidateBaseUrl(
-		normalizeGatewayBaseUrl(baseUrlCandidate) ?? DEFAULT_BASE_URL,
-	);
+	const candidate = normalizeGatewayBaseUrl(baseUrlCandidate) ?? DEFAULT_BASE_URL;
+	const validated = normalizeAndValidateBaseUrl(candidate);
 	if (
 		!validated.ok ||
 		!validated.inferenceBaseUrl ||
 		!validated.modelsUrl ||
 		!validated.balanceUrl
 	) {
+		reportRejectedBaseUrl(source, candidate, validated.error ?? "baseUrl is invalid");
 		return null;
 	}
 
