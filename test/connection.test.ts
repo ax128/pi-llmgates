@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { join } from "node:path";
 import {
 	BUILTIN_PROVIDER_IDS,
+	type CanonicalConnection,
 	detectLegacyApiKeyCredential,
 	normalizeAndValidateBaseUrl,
+	resetBaseUrlRejectionWarningsForTests,
 	resolveCanonicalConnection,
 	resolveProviderIdentity,
 } from "../extensions/connection.js";
@@ -187,12 +189,22 @@ describe("legacy and identity", () => {
 });
 
 describe("rejected baseUrl diagnostics", () => {
-	function resolveWithEnvBaseUrl(baseUrl: string) {
+	// Warn-once state is module-level and process-lived by design; without this the
+	// suite would silently depend on every case picking a URL no other case reused.
+	beforeEach(() => {
+		resetBaseUrlRejectionWarningsForTests();
+	});
+	afterEach(() => {
+		delete process.env.LLMGATES_DEBUG;
+	});
+
+	function resolveWith(
+		setup: (agentDir: string) => void,
+	): { connection: CanonicalConnection | null; warnings: string[] } {
 		const { agentDir, cleanup } = withTempAgentDir();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			process.env.LLMGATES_API_KEY = "env-key";
-			process.env.LLMGATES_BASE_URL = baseUrl;
+			setup(agentDir);
 			const connection = resolveCanonicalConnection(agentDir, "llmgates");
 			return {
 				connection,
@@ -202,6 +214,13 @@ describe("rejected baseUrl diagnostics", () => {
 			warn.mockRestore();
 			cleanup();
 		}
+	}
+
+	function resolveWithEnvBaseUrl(baseUrl: string) {
+		return resolveWith(() => {
+			process.env.LLMGATES_API_KEY = "env-key";
+			process.env.LLMGATES_BASE_URL = baseUrl;
+		});
 	}
 
 	it("explains why a remote http gateway was dropped instead of reporting it as unconfigured", () => {
@@ -231,6 +250,33 @@ describe("rejected baseUrl diagnostics", () => {
 		expect(warnings[0]).toContain("must not include credentials");
 	});
 
+	it("redacts credentials in a scheme-less URL, which is the form that reaches this reason", () => {
+		// normalizeAndValidateBaseUrl defaults a missing scheme to https before parsing,
+		// so this is a supported input that fails on exactly the credentials rule — and it
+		// carries no "//" for a naive redaction to anchor on.
+		const { connection, warnings } = resolveWithEnvBaseUrl(
+			"someone:hunter2@rejected-schemeless.example/v1",
+		);
+
+		expect(connection).toBeNull();
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).not.toContain("hunter2");
+		expect(warnings[0]).not.toContain("someone");
+		expect(warnings[0]).toContain("<redacted>@rejected-schemeless.example");
+		expect(warnings[0]).toContain("must not include credentials");
+	});
+
+	it("drops the query string rather than echoing a token parked in it", () => {
+		const { connection, warnings } = resolveWithEnvBaseUrl(
+			"http://rejected-query.example/v1?api_key=sk-must-not-leak",
+		);
+
+		expect(connection).toBeNull();
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).not.toContain("sk-must-not-leak");
+		expect(warnings[0]).toContain("http://rejected-query.example/v1");
+	});
+
 	it("warns once per distinct rejection so repeated refreshes cannot spam the log", () => {
 		const first = resolveWithEnvBaseUrl("http://rejected-repeat.example/v1");
 		const second = resolveWithEnvBaseUrl("http://rejected-repeat.example/v1");
@@ -248,5 +294,50 @@ describe("rejected baseUrl diagnostics", () => {
 
 		expect(connection?.source).toBe("env");
 		expect(warnings).toEqual([]);
+	});
+
+	it("does not claim the gateway is unconfigured when a lower-priority source resolves", () => {
+		// Resolution is oauth → env → file, so a rejected env URL drops only the env
+		// credential. Saying "LLMGates stays unconfigured" here would repeat the same
+		// class of misleading report this warning exists to remove.
+		const { connection, warnings } = resolveWith((agentDir) => {
+			process.env.LLMGATES_API_KEY = "env-key";
+			process.env.LLMGATES_BASE_URL = "http://rejected-fallback.example/v1";
+			writeJson(join(agentDir, "llmgates/config.json"), {
+				apiKey: "file-key",
+				baseUrl: "https://accepted-fallback.example/v1",
+			});
+		});
+
+		expect(connection?.source).toBe("file");
+		expect(connection?.apiKey).toBe("file-key");
+		expect(connection?.inferenceBaseUrl).toContain("accepted-fallback.example");
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("The env credential is skipped");
+		expect(warnings[0]).not.toContain("stays unconfigured until this is fixed");
+	});
+
+	it("attributes a rejected file baseUrl to the file source", () => {
+		const { connection, warnings } = resolveWith((agentDir) => {
+			writeJson(join(agentDir, "llmgates/config.json"), {
+				apiKey: "file-key",
+				baseUrl: "http://rejected-file.example/v1",
+			});
+		});
+
+		expect(connection).toBeNull();
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("ignoring file baseUrl");
+		expect(warnings[0]).toContain("The file credential is skipped");
+	});
+
+	it("logs every occurrence under LLMGATES_DEBUG so warn-once cannot hide a repeat", () => {
+		process.env.LLMGATES_DEBUG = "1";
+		const first = resolveWithEnvBaseUrl("http://rejected-debug.example/v1");
+		const second = resolveWithEnvBaseUrl("http://rejected-debug.example/v1");
+
+		expect(first.warnings).toHaveLength(1);
+		expect(second.warnings).toHaveLength(1);
+		expect(first.warnings[0]).not.toContain("Set LLMGATES_DEBUG=1");
 	});
 });
