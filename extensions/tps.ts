@@ -111,6 +111,26 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	/**
+	 * Fire-and-forget notify for sessions that are NOT the primary TUI — deliberately
+	 * gated on `hasUI` alone, unlike `safeUi`. The footer timer and cost summary belong
+	 * to the interactive parent session only, but `ctx.ui.notify` works wherever a UI
+	 * channel exists (rpc included, where pi reports `hasUI: true` and delivers notify
+	 * over the sub-protocol). Routing the non-TUI `/calls` fallback through `safeUi`
+	 * would gate it on the very condition that selected the fallback, leaving the
+	 * command silent instead of answering.
+	 */
+	function safeNotify(ctx: ExtensionContext | null | undefined, message: string): void {
+		if (!ctx?.hasUI) {
+			return;
+		}
+		try {
+			ctx.ui.notify(message, "info");
+		} catch (error) {
+			logTpsIssue(`TPS notify failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
 	function clearRefreshTimer(): void {
 		if (refreshTimer === undefined) return;
 		clearInterval(refreshTimer);
@@ -361,16 +381,24 @@ export default function (pi: ExtensionAPI) {
 	function notifyUsageText(ctx: ExtensionContext): void {
 		let message: string;
 		try {
-			const turnSummary = formatUsageSummaryMessage(activeTurnStats(), { scope: "turn" });
+			const turnStatsNow = activeTurnStats();
+			const turnSummary = formatUsageSummaryMessage(turnStatsNow, { scope: "turn" });
 			const sessionSummary = formatUsageSummaryMessage(sessionStats, { scope: "session" });
 			message = `${turnSummary}\n${sessionSummary}`;
+			// Accounting is owned by the interactive parent session (see the guards on
+			// message_end / before_agent_start / agent_settled), so a non-TUI caller reads
+			// an unqualified zero as "nothing cost anything" rather than "not counted here".
+			if (
+				totalModelCalls(turnStatsNow) === 0 &&
+				totalModelCalls(sessionStats) === 0
+			) {
+				message += "\nUsage is tracked in the interactive session only.";
+			}
 		} catch (error) {
 			logTpsIssue(`TPS summary formatting failed: ${error instanceof Error ? error.message : String(error)}`);
 			message = "Usage summary is temporarily unavailable.";
 		}
-		safeUi(ctx, () => {
-			ctx.ui.notify(message, "info");
-		});
+		safeNotify(ctx, message);
 	}
 
 	pi.registerCommand("calls", {

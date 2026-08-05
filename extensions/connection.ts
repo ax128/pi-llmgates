@@ -429,6 +429,86 @@ export function resolvePricingAutoUpdate(agentDir: string): boolean {
 	return true;
 }
 
+/**
+ * A rejected baseUrl is resolved again on every refresh, so warn once per distinct
+ * (source, url, reason) instead of turning one misconfiguration into log spam.
+ */
+const reportedBaseUrlRejections = new Set<string>();
+
+/**
+ * Never echo userinfo: "baseUrl must not include credentials" is itself one of the
+ * rejection reasons, and that URL carries the secret the check exists to refuse.
+ *
+ * Redacting from a literal "//" is not enough. `normalizeAndValidateBaseUrl` defaults
+ * a missing scheme to https before parsing, so `user:pass@host/v1` is a supported input
+ * that reaches the credentials rejection with no "//" anywhere — the one form that most
+ * needs redacting would be the one printed verbatim. Split the authority off the same
+ * way the URL grammar does instead: scheme prefix (optional), then everything up to the
+ * first "/", "?" or "#", then userinfo up to its last "@".
+ *
+ * Query and fragment are dropped rather than redacted: `resolveEndpoints` builds the
+ * gateway endpoints from origin + path only, so they carry no diagnostic value here and
+ * a `?api_key=…` on an otherwise rejected URL would be pure leak.
+ */
+function redactUrlCredentials(raw: string): string {
+	const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.exec(raw)?.[0] ?? "";
+	const afterScheme = raw.slice(scheme.length);
+	const authorityEnd = afterScheme.search(/[/?#]/);
+	const authority =
+		authorityEnd === -1 ? afterScheme : afterScheme.slice(0, authorityEnd);
+	// Path is kept (it selects the gateway); query/fragment are not.
+	const rest =
+		authorityEnd === -1
+			? ""
+			: afterScheme.slice(authorityEnd).replace(/[?#].*$/s, "");
+
+	const userinfoEnd = authority.lastIndexOf("@");
+	if (userinfoEnd === -1) {
+		return `${scheme}${authority}${rest}`;
+	}
+	return `${scheme}<redacted>@${authority.slice(userinfoEnd + 1)}${rest}`;
+}
+
+/**
+ * A dropped connection is indistinguishable from "no credential at all" by the time
+ * callers report it — `/balance` and the provider both say "LLMGates is not configured.
+ * Use /login or set LLMGATES_API_KEY", which is actively misleading when the key IS set
+ * and only the URL failed policy. The validator already produced the precise reason
+ * (e.g. "remote HTTP is not allowed; use HTTPS or loopback HTTP"); surface it here
+ * rather than discarding it with the connection.
+ */
+function reportRejectedBaseUrl(
+	source: ConnectionSource,
+	candidate: string,
+	error: string,
+): void {
+	const safeUrl = redactUrlCredentials(candidate);
+	// Only this source is dropped. Resolution continues oauth → env → file, so claiming
+	// the gateway is unconfigured would repeat the very error this warning exists to fix
+	// whenever a lower-priority source goes on to resolve successfully.
+	const message = `[pi-llmgates-provider] ignoring ${source} baseUrl "${safeUrl}": ${error}. The ${source} credential is skipped; LLMGates stays unconfigured unless a lower-priority source is configured.`;
+
+	// Debug logs every occurrence. Warn-once is what keeps a permanently misconfigured
+	// URL from becoming per-refresh noise, but it must not also be what hides the repeat
+	// from someone who enabled debug precisely because they are chasing this.
+	if (envFlag("LLMGATES_DEBUG")) {
+		console.warn(message);
+		return;
+	}
+
+	const key = `${source}\u0000${safeUrl}\u0000${error}`;
+	if (reportedBaseUrlRejections.has(key)) {
+		return;
+	}
+	reportedBaseUrlRejections.add(key);
+	console.warn(`${message} Set LLMGATES_DEBUG=1 to log every occurrence.`);
+}
+
+/** @internal test helper — reset the warn-once state between tests. */
+export function resetBaseUrlRejectionWarningsForTests(): void {
+	reportedBaseUrlRejections.clear();
+}
+
 function connectionFromParts(
 	source: ConnectionSource,
 	apiKey: string,
@@ -439,15 +519,15 @@ function connectionFromParts(
 		return null;
 	}
 
-	const validated = normalizeAndValidateBaseUrl(
-		normalizeGatewayBaseUrl(baseUrlCandidate) ?? DEFAULT_BASE_URL,
-	);
+	const candidate = normalizeGatewayBaseUrl(baseUrlCandidate) ?? DEFAULT_BASE_URL;
+	const validated = normalizeAndValidateBaseUrl(candidate);
 	if (
 		!validated.ok ||
 		!validated.inferenceBaseUrl ||
 		!validated.modelsUrl ||
 		!validated.balanceUrl
 	) {
+		reportRejectedBaseUrl(source, candidate, validated.error ?? "baseUrl is invalid");
 		return null;
 	}
 

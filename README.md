@@ -97,7 +97,7 @@ pi
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | 切换或清除一个 core 模型的推理出口 |
 | `/endpoint-setting` | 交互式多选，批量切换 core 与 2API 模型的推理出口 |
 | `/model` | 选择已注册的 LLMGates 模型 |
-| `/calls` | 查看本轮或本会话的 per-model 用量与费用明细 |
+| `/calls` | 查看本轮或本会话的 per-model 用量与费用明细（TUI 为交互菜单；rpc 回一段文本摘要；`-p` / json 无 UI 通道，不输出） |
 | `/reload` | 安装或更新插件后重载扩展 |
 | `/llmgates list \| remove <id> \| help` | 列出、删除或查看兼容网关实例帮助 |
 | `/llmgates-reload` | 强制刷新 core 与全部 2API 的模型 catalog（绕过 freshness window，重写 thinking 档位等缓存） |
@@ -210,7 +210,7 @@ pi
 4. 将网关 catalog 映射为 pi 模型，按模型设置 `api`（`responses` / `chat_completions` / `messages`）
 5. 跳过 image / video **生成** 类模型（不适合 pi coding agent）
 6. `/balance` — 通过 `GET /v1/user/balance` 查询钱包与订阅
-7. TUI 扩展状态行：agent **运行中**仅 `Turn 17m.19c.$1.78`；**跑完或取消 settle 后**同时展示 `All 1h1m.100c, Turn 30m.20c.$10.10`（All 为 session 累计，Turn 为本轮；下一轮开始时恢复仅 Turn）。session 费用可通过 `/calls` → This session 查看。父会话 assistant 用量在 `message_end` 时统计；同步 pi `subagent` / Cursor `Task` 工具结果与 `.pi-subagents/artifacts/*_meta.json` 汇总计入同一计数器；async / background 子代理通过 `subagent:async-complete` 旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与 Cursor `Task` 仍统计）。用量聚合在后台任务链中执行，不阻塞 agent 循环。
+7. TUI 扩展状态行：agent **运行中**仅 `Turn 17m.19c.$1.78`；**跑完或取消 settle 后**同时展示 `All 1h1m.100c, Turn 30m.20c.$10.10`（All 为 session 累计，Turn 为本轮；下一轮开始时恢复仅 Turn）。session 费用可通过 `/calls` → This session 查看。父会话 assistant 用量在 `message_end` 时统计；同步 pi `subagent` / Cursor `Task` 工具结果与 `.pi-subagents/artifacts/*_meta.json` 汇总计入同一计数器；async / background 子代理通过 `subagent:async-complete` 旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与 Cursor `Task` 仍统计）。用量聚合在后台任务链中执行，不阻塞 agent 循环。计数只在交互式父会话（TUI）进行，因此 rpc 会话里 `/calls` 会回「无记录」并附一句说明而非静默；`-p` / json 模式没有 UI 通道（pi 不为其绑定 `uiContext`，`ctx.hasUI === false`），`/calls` 不输出，以免污染脚本 stdout。
 
 ## 配置
 
@@ -437,7 +437,7 @@ Pi 内置 footer 在 OAuth 登录时可能仍显示 `(sub)`，该标记与 LLMGa
 
 - API key 一律视为 **literal string**；`!`、`$`、`${...}`、`$$`、`$!` 等不会被解释为 shell 命令或环境变量展开。
 - 连接归属原子化，优先级见 [连接解析优先级](#非交互式配置)；env key 不借用 file URL，file key 不借用 env URL，OAuth 不借用 env / file URL。
-- 远程网关须使用 **HTTPS**；HTTP 仅允许 loopback（`localhost`、`127.0.0.0/8`、`::1`、IPv4-mapped loopback）。无 insecure 覆盖开关。
+- 远程网关须使用 **HTTPS**；HTTP 仅允许 loopback（`localhost`、`127.0.0.0/8`、`::1`、IPv4-mapped loopback）。无 insecure 覆盖开关。被拒绝的 baseUrl 会打印一条 warning 说明来源与原因，避免只看到「LLMGates is not configured」而无从排查；该来源被跳过后仍按优先级回退到较低优先级来源。warning 中 URL 的 userinfo 凭证会被脱敏（含无 scheme 的 `user:pass@host` 形式）、query / fragment 直接丢弃；同一 (来源, URL, 原因) 每进程只报一次，`LLMGATES_DEBUG=1` 时每次都报。
 - 网关网络调用（`/models`、`/balance`、推理）使用全操作超时、5 MiB 响应体上限、同源手动重定向。
 - 启用 `pricingAutoUpdate` 时，零售价同步从 `raw.githubusercontent.com` 拉取固定 LiteLLM JSON（后台、30s 超时、8 MiB 上限），不阻塞目录或推理。可通过配置或 `LLMGATES_PRICING_AUTO_UPDATE=0` 关闭。
 - TPS / 费用统计在后台队列预处理 assistant usage；畸形 usage 跳过或归零，失败不影响推理（`LLMGATES_DEBUG=1` 记录详情）。
