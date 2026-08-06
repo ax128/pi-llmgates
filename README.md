@@ -38,7 +38,7 @@ pi
 
 ## 安装
 
-**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.84.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1 与 0.83.0 也已验证）。
+**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.85.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1、0.83.0 与 0.84.0 也已验证）。
 
 本扩展使用 **native Provider** API，**不支持 pi 0.80.x**。
 

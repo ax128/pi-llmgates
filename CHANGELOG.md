@@ -6,6 +6,17 @@
 
 > 0.2.11 及更早的条目是在 0.2.11 发布后，依据 git 历史与各版本 tag 回补的；只收录对使用者可见的变更，纯内部重构与测试补强不单列。
 
+## [Unreleased]
+
+### 修复
+
+- 支持 pi 0.84.0。0.84 移除了 provider 刷新上下文里的 `context.store`，改为只读快照 `context.stored` + 带代次校验的 `context.publish()`；扩展仍按旧接口读写缓存，于是每次刷新都报 `Failed to read model cache: Cannot read properties of undefined (reading 'read')`，模型目录一个都发布不出来（启动时表现为 `Warning: No models match pattern ...`）。现在两套接口都适配，0.81–0.83 行为不变。
+- 0.84 上目录刷新不再被抢占丢弃。0.84 的 publish 句柄一旦被更新的刷新取代就整体作废，而本扩展每次发布目录都会重新注册 provider、进而触发 pi 的全局刷新——于是并发刷新（尤其是 `/llmgates-reload` 同时刷 core 与多个 2API 实例）会互相作废，刚拉到的目录被静默丢掉，`/endpoint`、`/endpoint-setting` 也会报「superseded」。现在这种情况下目录照常在本会话内发布（仅落盘交由下一次刷新补齐），并标记「内存新于磁盘」，避免随后的缓存恢复把它覆盖回旧目录。
+
+### 变更
+
+- peer 依赖范围放宽到 `>=0.81.0 <0.85.0`。基线仍是 0.81.1，测试与类型检查继续跑在下限上；0.84.0 另跑过实际 pi-ai 编排的端到端冒烟（拉取 → 落盘 → 离线恢复）。
+
 ## [0.2.12] — 2026-08-04
 
 ### 变更

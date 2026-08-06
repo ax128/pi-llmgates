@@ -55,6 +55,7 @@
 | `extensions/provider.ts` | native Provider：登录、模型目录、推理委托 |
 | `extensions/connection.ts` | 连接解析、凭证优先级、`llmgates/config.json` |
 | `extensions/catalog.ts` | 网关 catalog 映射、universal thinking map、endpoint/api 解析、余额解析 |
+| `extensions/catalog-store.ts` | 刷新上下文缓存适配：pi-ai <0.84 的 `context.store` 与 ≥0.84 的 `stored` + `publish()` |
 | `extensions/http.ts` | 有界网络：超时、AbortSignal 合并、同源重定向、5 MiB 上限 |
 | `extensions/model-overrides.ts` | endpoint override 文件唯一出口（`llmgates/models.json`、`2api-models/`） |
 | `extensions/model-pricing.ts` | 静态定价规则（离线兜底） |
