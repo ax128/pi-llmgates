@@ -17,7 +17,6 @@ import type {
 	ProviderStreams,
 	RefreshModelsContext,
 	SimpleStreamOptions,
-	ProviderModelsStore,
 } from "@earendil-works/pi-ai";
 // pi extension loader aliases "@earendil-works/pi-ai" to compat.js; subpath api/*.lazy
 // imports resolve incorrectly (compat.js/api/...). Use the compat entrypoint.
@@ -41,6 +40,10 @@ import {
 	type GatewayModel,
 	type PiProviderModel,
 } from "./catalog.js";
+import {
+	catalogStoreFromRefreshContext,
+	type CatalogStore,
+} from "./catalog-store.js";
 import { applyMoonshotKimiCompatModel } from "./compat/catalog.js";
 import {
 	createModelOverrideLookup,
@@ -259,7 +262,7 @@ export function createLLMGatesProvider(
 	let nextRequestId = 1;
 	let latestRequestId = 0;
 	let pending: PendingCatalog | null = null;
-	let scopedStore: ProviderModelsStore | undefined;
+	let scopedStore: CatalogStore | undefined;
 	let lastConnection: CanonicalConnection | null = null;
 	let lastCheckedAt: number | undefined;
 	let sessionController: AbortController | null = null;
@@ -483,7 +486,8 @@ export function createLLMGatesProvider(
 		const requestId = nextRequestId++;
 		latestRequestId = requestId;
 		// Always capture scoped store for current runtime.
-		scopedStore = context.store;
+		const store = catalogStoreFromRefreshContext(context, logWarn);
+		scopedStore = store;
 
 		const credential = context.credential;
 		const connection =
@@ -501,7 +505,7 @@ export function createLLMGatesProvider(
 
 		// Cache restore first.
 		try {
-			const stored = await context.store.read();
+			const stored = await store.read();
 			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
 				return;
 			if (stored && (!modelsAheadOfStore || connectionChanged)) {
@@ -533,8 +537,7 @@ export function createLLMGatesProvider(
 				)
 					return;
 				if (pending !== pendingCatalog) return;
-				try {
-					await context.store.write({ models: candidate, checkedAt: now() });
+				const publishPending = (persisted: boolean): void => {
 					if (
 						!lifecycleMatches(refreshGeneration) ||
 						requestId !== latestRequestId
@@ -543,10 +546,19 @@ export function createLLMGatesProvider(
 					if (pending !== pendingCatalog) return;
 					clearPending();
 					consumed = true;
-					modelsAheadOfStore = false;
+					modelsAheadOfStore = !persisted;
 					setModels(candidate, true);
 					lastConnection = pendingConnection;
-					lastCheckedAt = now();
+					// Only a persisted catalog starts the freshness window.
+					if (persisted) lastCheckedAt = now();
+				};
+				try {
+					const applied = await store.commit(
+						{ models: candidate, checkedAt: now() },
+						() => publishPending(true),
+					);
+					// Superseded persistence must not discard a validated login catalog.
+					if (!applied) publishPending(false);
 				} catch (error) {
 					if (
 						!lifecycleMatches(refreshGeneration) ||
@@ -607,15 +619,21 @@ export function createLLMGatesProvider(
 			}
 			if (requestId !== latestRequestId) return;
 			if (!connectionStillMatches(requestConnection)) return;
-			await context.store.write({ models: fetched, checkedAt: now() });
-			if (!lifecycleMatches(refreshGeneration)) return;
-			if (requestId !== latestRequestId) return;
-			if (!connectionStillMatches(requestConnection)) return;
-			modelsAheadOfStore = false;
-			setModels(fetched, true);
-			lastConnection = requestConnection;
-			lastCheckedAt = now();
-			wantBackgroundRefresh = false;
+			const publishFetched = (persisted: boolean): void => {
+				if (!lifecycleMatches(refreshGeneration)) return;
+				if (requestId !== latestRequestId) return;
+				if (!connectionStillMatches(requestConnection)) return;
+				modelsAheadOfStore = !persisted;
+				setModels(fetched, true);
+				lastConnection = requestConnection;
+				if (persisted) lastCheckedAt = now();
+				wantBackgroundRefresh = false;
+			};
+			const applied = await store.commit(
+				{ models: fetched, checkedAt: now() },
+				() => publishFetched(true),
+			);
+			if (!applied) publishFetched(false);
 		});
 	}
 
@@ -874,15 +892,21 @@ export function createLLMGatesProvider(
 				if (requestId !== latestRequestId) return;
 				if (controller.signal.aborted) return;
 				if (!connectionStillMatches(requestConnection)) return;
-				await store.write({ models: fetched, checkedAt: now() });
-				if (!lifecycleMatches(gen)) return;
-				if (requestId !== latestRequestId) return;
-				if (controller.signal.aborted) return;
-				if (!connectionStillMatches(requestConnection)) return;
-				modelsAheadOfStore = false;
-				setModels(fetched, true);
-				lastConnection = requestConnection;
-				lastCheckedAt = now();
+				const publishFetched = (persisted: boolean): void => {
+					if (!lifecycleMatches(gen)) return;
+					if (requestId !== latestRequestId) return;
+					if (controller.signal.aborted) return;
+					if (!connectionStillMatches(requestConnection)) return;
+					modelsAheadOfStore = !persisted;
+					setModels(fetched, true);
+					lastConnection = requestConnection;
+					if (persisted) lastCheckedAt = now();
+				};
+				const applied = await store.commit(
+					{ models: fetched, checkedAt: now() },
+					() => publishFetched(true),
+				);
+				if (!applied) publishFetched(false);
 			});
 		} catch (error) {
 			if (error instanceof DOMException && error.name === "AbortError") {
@@ -931,15 +955,24 @@ export function createLLMGatesProvider(
 				if (shutDown || gen !== generation || controller.signal.aborted) return;
 				if (requestId !== latestRequestId) return;
 				if (!connectionStillMatches(requestConnection)) return;
-				await store.write({ models: fetched, checkedAt: now() });
-				if (shutDown || gen !== generation || controller.signal.aborted) return;
-				if (requestId !== latestRequestId) return;
-				if (!connectionStillMatches(requestConnection)) return;
-				modelsAheadOfStore = false;
-				setModels(fetched, true);
-				lastConnection = requestConnection;
-				lastCheckedAt = now();
-				committed = true;
+				const publishFetched = (persisted: boolean): void => {
+					if (shutDown || gen !== generation || controller.signal.aborted)
+						return;
+					if (requestId !== latestRequestId) return;
+					if (!connectionStillMatches(requestConnection)) return;
+					modelsAheadOfStore = !persisted;
+					setModels(fetched, true);
+					lastConnection = requestConnection;
+					if (persisted) lastCheckedAt = now();
+					committed = true;
+				};
+				const applied = await store.commit(
+					{ models: fetched, checkedAt: now() },
+					() => publishFetched(true),
+				);
+				// The command asked for this catalog: publish it even when a newer pi
+				// refresh took the store, so /endpoint still takes effect.
+				if (!applied) publishFetched(false);
 			});
 			// Returning the mapped models lets the command derive the expected api for
 			// `auto` from the same mapping that produced them (spec rev 3).
@@ -996,11 +1029,18 @@ export function createLLMGatesProvider(
 			);
 		},
 		beginSession(_reason: string): void {
+			const restartingAfterShutdown = shutDown;
 			if (sessionController) {
 				sessionController.abort();
 			}
 			generation += 1;
-			modelsAheadOfStore = false;
+			// A session boundary inside a live process does not make the in-memory
+			// catalog older than the store: keep the marker so the next cache
+			// restore cannot undo a catalog that only lives in memory (on pi 0.84
+			// every publish pi superseded lands there, `/endpoint` included).
+			// A restart after shutdown drops the store handle and the connection
+			// with it, so that path starts clean.
+			if (restartingAfterShutdown) modelsAheadOfStore = false;
 			sessionController = new AbortController();
 			activeControllers.add(sessionController);
 			shutDown = false;

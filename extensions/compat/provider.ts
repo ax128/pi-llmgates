@@ -8,7 +8,6 @@ import type {
 	Model,
 	OAuthCredential,
 	Provider,
-	ProviderModelsStore,
 	ProviderStreams,
 	RefreshModelsContext,
 	SimpleStreamOptions,
@@ -18,6 +17,10 @@ import {
 	openAICompletionsApi,
 	openAIResponsesApi,
 } from "@earendil-works/pi-ai/compat";
+import {
+	catalogStoreFromRefreshContext,
+	type CatalogStore,
+} from "../catalog-store.js";
 import {
 	applyAnthropicAdaptiveCompatToModel,
 	applyUniversalThinkingLevelMapToModel,
@@ -121,7 +124,7 @@ interface CatalogResult {
 	explicitContextIds: Set<string>;
 	pricingReady?: boolean;
 	pricingNotified?: boolean;
-	store?: ProviderModelsStore;
+	store?: CatalogStore;
 	requestId?: number;
 	checkedAt?: number;
 }
@@ -477,7 +480,14 @@ export function createCompatProvider(
 	let nextRequestId = 1;
 	let latestRequestId = 0;
 	let pending: PendingCatalog | null = null;
-	let scopedStore: ProviderModelsStore | undefined;
+	let scopedStore: CatalogStore | undefined;
+	/**
+	 * True while the published catalog exists only in memory because pi superseded
+	 * the publish handle before it could persist. Restoring the older stored entry
+	 * over it would undo a refresh the user just asked for, so skip that restore
+	 * until the next persisted commit, connection change, or session restart.
+	 */
+	let modelsAheadOfStore = false;
 	let lastConnection: CompatConnection | null = null;
 	let lastCheckedAt: number | undefined;
 	let pendingRegistryBaseUrl: string | null = null;
@@ -708,10 +718,19 @@ export function createCompatProvider(
 							result.requestId === latestRequestId
 						) {
 							try {
-								await result.store.write({
+								const rewritten = await result.store.commit({
 									models: result.models,
 									checkedAt: result.checkedAt,
 								});
+								if (!rewritten) {
+									// pi 0.84 refuses a superseded handle. The priced catalog
+									// stays published in memory; the next refresh persists it.
+									modelsAheadOfStore = true;
+									logWarn(
+										providerId,
+										"Priced model cache rewrite was superseded by a newer refresh; prices apply to this session and persist on the next refresh.",
+									);
+								}
 							} catch (error) {
 								logWarn(
 									providerId,
@@ -833,7 +852,17 @@ export function createCompatProvider(
 		if (!connection) return;
 		const requestId = nextRequestId++;
 		latestRequestId = requestId;
-		scopedStore = context.store;
+		const store = catalogStoreFromRefreshContext(context, (message) =>
+			logWarn(providerId, message),
+		);
+		scopedStore = store;
+		if (
+			lastConnection &&
+			(lastConnection.baseUrl !== connection.baseUrl ||
+				!keysEqual(lastConnection.apiKey, connection.apiKey))
+		) {
+			modelsAheadOfStore = false;
+		}
 		lastConnection = connection;
 		if (connection.baseUrl !== currentInstance.baseUrl) {
 			pendingRegistryBaseUrl = connection.baseUrl;
@@ -857,10 +886,10 @@ export function createCompatProvider(
 		}
 
 		try {
-			const stored = await context.store.read();
+			const stored = await store.read();
 			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
 				return;
-			restoreFromStore(stored, connection);
+			if (!modelsAheadOfStore) restoreFromStore(stored, connection);
 		} catch (error) {
 			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
 				return;
@@ -884,11 +913,12 @@ export function createCompatProvider(
 					pending !== candidate
 				)
 					return;
-				candidate.catalog.store = context.store;
+				candidate.catalog.store = store;
 				candidate.catalog.requestId = requestId;
 				candidate.catalog.checkedAt = now();
+				let persisted = false;
 				try {
-					await context.store.write({
+					persisted = await store.commit({
 						models: candidate.catalog.models,
 						checkedAt: candidate.catalog.checkedAt,
 					});
@@ -906,13 +936,19 @@ export function createCompatProvider(
 					return;
 				pending = null;
 				consumed = true;
+				// A validated login catalog is published either way; mark it when it
+				// only lives in memory so a later restore cannot undo the login.
+				modelsAheadOfStore = !persisted;
 				setModels(candidate.catalog.models, candidate.catalog);
 				currentInstance = {
 					...currentInstance,
 					baseUrl: candidate.connection.baseUrl,
 				};
 				lastConnection = candidate.connection;
-				lastCheckedAt = now();
+				// Only a persisted catalog starts the freshness window; otherwise the
+				// 5-minute gate would block the background refresh that has to carry
+				// this in-memory catalog to disk.
+				if (persisted) lastCheckedAt = now();
 			});
 			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
 				return;
@@ -964,23 +1000,28 @@ export function createCompatProvider(
 			if (context.signal?.aborted) throw abortError();
 			if (requestId !== latestRequestId || !connectionStillMatches(connection))
 				return;
-			fetched.store = context.store;
+			fetched.store = store;
 			fetched.requestId = requestId;
 			fetched.checkedAt = now();
-			await context.store.write({
-				models: fetched.models,
-				checkedAt: fetched.checkedAt,
-			});
-			if (
-				!lifecycleMatches(refreshGeneration) ||
-				context.signal?.aborted ||
-				requestId !== latestRequestId ||
-				!connectionStillMatches(connection)
-			)
-				return;
-			setModels(fetched.models, fetched);
-			lastConnection = connection;
-			lastCheckedAt = now();
+			const publishFetched = (persisted: boolean): void => {
+				if (
+					!lifecycleMatches(refreshGeneration) ||
+					context.signal?.aborted ||
+					requestId !== latestRequestId ||
+					!connectionStillMatches(connection)
+				)
+					return;
+				modelsAheadOfStore = !persisted;
+				setModels(fetched.models, fetched);
+				lastConnection = connection;
+				// Only a persisted catalog starts the freshness window.
+				if (persisted) lastCheckedAt = now();
+			};
+			const applied = await store.commit(
+				{ models: fetched.models, checkedAt: fetched.checkedAt },
+				() => publishFetched(true),
+			);
+			if (!applied) publishFetched(false);
 		});
 		if (!lifecycleMatches(refreshGeneration)) return;
 	}
@@ -1124,20 +1165,26 @@ export function createCompatProvider(
 				fetched.store = store;
 				fetched.requestId = requestId;
 				fetched.checkedAt = now();
-				await store.write({
-					models: fetched.models,
-					checkedAt: fetched.checkedAt,
-				});
-				if (
-					!lifecycleMatches(requestGeneration) ||
-					controller.signal.aborted ||
-					requestId !== latestRequestId ||
-					!connectionStillMatches(connection)
-				)
-					return;
-				setModels(fetched.models, fetched);
-				lastCheckedAt = now();
-				committed = true;
+				const publishFetched = (persisted: boolean): void => {
+					if (
+						!lifecycleMatches(requestGeneration) ||
+						controller.signal.aborted ||
+						requestId !== latestRequestId ||
+						!connectionStillMatches(connection)
+					)
+						return;
+					modelsAheadOfStore = !persisted;
+					setModels(fetched.models, fetched);
+					if (persisted) lastCheckedAt = now();
+					committed = true;
+				};
+				const applied = await store.commit(
+					{ models: fetched.models, checkedAt: fetched.checkedAt },
+					() => publishFetched(true),
+				);
+				// The command asked for this catalog: publish it even when a newer pi
+				// refresh took the store, so /endpoint-setting still takes effect.
+				if (!applied) publishFetched(false);
 			});
 			// Returning the mapped models lets the caller derive the expected api for
 			// `auto` from the same mapping that produced them.
@@ -1247,6 +1294,7 @@ export function createCompatProvider(
 			if (restartingAfterShutdown) {
 				pending = null;
 				scopedStore = undefined;
+				modelsAheadOfStore = false;
 				lastConnection = null;
 				lastCheckedAt = undefined;
 			}
@@ -1295,19 +1343,23 @@ export function createCompatProvider(
 						fetched.store = store;
 						fetched.requestId = requestId;
 						fetched.checkedAt = now();
-						await store.write({
-							models: fetched.models,
-							checkedAt: fetched.checkedAt,
-						});
-						if (
-							!lifecycleMatches(requestGeneration) ||
-							controller.signal.aborted ||
-							requestId !== latestRequestId ||
-							!connectionStillMatches(connection)
-						)
-							return;
-						setModels(fetched.models, fetched);
-						lastCheckedAt = now();
+						const publishFetched = (persisted: boolean): void => {
+							if (
+								!lifecycleMatches(requestGeneration) ||
+								controller.signal.aborted ||
+								requestId !== latestRequestId ||
+								!connectionStillMatches(connection)
+							)
+								return;
+							modelsAheadOfStore = !persisted;
+							setModels(fetched.models, fetched);
+							if (persisted) lastCheckedAt = now();
+						};
+						const applied = await store.commit(
+							{ models: fetched.models, checkedAt: fetched.checkedAt },
+							() => publishFetched(true),
+						);
+						if (!applied) publishFetched(false);
 					});
 				} catch (error) {
 					if (error instanceof DOMException && error.name === "AbortError")

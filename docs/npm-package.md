@@ -135,7 +135,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider
 pi install npm:@llmgates_api/pi-llmgates-provider@0.2.11
 ```
 
-然后 `/reload`。peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <0.82.0`。
+然后 `/reload`。peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <0.85.0`。
 
 ---
 

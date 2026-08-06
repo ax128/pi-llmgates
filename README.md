@@ -38,7 +38,7 @@ pi
 
 ## 安装
 
-**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.84.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1 与 0.83.0 也已验证）。
+**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.85.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1、0.83.0 与 0.84.0 也已验证）。
 
 本扩展使用 **native Provider** API，**不支持 pi 0.80.x**。
 
@@ -329,6 +329,7 @@ pi
 - `chat` → `openai-completions`，`messages` → `anthropic-messages`，`responses` → `openai-responses`。
 - `auto` 只清除该模型的 per-model endpoint；若存在 `defaults.endpoint`，会回落到 defaults，而非跳过它直达网关值。
 - 命令先原子保存 `~/.pi/agent/llmgates/models.json`，再联网强制刷新 catalog、写入 provider store、发布并校验；目标是当前模型时还会重新绑定 registry 中的新对象。只有全部完成才显示成功。
+- 在 pi 0.84 上，模型缓存的落盘由 pi 按刷新代次接管：若这次写盘被更新的刷新取代，新 catalog 仍会在本会话内发布并生效（命令照常报成功），只是磁盘缓存顺延到下一次刷新补齐——期间不会被旧缓存覆盖回去。
 - `PI_OFFLINE`、网络失败、provider 尚未就绪、store 写入失败或当前模型重绑失败时显示 warning：配置已保存但未完全激活，可联网后重试命令；重绑失败也可用 `/model` 重新选择。
 - 与 `/endpoint-setting`、`/llmgates-reload` 共用同一把 in-flight 锁：任一命令执行期间，其余命令会被拒绝。等待 agent 空闲最多 120s，超时则不写入任何文件并释放锁。
 - 本命令本身不支持批量，批量请用 `/endpoint-setting`。
@@ -346,7 +347,7 @@ pi
 - 列表按 provider 分组，显示「model-id · 名字 · 当前出口」，`*` 表示该模型在 override 文件里有**单独的 per-model 条目**；只由 `defaults.endpoint` 决定出口的模型不打标（这类模型选 `auto` 也没有 per-model 条目可清）。第三方扩展与 pi 内置 provider 的模型没有 `api` 写入通道，因此只作汇总披露、不可勾选；在文本清单中手工写入这些 id 会被明确拒绝并说明原因。
 - 需要交互式界面：TUI 与 RPC 模式可用；`print` / `json` 模式会提示改用 `/endpoint`，不会报错也不会写文件。
 - 每个 provider 只加一次锁、写一次文件、刷新一次，分组串行执行。
-- 三态结果：全部成功为 info；**文件已写入但未激活（离线 / provider 未就绪 / 被更新的刷新取代 / 部分模型未生效 / 当前模型重绑失败）一律为 warning**，不会误报成功；只有**所有** provider 都写入失败才是 error。跨 provider 部分成功时逐 provider 说明状态，已成功的部分保持生效，不回滚。
+- 三态结果：全部成功为 info；**文件已写入但未激活（离线 / provider 未就绪 / 被更新的刷新取代 / 部分模型未生效 / 当前模型重绑失败）一律为 warning**，不会误报成功；只有**所有** provider 都写入失败才是 error。（pi 0.84 上「pi 接管落盘且被更新的刷新取代」不计入未激活——目录已在本会话发布生效，落盘顺延，见 `/endpoint` 一节。）跨 provider 部分成功时逐 provider 说明状态，已成功的部分保持生效，不回滚。
 - 与 `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 共用同一把 in-flight 锁：任一命令执行期间，其余命令会被拒绝。等待 agent 空闲最多 120s，超时则不写入任何文件并释放锁。
 - 2API 的上游是否支持 `messages` / `responses` 取决于你自己的中转部署，本扩展不探测、不拦截；选错了用 `/endpoint-setting` 选 `auto`，或对 core 模型用 `/endpoint chat <model-id>` 回退。
 
