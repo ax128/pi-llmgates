@@ -1,7 +1,20 @@
 # `/endpoint` 模型出口切换命令设计
 
-日期：2026-07-28（rev 3，经第二轮只读复核后修订）
-状态：当前有效，PR #17 已实现并发布
+日期：2026-07-28（rev 4，pi 0.84 存储契约修订）
+状态：当前有效，PR #17 已实现并发布；rev 4 随 PR #33 实施
+
+> **rev 4 修订（pi-ai 0.84，PR #33）**：0.84 用只读快照 `context.stored` + 带代次校验的
+> `context.publish({ persist, update })` 取代了 `context.store.read/write`。publish 只对**当前**
+> 刷新句柄有效，而本扩展每次发布目录都会重新注册 provider、进而让 pi 作废并 abort 这次刷新，
+> 所以「被更新的刷新抢占」在 0.84 上是常态而非异常。据此修订两条原规则：
+>
+> 1. **落盘异常**（写盘真的失败）仍然「不发布 candidate、不报成功」——本条不变；
+> 2. **被 pi 抢占**（publish 整体未执行，既没落盘也没发布）改为**在本会话内照常发布目录并报 `ok`**，
+>    同时标记「内存新于磁盘」，使随后的缓存恢复不能把它覆盖回旧目录；落盘顺延到下一次刷新。
+>    否则 0.84 上 `/endpoint` 几乎永远只能报 superseded，命令等同失效。
+>
+> 未受影响：`PI_OFFLINE`、not-ready、网络/override I/O 失败、以及命令自身 request ID /
+> connection / generation 守卫拒绝的旧刷新——这些仍然按原表报 partial，绝不虚报成功。
 
 ## 目标
 
@@ -295,8 +308,8 @@ delete root.models[targetId].endpoint   // auto
 1. 绕过 freshness window；
 2. 要求 scoped store 与有效 connection 已就绪，否则返回 not-ready；
 3. 对**网络错误**、**override 文件的 I/O 错误**（EACCES/EIO 等）和 **store write 错误**向 command handler 传播；
-4. 只有 store write 成功后才能发布 candidate models；
-5. 返回明确状态，不把 superseded/no-op 当成功；
+4. 只有 store write 成功后才能发布 candidate models；**（rev 4：写盘异常仍然不发布；pi 0.84 因代次抢占而整体跳过 publish 时，改为内存发布 + 标记「内存新于磁盘」）**
+5. 返回明确状态，不把 superseded/no-op 当成功；**（rev 4：pi 侧抢占已在上一条改为发布并报 ok；本条继续约束本扩展自身守卫判定的 superseded）**
 6. 通过新 request ID 使命令前已启动的旧 refresh 不能在命令后覆盖新路由；
 7. `PI_OFFLINE` 时直接返回 offline 状态，不发请求、不报错、不宣称成功。
 
@@ -436,7 +449,8 @@ rev 2 的步骤 7「等待 store commit 与 provider publication」**已删除**
 | `PI_OFFLINE` | partial | 已写新值 | 保留旧模型/store | 保留旧模型 | 离线模式，已保存，下次联网 refresh 生效 |
 | catalog 网络失败或 override 文件 I/O 失败 | partial | 已写新值 | 保留旧模型/store | 保留旧模型 | 已保存但未激活，可重试 |
 | provider store write 失败 | partial | 已写新值 | 不发布 candidate | 保留旧模型 | 已保存但未激活，可重试 |
-| refresh superseded/not-ready | partial | 已写新值 | 不宣称成功 | 保留实际状态 | 未激活或被更新覆盖 |
+| refresh superseded（本扩展守卫判定）/not-ready | partial | 已写新值 | 不宣称成功 | 保留实际状态 | 未激活或被更新覆盖 |
+| **pi 0.84 抢占 publish 句柄（rev 4）** | ok | 已写新值 | 内存发布，标记「内存新于磁盘」，落盘顺延 | 已重绑 | 成功 |
 | registry 验证失败（含 `find()` 返回 undefined） | partial | 已写新值 | 报告实际状态 | 不虚报成功 | 发布未完全生效 |
 | `pi.setModel()` 返回 `false` **或抛错** | partial | 已写新值 | registry 已更新 | 仍为旧对象 | 当前模型重绑失败，请用 `/model` 重新选择 |
 | 全部成功 | ok | 已写新值 | 已发布 | 已重绑（如适用） | 成功 |
@@ -525,8 +539,9 @@ handler 整体包在 `try/catch` 内：任何未预期异常都转为一条三�
 - **`PI_OFFLINE` 下不发请求、不报错，结果为 partial 且配置已写入**；
 - **override 文件 I/O 错误（EACCES）传播为 partial；畸形内容不走该路径（已在写入阶段 fail closed）**；
 - store write 失败不发布 candidate；
+- **pi 0.84 抢占 publish 句柄时仍发布 candidate 并报 ok，且标记「内存新于磁盘」使后续恢复不能回滚它（rev 4）**；
 - 命令前启动的旧 refresh 不能覆盖命令结果；
-- superseded/not-ready 不报成功；
+- 本扩展守卫判定的 superseded 与 not-ready 不报成功；
 - provider 发布后再进行 registry 验证；
 - **foreground refresh 不在 `commitChain` 上自死锁（连续两次命令均能在超时内完成）**；
 - session shutdown 中止 refresh，并且不在新 generation 发布旧结果。

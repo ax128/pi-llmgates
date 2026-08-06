@@ -718,10 +718,19 @@ export function createCompatProvider(
 							result.requestId === latestRequestId
 						) {
 							try {
-								await result.store.commit({
+								const rewritten = await result.store.commit({
 									models: result.models,
 									checkedAt: result.checkedAt,
 								});
+								if (!rewritten) {
+									// pi 0.84 refuses a superseded handle. The priced catalog
+									// stays published in memory; the next refresh persists it.
+									modelsAheadOfStore = true;
+									logWarn(
+										providerId,
+										"Priced model cache rewrite was superseded by a newer refresh; prices apply to this session and persist on the next refresh.",
+									);
+								}
 							} catch (error) {
 								logWarn(
 									providerId,
@@ -936,7 +945,10 @@ export function createCompatProvider(
 					baseUrl: candidate.connection.baseUrl,
 				};
 				lastConnection = candidate.connection;
-				lastCheckedAt = now();
+				// Only a persisted catalog starts the freshness window; otherwise the
+				// 5-minute gate would block the background refresh that has to carry
+				// this in-memory catalog to disk.
+				if (persisted) lastCheckedAt = now();
 			});
 			if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
 				return;

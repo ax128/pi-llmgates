@@ -1029,11 +1029,18 @@ export function createLLMGatesProvider(
 			);
 		},
 		beginSession(_reason: string): void {
+			const restartingAfterShutdown = shutDown;
 			if (sessionController) {
 				sessionController.abort();
 			}
 			generation += 1;
-			modelsAheadOfStore = false;
+			// A session boundary inside a live process does not make the in-memory
+			// catalog older than the store: keep the marker so the next cache
+			// restore cannot undo a catalog that only lives in memory (on pi 0.84
+			// every publish pi superseded lands there, `/endpoint` included).
+			// A restart after shutdown drops the store handle and the connection
+			// with it, so that path starts clean.
+			if (restartingAfterShutdown) modelsAheadOfStore = false;
 			sessionController = new AbortController();
 			activeControllers.add(sessionController);
 			shutDown = false;

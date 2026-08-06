@@ -1,8 +1,15 @@
 # `/endpoint-setting` 交互式端点配置 + 2API 多出口支持
 
-**状态**: 定稿 rev 7
+**状态**: 定稿 rev 8（rev 8 = pi 0.84 存储契约修订，随 PR #33 实施）
 **日期**: 2026-07-29
-**前置**: `2026-07-28-endpoint-command-design.md` (rev 3) — 本文档扩展它，不取代它
+**前置**: `2026-07-28-endpoint-command-design.md` (rev 4) — 本文档扩展它，不取代它
+
+> **rev 8 修订（pi-ai 0.84，PR #33）**：与前置文档 rev 4 同源。0.84 的
+> `context.publish({ persist, update })` 只对当前刷新句柄有效，而发布目录会重新注册 provider
+> 并让 pi 作废本次刷新，因此「被 pi 抢占」是常态。`/endpoint-setting` 的 2API 前台刷新在这种
+> 情况下**照常在本会话发布目录并计入 ok**，标记「内存新于磁盘」以防随后的缓存恢复回滚它，
+> 落盘顺延到下一次刷新。写盘异常、离线、not-ready、以及本扩展自身守卫判定的 superseded
+> 仍然一律 partial，绝不报 ok（§5.4 验收第 7 条据此收窄）。
 **目标版本**: 0.2.0
 **基线**: 0.1.12 (`893f687`)
 
@@ -582,8 +589,11 @@ refreshEndpointForeground(): Promise<EndpointRefreshResult>;
 3. `!scopedStore || !lastConnection` → `not-ready`
 4. `fetchCatalog()`（内含 override reload，见 §5.2）——网络错误向上抛
 5. `withCommit()` 内：generation / abort / requestId / connection 四重校验 →
-   `store.write()` → `setModels()`
-6. 提交成功 → `{ status: "ok", models }`；否则 `superseded`
+   `store.commit(entry, update)`（rev 8：0.84 为 `publish`，<0.84 为 `store.write`）→
+   在 `update` 里 `setModels()`
+6. 提交成功 → `{ status: "ok", models }`；否则 `superseded`。
+   **rev 8：pi 因代次抢占整体跳过 publish 时不算 superseded——照常发布并报 ok，
+   标记「内存新于磁盘」，落盘顺延；写盘异常仍向上抛，四重校验拒绝的仍是 `superseded`**
 7. **绝不在 `withCommit` 体内 await 另一个排在 `commitChain` 上的操作**（死锁，§7.4）
 
 复用 `EndpointRefreshResult` 类型（从 `extensions/provider.ts` 导出）会让
@@ -841,7 +851,8 @@ finally: 清除 guard
 | --- | --- | --- |
 | 全部写入 + 全部校验通过 | ✅ ok | `已切换 N 个模型到 <value>` |
 | 用户取消 / 零选中 | — | `已取消，未修改任何配置`（info，非失败态） |
-| 写入成功，refresh 失败/离线/not-ready/superseded | ⚠️ partial | `配置已保存，联网后重试激活` |
+| 写入成功，refresh 失败/离线/not-ready/superseded（本扩展守卫判定） | ⚠️ partial | `配置已保存，联网后重试激活` |
+| 写入成功，pi 0.84 抢占 publish 句柄（rev 8） | ✅ ok | 目录已发布并生效；落盘顺延到下次刷新 |
 | 写入成功，部分 api 未生效 | ⚠️ partial | 列出未生效的 model id |
 | **跨 provider 写入：部分成功、部分失败** | ⚠️ **partial** | **逐 provider 明示**谁成功/谁失败；已成功部分保持生效 |
 | **全部** provider 写入失败 | ❌ failed | 未改动任何 override 文件 |
@@ -1007,7 +1018,8 @@ P2 是「行为不变」的纯基础设施阶段，P3 之前**任何用户可见
 4. 三种 scheme（`newapi`/`sub2api`/`cpa`）的任意实例数均可切换
 5. 2API 未配置 override 时行为与 0.1.12 逐字节一致（P2 阶段独立验证）
 6. **2API 的 `messages` / `responses` 配置在重启与离线后仍生效，模型不消失（§5.3）**
-7. **2API 的 refresh 失败 / 离线 / not-ready / superseded 均归为 partial，绝不报 ok（§5.4）**
+7. **2API 的 refresh 失败 / 离线 / not-ready / 本扩展守卫判定的 superseded 均归为 partial，绝不报 ok（§5.4）；
+   pi 0.84 抢占 publish 句柄的情形按 rev 8 计入 ok（目录已在本会话发布，落盘顺延）**
 8. 本扩展管辖的模型**全部可选**，无「不推荐」置灰或阻断确认框
 9. **不管辖的模型以汇总方式明确披露；手工写入其 id 时被显式拒绝并说明原因（§2.3）**
 10. **core 被 legacy fail-closed 阻断但 2API 有实例时，`/endpoint-setting` 仍可用（§3.2 Early）**
