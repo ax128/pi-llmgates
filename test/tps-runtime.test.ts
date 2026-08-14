@@ -9,7 +9,7 @@ import { MAX_SUBAGENT_META_READS_PER_SCAN } from "../extensions/tps-subagent.js"
 type Handler = (event: any, ctx: ExtensionContext) => void | Promise<void>;
 type Command = { handler: (args: string, ctx: ExtensionContext) => void | Promise<void> };
 
-function createRuntime(cwd: string) {
+function createRuntime(cwd: string, sessionFile?: string) {
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, Command>();
 	const selections: string[][] = [];
@@ -22,7 +22,10 @@ function createRuntime(cwd: string) {
 			hasUI: true,
 			mode: "tui",
 			cwd,
-			sessionManager: { getSessionId: () => "session-1" },
+			sessionManager: {
+				getSessionId: () => "session-1",
+				getSessionFile: () => sessionFile,
+			},
 			ui: {
 				theme: { fg: (_color: string, text: string) => text },
 				setStatus(_key: string, value: string | undefined) {
@@ -460,6 +463,47 @@ describe("tps runtime subagent ordering", () => {
 			expect(runtime.selections[0].some((line) => line.includes("duplicate-child-model"))).toBe(false);
 		} finally {
 			vi.useRealTimers();
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("ingests async-complete usage when pi-subagents identifies the session by file path", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-path-identity-"));
+		const sessionId = "019fffd6-3903-7569-9b4b-dc3401db7348";
+		const sessionFile = join(cwd, "sessions", `2026-08-14T10-34-17-220Z_${sessionId}.jsonl`);
+		const runtime = createRuntime(cwd, sessionFile);
+		try {
+			await runtime.emit("session_start");
+			runtime.emitNow("before_agent_start");
+			// pi-subagents names the session by its session FILE (resolveCurrentSessionId);
+			// before the identity-form fix this mismatch dropped every async event.
+			runtime.emitEvent("subagent:async-complete", {
+				sessionId: sessionFile,
+				runId: "aabbccdd",
+				results: [
+					{
+						agent: "reviewer",
+						index: 0,
+						model: "llmgates/glm",
+						modelAttempts: [
+							{ model: "llmgates/glm", usage: { turns: 41, input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, cost: 1.3 } },
+						],
+					},
+				],
+			});
+			runtime.emitNow("agent_settled");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This turn");
+			await calls.handler("", runtime.ctx);
+			runtime.scopeChoices.push("This session");
+			await calls.handler("", runtime.ctx);
+
+			expect(runtime.selections[0]?.some((line) => line.includes("41 calls"))).toBe(true);
+			expect(runtime.selections[1]?.some((line) => line.includes("41 calls"))).toBe(true);
+		} finally {
 			await runtime.emit("session_shutdown");
 			rmSync(cwd, { recursive: true, force: true });
 		}

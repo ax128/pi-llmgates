@@ -309,4 +309,61 @@ describe("tps-subagent-bridge", () => {
 		expect(batches).toHaveLength(0);
 		unregister();
 	});
+
+	it("delivers async-complete when the event identifies the session by file path", () => {
+		const sessionId = "019fffd6-3903-7569-9b4b-dc3401db7348";
+		const sessionFile = `/home/yxz/.pi/agent/sessions/proj/2026-08-14T10-34-17-220Z_${sessionId}.jsonl`;
+		const bus = createMemoryEventBus();
+		const batches: SubagentUsageRecord[][] = [];
+		const observed: string[] = [];
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId,
+			sessionFile,
+			workspaceRoot: BRIDGE_WORKSPACE,
+			onRecords: (records) => {
+				batches.push([...records]);
+			},
+			onRunObserved: (runId) => observed.push(runId),
+		});
+
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			sessionId: sessionFile,
+			runId: UUID_RUN,
+			results: [
+				{
+					agent: "reviewer",
+					index: 0,
+					modelAttempts: [
+						{ model: "llmgates/glm", usage: { turns: 41, input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, cost: 1.3 } },
+					],
+				},
+			],
+		});
+
+		expect(observed).toEqual(["1d706627aada48289207bbab8fad3864"]);
+		expect(batches).toHaveLength(1);
+		expect(batches[0]?.[0]?.calls).toBe(41);
+		unregister();
+	});
+
+	it("observes foreground-complete when it identifies the session by file path", () => {
+		const sessionId = "019fffd6-3903-7569-9b4b-dc3401db7348";
+		const sessionFile = `/home/yxz/.pi/agent/sessions/proj/2026-08-14T10-34-17-220Z_${sessionId}.jsonl`;
+		const bus = createMemoryEventBus();
+		const observed: string[] = [];
+		const foregroundRuns: string[] = [];
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId,
+			sessionFile,
+			workspaceRoot: BRIDGE_WORKSPACE,
+			onRecords: () => {},
+			onRunObserved: (runId) => observed.push(runId),
+			onForegroundComplete: (runId) => foregroundRuns.push(runId),
+		});
+
+		bus.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, { sessionId: sessionFile, runId: UUID_RUN });
+		expect(observed).toEqual(["1d706627aada48289207bbab8fad3864"]);
+		expect(foregroundRuns).toEqual(["1d706627aada48289207bbab8fad3864"]);
+		unregister();
+	});
 });

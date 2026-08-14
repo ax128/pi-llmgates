@@ -1,8 +1,11 @@
 import type { EventBus } from "@earendil-works/pi-coding-agent";
 import {
 	extractSubagentUsageFromAsyncComplete,
+	normalizeSubagentSessionIdentity,
 	normalizeRunIdForSourceKey,
+	subagentEventMatchesSession,
 	subagentRunAggregateSourceKey,
+	type SubagentSessionIdentity,
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
 import { envFlag, isPlainObject } from "./util.js";
@@ -12,6 +15,8 @@ export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete"
 
 export interface SubagentUsageBridgeOptions {
 	sessionId: string | null | undefined;
+	/** pi session file path, when known — pi-subagents identifies sessions by it. */
+	sessionFile?: string | null;
 	/** pi session cwd — required; filesystem fallbacks are denied without a workspace root. */
 	workspaceRoot: string;
 	onRecords: (records: readonly SubagentUsageRecord[]) => void;
@@ -45,13 +50,14 @@ export function registerSubagentUsageBridge(
 		return () => {};
 	}
 
+	// pi-subagents names the owning session with `getSessionFile() ?? getSessionId()`,
+	// so events may carry either identity form — match them all.
+	const sessionIdentity: SubagentSessionIdentity | null = normalizeSubagentSessionIdentity(
+		options.sessionId ? { sessionId: options.sessionId, sessionFile: options.sessionFile } : null,
+	);
+
 	const matchingSession = (data: unknown): data is Record<string, unknown> =>
-		Boolean(
-			options.sessionId &&
-				isPlainObject(data) &&
-				typeof data.sessionId === "string" &&
-				data.sessionId === options.sessionId,
-		);
+		isPlainObject(data) && subagentEventMatchesSession(data.sessionId, sessionIdentity);
 
 	const matchingRunId = (data: Record<string, unknown>): string | null => {
 		const candidate =
@@ -74,7 +80,7 @@ export function registerSubagentUsageBridge(
 		if (runId) {
 			options.onRunObserved?.(runId);
 		}
-		const records = extractSubagentUsageFromAsyncComplete(data, options.sessionId, options.workspaceRoot);
+		const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity, options.workspaceRoot);
 		if (records.length > 0) {
 			options.onRecords(records);
 		}

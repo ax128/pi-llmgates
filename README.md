@@ -210,7 +210,7 @@ pi
 4. 将网关 catalog 映射为 pi 模型，按模型设置 `api`（`responses` / `chat_completions` / `messages`）
 5. 跳过 image / video **生成** 类模型（不适合 pi coding agent）
 6. `/balance` — 通过 `GET /v1/user/balance` 查询钱包与订阅
-7. TUI 扩展状态行：agent **运行中**仅 `Turn 17m.19c.$1.78`；**跑完或取消 settle 后**同时展示 `All 1h1m.100c, Turn 30m.20c.$10.10`（All 为 session 累计，Turn 为本轮；下一轮开始时恢复仅 Turn）。session 费用可通过 `/calls` → This session 查看。父会话 assistant 用量在 `message_end` 时统计；同步 pi `subagent` / Cursor `Task` 工具结果与 `.pi-subagents/artifacts/*_meta.json` 汇总计入同一计数器；async / background 子代理通过 `subagent:async-complete` 旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与 Cursor `Task` 仍统计）。用量聚合在后台任务链中执行，不阻塞 agent 循环。计数只在交互式父会话（TUI）进行，因此 rpc 会话里 `/calls` 会回「无记录」并附一句说明而非静默；`-p` / json 模式没有 UI 通道（pi 不为其绑定 `uiContext`，`ctx.hasUI === false`），`/calls` 不输出，以免污染脚本 stdout。
+7. TUI 扩展状态行：agent **运行中**仅 `Turn 17m.19c.$1.78`；**跑完或取消 settle 后**同时展示 `All 1h1m.100c, Turn 30m.20c.$10.10`（All 为 session 累计，Turn 为本轮；下一轮开始时恢复仅 Turn）。session 费用可通过 `/calls` → This session 查看。父会话 assistant 用量在 `message_end` 时统计；同步 pi `subagent` / Cursor `Task` 工具结果与 `_meta.json` 汇总（扫描 `.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧版 `.pi-subagents/artifacts` 及会话文件旁的 `subagent-artifacts/`）计入同一计数器；async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。事件里的 `sessionId` 可能是裸 ID，也可能是会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与 Cursor `Task` 仍统计）。用量聚合在后台任务链中执行，不阻塞 agent 循环。计数只在交互式父会话（TUI）进行，因此 rpc 会话里 `/calls` 会回「无记录」并附一句说明而非静默；`-p` / json 模式没有 UI 通道（pi 不为其绑定 `uiContext`，`ctx.hasUI === false`），`/calls` 不输出，以免污染脚本 stdout。
 
 ## 配置
 
