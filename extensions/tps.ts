@@ -6,7 +6,7 @@
  * immediately and never block the agent loop.
  */
 
-import { watch, type FSWatcher } from "node:fs";
+import { existsSync, watch, type FSWatcher } from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -20,7 +20,7 @@ import {
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromToolExecution,
 	recordSubagentUsageRecords,
-	resolvePiSubagentsArtifactsDir,
+	resolveSubagentArtifactDirs,
 	selectFreshSubagentRecords,
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
@@ -77,10 +77,12 @@ export default function (pi: ExtensionAPI) {
 	let sessionActive = false;
 	let sessionGeneration = 0;
 	let sessionStartedAtMs = 0;
-	let sessionArtifactsDir: string | null = null;
+	// Fixed per session_start: pi-subagents ≥ 0.49 project dir, legacy project dir,
+	// and the session-scoped subagent-artifacts/ dir beside the session file.
+	let sessionArtifactDirs: readonly string[] = [];
 	let subagentIngestState = createSubagentIngestState();
 	let sessionRunIds = new Set<string>();
-	let subagentWatcher: FSWatcher | undefined;
+	const subagentWatchers = new Map<string, FSWatcher>();
 	let subagentMetaScanTimer: ReturnType<typeof setTimeout> | undefined;
 	let unregisterSubagentBridge: (() => void) | undefined;
 
@@ -247,30 +249,32 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function scanSubagentMetaArtifacts(): void {
-		if (!sessionActive || !sessionArtifactsDir) {
+		if (!sessionActive || sessionArtifactDirs.length === 0) {
 			return;
 		}
-		const artifactsDir = sessionArtifactsDir;
+		const artifactDirs = [...sessionArtifactDirs];
 		const startedAtMs = sessionStartedAtMs;
 		const targetStats = requestStartMs !== null ? turnStats : sessionStats;
 		runUsageTask(() => {
-			if (!sessionActive || sessionArtifactsDir !== artifactsDir) {
+			if (!sessionActive) {
 				return;
 			}
 			let truncated = false;
 			const ingestedBefore = subagentIngestState.keys.size;
-			applySubagentRecords(
-				collectPiSubagentsMetaUsage(
-					artifactsDir,
-					startedAtMs,
-					subagentIngestState.keys,
-					sessionRunIds,
-					() => {
-						truncated = true;
-					},
-				),
-				targetStats,
-			);
+			for (const artifactsDir of artifactDirs) {
+				applySubagentRecords(
+					collectPiSubagentsMetaUsage(
+						artifactsDir,
+						startedAtMs,
+						subagentIngestState.keys,
+						sessionRunIds,
+						() => {
+							truncated = true;
+						},
+					),
+					targetStats,
+				);
+			}
 			// A backlog already on disk at session start emits no watcher or tool
 			// events of its own, so the overflow past the per-scan cap needs this
 			// scan to queue the next one. Gate that on `ingested` having grown, not
@@ -300,38 +304,45 @@ export default function (pi: ExtensionAPI) {
 			clearTimeout(subagentMetaScanTimer);
 			subagentMetaScanTimer = undefined;
 		}
-		if (subagentWatcher !== undefined) {
-			subagentWatcher.close();
-			subagentWatcher = undefined;
+		for (const watcher of subagentWatchers.values()) {
+			watcher.close();
 		}
+		subagentWatchers.clear();
 	}
 
 	function ensureSubagentWatcher(): void {
-		if (subagentWatcher !== undefined || !sessionArtifactsDir) {
-			return;
+		let established = false;
+		for (const dir of sessionArtifactDirs) {
+			if (subagentWatchers.has(dir) || !existsSync(dir)) {
+				// Dirs appear lazily (first subagent artifact write); a later ensure
+				// call — tool_execution_end / run-observed / settle — establishes them.
+				continue;
+			}
+			try {
+				// `persistent: false` (as the compat auth watcher already does): a watcher
+				// left open on an abnormal teardown path — one where session_shutdown never
+				// fires — would otherwise hold the event loop open and keep pi from exiting.
+				subagentWatchers.set(
+					dir,
+					watch(dir, { persistent: false }, (_, fileName) => {
+						if (typeof fileName === "string" && fileName.endsWith("_meta.json")) {
+							scheduleSubagentMetaScan();
+						}
+					}),
+				);
+				established = true;
+			} catch {
+				continue;
+			}
 		}
-		try {
-			// `persistent: false` (as the compat auth watcher already does): a watcher
-			// left open on an abnormal teardown path — one where session_shutdown never
-			// fires — would otherwise hold the event loop open and keep pi from exiting.
-			subagentWatcher = watch(
-				sessionArtifactsDir,
-				{ persistent: false },
-				(_, fileName) => {
-					if (typeof fileName === "string" && fileName.endsWith("_meta.json")) {
-						scheduleSubagentMetaScan();
-					}
-				},
-			);
-		} catch {
-			return;
+		if (established) {
+			scanSubagentMetaArtifacts();
 		}
-		scanSubagentMetaArtifacts();
 	}
 
-	function startSubagentWatcher(cwd: string): void {
+	function startSubagentWatcher(cwd: string, sessionFile?: string): void {
 		stopSubagentWatcher();
-		sessionArtifactsDir = resolvePiSubagentsArtifactsDir(cwd);
+		sessionArtifactDirs = resolveSubagentArtifactDirs(cwd, sessionFile);
 		ensureSubagentWatcher();
 	}
 
@@ -439,15 +450,17 @@ export default function (pi: ExtensionAPI) {
 		unregisterSubagentBridge = undefined;
 		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
 		stopSubagentWatcher();
-		sessionArtifactsDir = null;
+		sessionArtifactDirs = [];
 		if (
 			isPrimaryUiSession(ctx) &&
 			isSubagentBridgeEnabled() &&
 			isSubagentToolAvailable(() => pi.getAllTools())
 		) {
-			startSubagentWatcher(ctx.cwd);
+			const sessionFile = ctx.sessionManager.getSessionFile();
+			startSubagentWatcher(ctx.cwd, sessionFile);
 			unregisterSubagentBridge = registerSubagentUsageBridge(pi.events, {
 				sessionId: ctx.sessionManager.getSessionId(),
+				sessionFile,
 				workspaceRoot: ctx.cwd,
 				onRecords: ingestSubagentRecords,
 				onRunObserved: (runId) => {
@@ -525,11 +538,11 @@ export default function (pi: ExtensionAPI) {
 			subagentMetaScanTimer = undefined;
 		}
 
-		const artifactsDir = sessionArtifactsDir;
+		const artifactsDirs = [...sessionArtifactDirs];
 		const startedAtMs = sessionStartedAtMs;
 		const settledTurnStats = turnStats;
 		runUsageTask(() => {
-			if (artifactsDir && sessionArtifactsDir === artifactsDir) {
+			for (const artifactsDir of artifactsDirs) {
 				applySubagentRecords(
 					collectPiSubagentsMetaUsage(
 						artifactsDir,
@@ -564,7 +577,7 @@ export default function (pi: ExtensionAPI) {
 		sessionGeneration += 1;
 		clearRefreshTimer();
 		stopSubagentWatcher();
-		sessionArtifactsDir = null;
+		sessionArtifactDirs = [];
 		subagentIngestState = createSubagentIngestState();
 		sessionRunIds = new Set();
 		const previousStatusCtx = statusCtx;

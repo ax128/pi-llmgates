@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync, type Stats } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
 	emptyModelUsageEntry,
 	normalizeTokenCount,
@@ -9,6 +9,10 @@ import { isPlainObject } from "./util.js";
 
 export const PI_SUBAGENTS_DIR = ".pi-subagents";
 export const PI_SUBAGENTS_ARTIFACTS_DIR = join(PI_SUBAGENTS_DIR, "artifacts");
+/** pi-subagents ≥ 0.49 project-scoped directory (moved from `.pi-subagents/`). */
+export const PI_SUBAGENTS_PROJECT_DIR = join(".pi", "subagents");
+/** Default `artifactDir: "session"` layout: artifacts live beside the parent session file. */
+export const SUBAGENTS_SESSION_ARTIFACTS_DIR_NAME = "subagent-artifacts";
 
 /**
  * Only tools that return child LLM usage. Do NOT add subagent_wait /
@@ -72,6 +76,73 @@ function countersHaveSignal(usage: SubagentUsageCounters): boolean {
 /** Strip hyphens and lowercase so UUID runIds align across meta/tool/event paths (§13.1). */
 export function normalizeRunIdForSourceKey(runId: string): string {
 	return runId.trim().toLowerCase().replace(/-/g, "");
+}
+
+export interface SubagentSessionIdentity {
+	sessionId: string;
+	sessionFile?: string | null;
+}
+
+/** Accept the bare sessionId form (legacy callers/tests) or the full identity. */
+export function normalizeSubagentSessionIdentity(
+	identity: string | SubagentSessionIdentity | null | undefined,
+): SubagentSessionIdentity | null {
+	if (typeof identity === "string") {
+		const sessionId = identity.trim();
+		return sessionId ? { sessionId } : null;
+	}
+	if (!identity || typeof identity !== "object") {
+		return null;
+	}
+	const sessionId = typeof identity.sessionId === "string" ? identity.sessionId.trim() : "";
+	if (!sessionId) {
+		return null;
+	}
+	const sessionFile =
+		typeof identity.sessionFile === "string" && identity.sessionFile.trim()
+			? identity.sessionFile.trim()
+			: null;
+	return { sessionId, sessionFile };
+}
+
+/**
+ * pi-subagents identifies the owning session with `getSessionFile() ?? getSessionId()`
+ * (src/shared/session-identity.ts), so its completion events carry either the bare
+ * session UUID or the `<dir>/<timestamp>_<sessionId>.jsonl` path / basename. Match
+ * every accepted identity form so async usage is never dropped on identity shape.
+ */
+export function subagentEventMatchesSession(
+	eventSessionId: unknown,
+	identity: string | SubagentSessionIdentity | null | undefined,
+): boolean {
+	if (typeof eventSessionId !== "string") {
+		return false;
+	}
+	const normalized = normalizeSubagentSessionIdentity(identity);
+	if (!normalized) {
+		return false;
+	}
+	const observed = eventSessionId.trim();
+	if (!observed) {
+		return false;
+	}
+	if (observed === normalized.sessionId) {
+		return true;
+	}
+	if (normalized.sessionFile && observed === normalized.sessionFile) {
+		return true;
+	}
+	const observedBasename = observed.split(/[/\\]/).pop() ?? "";
+	if (!observedBasename) {
+		return false;
+	}
+	const sessionFileBasename = normalized.sessionFile?.split(/[/\\]/).pop() ?? "";
+	if (sessionFileBasename && observedBasename === sessionFileBasename) {
+		return true;
+	}
+	// pi names session files `<timestamp>_<sessionId>.jsonl`; a payload naming that
+	// file — path or basename — identifies this session even without a stored sessionFile.
+	return observedBasename.endsWith(`_${normalized.sessionId}.jsonl`);
 }
 
 export function normalizeSubagentModelLabel(model: unknown, agent?: unknown): string {
@@ -658,8 +729,22 @@ export function listPiSubagentMetaFiles(artifactsDir: string): string[] {
 	}
 }
 
-export function resolvePiSubagentsArtifactsDir(cwd: string): string {
-	return join(cwd, PI_SUBAGENTS_ARTIFACTS_DIR);
+/**
+ * Candidate `_meta.json` directories for one session: the pi-subagents ≥ 0.49
+ * project dir, the legacy `.pi-subagents/` project dir, and the session-scoped
+ * `subagent-artifacts/` directory beside the parent session file (the default
+ * `artifactDir: "session"` layout). sourceKey dedupe makes overlap safe.
+ */
+export function resolveSubagentArtifactDirs(cwd: string, sessionFile?: string | null): string[] {
+	const dirs = [
+		join(cwd, PI_SUBAGENTS_PROJECT_DIR, "artifacts"),
+		join(cwd, PI_SUBAGENTS_DIR, "artifacts"),
+	];
+	const normalizedSessionFile = typeof sessionFile === "string" ? sessionFile.trim() : "";
+	if (normalizedSessionFile) {
+		dirs.push(join(dirname(normalizedSessionFile), SUBAGENTS_SESSION_ARTIFACTS_DIR_NAME));
+	}
+	return [...new Set(dirs)];
 }
 
 /** Agent workspace root for subagent artifact reads (pi session cwd). */
@@ -958,13 +1043,13 @@ function resolveChildSourceKey(
  */
 export function extractSubagentUsageFromAsyncComplete(
 	data: unknown,
-	currentSessionId: string | null | undefined,
+	currentSessionId: string | SubagentSessionIdentity | null | undefined,
 	workspaceRoot?: string,
 ): SubagentUsageRecord[] {
 	if (!isPlainObject(data)) {
 		return [];
 	}
-	if (typeof data.sessionId !== "string" || !currentSessionId || data.sessionId !== currentSessionId) {
+	if (!subagentEventMatchesSession(data.sessionId, currentSessionId)) {
 		return [];
 	}
 

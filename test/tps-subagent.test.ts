@@ -24,6 +24,8 @@ import {
 	recordSubagentUsageRecords,
 	selectFreshSubagentRecords,
 	sessionFileSourceKey,
+	resolveSubagentArtifactDirs,
+	subagentEventMatchesSession,
 	subagentRunSourceKey,
 } from "../extensions/tps-subagent.js";
 import { totalCostUsd, totalModelCalls } from "../extensions/tps-stats.js";
@@ -1296,5 +1298,80 @@ describe("readPiSubagentsMetaUsage size cap", () => {
 			.toBe("meta:aaaa2222:worker:0");
 		expect(readPiSubagentsMetaUsage(writeOne(artifactsDir, "aaaa3333", MAX_SUBAGENT_META_BYTES + 1)))
 			.toBeNull();
+	});
+});
+
+describe("subagent session identity matching", () => {
+	const sessionId = "019fffd6-3903-7569-9b4b-dc3401db7348";
+	const sessionFile = `/home/yxz/.pi/agent/sessions/proj/2026-08-14T10-34-17-220Z_${sessionId}.jsonl`;
+	const sessionFileBasename = `2026-08-14T10-34-17-220Z_${sessionId}.jsonl`;
+
+	it("accepts every identity form pi-subagents emits", () => {
+		const identity = { sessionId, sessionFile };
+		expect(subagentEventMatchesSession(sessionId, identity)).toBe(true);
+		expect(subagentEventMatchesSession(sessionFile, identity)).toBe(true);
+		expect(subagentEventMatchesSession(`/elsewhere/${sessionFileBasename}`, identity)).toBe(true);
+		expect(subagentEventMatchesSession(sessionFileBasename, identity)).toBe(true);
+		// sessionId-only identity still matches the file-path and basename forms.
+		expect(subagentEventMatchesSession(sessionFile, { sessionId })).toBe(true);
+		expect(subagentEventMatchesSession(sessionFileBasename, { sessionId })).toBe(true);
+		// Legacy bare-string identity behaves as sessionId-only.
+		expect(subagentEventMatchesSession(sessionId, sessionId)).toBe(true);
+	});
+
+	it("rejects other sessions and malformed payloads in every identity form", () => {
+		const identity = { sessionId, sessionFile };
+		expect(subagentEventMatchesSession("019fffd6-3903-7569-9b4b-dc3401db7349", identity)).toBe(false);
+		expect(subagentEventMatchesSession("2026-08-14T10-34-17-220Z_other.jsonl", identity)).toBe(false);
+		expect(subagentEventMatchesSession(undefined, identity)).toBe(false);
+		expect(subagentEventMatchesSession("", identity)).toBe(false);
+		expect(subagentEventMatchesSession(sessionFile, null)).toBe(false);
+		expect(subagentEventMatchesSession(sessionFile, { sessionId: "" })).toBe(false);
+	});
+
+	it("ingests async-complete usage when the event identifies the session by file path", () => {
+		const records = extractSubagentUsageFromAsyncComplete(
+			{
+				sessionId: sessionFile,
+				runId: UUID_RUN,
+				results: [
+					{
+						agent: "reviewer",
+						index: 0,
+						modelAttempts: [
+							{
+								model: "llmgates/glm",
+								usage: { turns: 41, input: 106_974, output: 13_803, cacheRead: 2_652_800, cacheWrite: 0, cost: 1.32 },
+							},
+							],
+						},
+					],
+			},
+			{ sessionId, sessionFile },
+		);
+		expect(records).toHaveLength(1);
+		expect(records[0]?.sourceKey).toBe(`meta:${UUID_NORM}:reviewer:0`);
+		expect(records[0]?.calls).toBe(41);
+		expect(records[0]?.input).toBe(106_974);
+	});
+});
+
+describe("subagent artifact directory candidates", () => {
+	it("covers the pi-subagents ≥ 0.49 project dir, the legacy dir, and the session dir", () => {
+		const sessionId = "019fffd6-3903-7569-9b4b-dc3401db7348";
+		const sessionFile = join(tmpdir(), "proj", `2026-08-14T10-34-17-220Z_${sessionId}.jsonl`);
+		expect(resolveSubagentArtifactDirs("/w", sessionFile)).toEqual([
+			join("/w", ".pi", "subagents", "artifacts"),
+			join("/w", ".pi-subagents", "artifacts"),
+			join(tmpdir(), "proj", "subagent-artifacts"),
+		]);
+		expect(resolveSubagentArtifactDirs("/w")).toEqual([
+			join("/w", ".pi", "subagents", "artifacts"),
+			join("/w", ".pi-subagents", "artifacts"),
+		]);
+		expect(resolveSubagentArtifactDirs("/w", "  ")).toEqual([
+			join("/w", ".pi", "subagents", "artifacts"),
+			join("/w", ".pi-subagents", "artifacts"),
+		]);
 	});
 });
