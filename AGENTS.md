@@ -20,7 +20,7 @@ Pi coding agent 扩展包：`@llmgates_api/pi-llmgates-provider`。
 
 固定节奏：
 
-1. **门禁** → `npm run gate` → `pi install ./llmgates_api-pi-llmgates-provider-<ver>.tgz` → §4 功能清单 → `gate-record-pass.sh` + §5 PASS 回执  
+1. **门禁** → `npm run gate` → 解包 tarball 后 `pi install <目录>`（**不要** `pi install ./*.tgz`，pi 会拒绝启动，见门禁 §3）→ §4 功能清单 → `gate-record-pass.sh` + §5 PASS 回执  
 2. 升版本 → `npm run check` → push 代码 / tag  
 3. 运行 `node ./scripts/npm-publish-auth-link.mjs`  
 4. **把打印出的 `https://www.npmjs.com/login/...` 链接发给用户**  

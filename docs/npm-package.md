@@ -17,7 +17,7 @@
 **完整清单：** [pre-publish-gate.md](./pre-publish-gate.md)
 
 - 无 `.gate/pre-publish-pass.json` 且 commit 与 `HEAD` 一致时，`./scripts/publish-npm.sh` **会拒绝 publish**。
-- 无 gate 文件 / 无对话回执 → 先执行：`npm run gate` → `pi install ./llmgates_api-pi-llmgates-provider-<ver>.tgz` → §4 功能验证 → `./scripts/gate-record-pass.sh --tests "..."` → 贴 §5 回执。
+- 无 gate 文件 / 无对话回执 → 先执行：`npm run gate` → 解包 tarball 后 `pi install <目录>`（**不要** `pi install ./*.tgz`，见 [pre-publish-gate.md §3](./pre-publish-gate.md#3-从本地-npm-包安装必做)）→ §4 功能验证 → `./scripts/gate-record-pass.sh --tests "..."` → 贴 §5 回执。
 - `npm run check` 通过 **不能** 代替本地 npm 包（`.tgz`）安装与 pi 功能验证。
 
 ### A. 准备（Agent 自己做）
