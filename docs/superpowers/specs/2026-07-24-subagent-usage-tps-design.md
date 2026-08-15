@@ -1,9 +1,16 @@
 # TPS 子代理用量全路径采集设计
 
-**状态：** 当前有效（已实施）  
+**状态：** 已实施（设计快照——下列小节的部分细节已被后续演进修正，与代码冲突时以代码为准）  
 **日期：** 2026-07-24  
 **关联模块：** `extensions/tps.ts`、`extensions/tps-subagent.ts`  
 **外部依赖：** pi-subagents（可选；未安装时零开销降级）
+
+> **2026-08-15 修订（对照代码核对）：**
+>
+> - §4.4 / §6.4 的 artifact 目录已扩展为三处：`.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧 `.pi-subagents/artifacts`、会话文件旁的 `subagent-artifacts/`（见 `extensions/tps-subagent.ts` 顶部常量）。
+> - §5.1 `SubagentUsageRecord` 已新增 `modelBreakdown` 字段（per-model 明细，见 2026-07-27 spec）。
+> - §6.2 事件的 `sessionId` 过滤已放宽为三种身份形式等价：裸 ID、会话文件完整路径、basename。
+> - §5.3 / §8 的去重状态已 session 化；文件型 artifact 只接受本会话已观测到的 runId（ownership 门，见 2026-07-27 spec）。
 
 ---
 
@@ -28,7 +35,7 @@ pi-llmgates 的 TPS 扩展已在以下路径统计子代理用量：
 ### 2.1 目标
 
 | ID | 目标 |
-|----|------|
+| ---- | ------ |
 | G1 | 覆盖 pi-subagents 全部常见执行模式的 LLM 用量（token、turns、cost） |
 | G2 | 与现有 TPS 统计合并到同一 `turnStats` / `sessionStats` |
 | G3 | 多源上报时**幂等去重**，同一 child run 只计一次 |
@@ -49,7 +56,7 @@ pi-llmgates 的 TPS 扩展已在以下路径统计子代理用量：
 ## 3. 场景兼容矩阵
 
 | 场景 | 执行模式 | 主采集源 | 兜底源 |
-|------|----------|----------|--------|
+| ------ | ---------- | ---------- | -------- |
 | A | 父 assistant | `message_end` | — |
 | B | foreground 同步 single | `tool_execution_end` | `_meta.json` |
 | C | foreground 同步 parallel / chain | `tool_execution_end`（每 child） | `_meta.json` |
@@ -108,7 +115,7 @@ recordSubagentUsageRecords(targetIsTurn ? turnStats : sessionStats, fresh);
 ### 4.2 模块职责
 
 | 模块 | 职责 |
-|------|------|
+| ------ | ------ |
 | `tps-subagent.ts` | 各数据源 → `SubagentUsageRecord[]`；无 Pi 副作用 |
 | `tps-subagent-bridge.ts` | 检测 subagent、订阅 event bus、session 作用域 |
 | `tps.ts` | 聚合、dedup Set、后台链、UI 刷新（现有） |
@@ -155,7 +162,7 @@ interface SubagentUsageRecord {
 ### 5.3 sourceKey 与去重
 
 | 条件 | sourceKey |
-|------|-----------|
+| ------ | ----------- |
 | 有合法 `runId` + `agent` + index | `meta:{runId}:{agent}:{index}` |
 | 仅 tool 回调 | `tool:{toolCallId}:{index}` |
 | 仅 asyncDir basename | `async:{dirBasename}:{agent}:{index}` |
@@ -165,6 +172,7 @@ interface SubagentUsageRecord {
 **优先：** tool/meta 路径通常先于 event 或兜底到达；同 key 后到者丢弃。
 
 **跨粒度防重复（重要）：** 同一 `runId` 的 **per-child**（`meta:{runId}:{agent}:{index}`）与 **run 级 aggregate**（`meta:{runId}`）是**不同** sourceKey，`Set` dedup 拦不住二者叠加。须遵守：
+
 1. **同一来源 payload 内** per-child 存在时不得再产出 run 级 aggregate（见 §13.9）；
 2. **跨源 ingest**（如 sync `totalChildUsage` aggregate 与后续 meta per-child）彼此互斥——已 ingest 其一则丢弃另一粒度。
 
@@ -216,6 +224,7 @@ interface SubagentUsageRecord {
 **过滤：** `data.sessionId === bridge.currentSessionId`，否则丢弃。
 
 **解析：**
+
 1. 对每个 `results[i]` 按 §5.2 归一化（优先 `modelAttempts[].usage` 求和）。
 2. **§13.9 防重复：** per-child 记录存在时**不得**再产出 run 级 aggregate（二者 sourceKey 不同，Set 拦不住叠加）。
 3. 某 child 仍缺 token 时，按 `asyncDir` 读 `status.json` **per-step**（§6.5）或 `sessionFile`（§6.6）兜底；**不得**把 status run 级 totals 写入每个 child。
@@ -244,6 +253,7 @@ interface SubagentUsageRecord {
 **时机：** `extractFromAsyncComplete` 对仍缺 token 的 child 同步只读一次。
 
 **字段（`AsyncStatus`，v0.35.x `shared/types.ts:833`）：**
+
 - per-step：`steps[i].agent / model / modelAttempts[] / tokens / totalCost / turnCount`；
 - run 级：`totalTokens / totalCost`（**仅在 steps[] 缺失时使用**，避免与 per-step 重复，见 §13.9）。
 
@@ -305,7 +315,7 @@ Bridge 注册时须传入 pi session `cwd` 作为 `workspaceRoot`；`status.json
 ## 12. 风险
 
 | 风险 | 缓解 |
-|------|------|
+| ------ | ------ |
 | pi-subagents payload 变更 | defensive 解析 + 多 fallback + 注释版本参考 0.35.x |
 | result.json 删除 race | 以 event 为主，不 watch result dir |
 | 仅 token 无 cost | cost=0，README 注明 |
@@ -397,7 +407,7 @@ Bridge 注册时须传入 pi session `cwd` 作为 `workspaceRoot`；`status.json
 ### 13.12 复核结论
 
 | 维度 | 结论 |
-|------|------|
+| ------ | ------ |
 | 架构（旁路 event + 纯函数解析） | ✅ 可行，不依赖 patch pi-subagents |
 | async 主路径 | ✅ `subagent:async-complete` 运行时带 token（`modelAttempts`/run 级）；须 defensive 解析（§13.6） |
 | 去重策略 | ⚠️ 须修 UUID runId normalize（§13.1）+ run/per-step 防重复（§13.9） |

@@ -104,7 +104,7 @@ pi
 | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA） | `cpa` | 本地 CLI 订阅代理，默认端口 `8317` | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) |
 | 通用 OpenAI 兼容网关 | `default` | 任意实现 `GET /v1/models` 的网关；仅需 URL + API Key，实例 ID 由 hostname 自动生成 | — |
 
-同一 scheme 可添加多个实例（例如 `work-newapi` 与 `home-newapi`，或两个不同 hostname 的 `default` 实例），不同 scheme 也可并存。`default` 同一 hostname 重复添加时会自动分配 `-2`、`-3` 后缀。Base URL 可不写 `/v1`，扩展会自动规范到 `/v1/models` 探测。默认所有 scheme 共用 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名自动切换协议；如需改用 `messages` / `responses`，用 `/endpoint` 或 `/endpoint-setting` 显式配置（见 [模型出口](#模型出口-endpoint--api)）。
+同一 scheme 可添加多个实例（例如 `work-newapi` 与 `home-newapi`，或两个不同 hostname 的 `default` 实例），不同 scheme 也可并存。`default` 同一 hostname 重复添加时会自动分配 `-2`、`-3` 后缀。Base URL 可不写 `/v1`，扩展会自动规范到 `/v1/models` 探测。默认所有 scheme 共用 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名自动切换协议；如需改用 `messages` / `responses`，用 `/endpoint` 或 `/endpoint-setting` 显式配置（见 [模型出口](#模型出口endpoint--api)）。
 
 ## 添加与管理实例
 
@@ -343,7 +343,7 @@ pi
 }
 ```
 
-- 值接受别名：`responses` / `chat`·`chat_completions`·`completions` / `messages`·`anthropic`。
+- 值接受别名：`responses`·`response` / `chat`·`chat_completions`·`chat-completions`·`completions` / `messages`·`message`·`anthropic`。
 - 优先级：**per-model > `defaults` > `chat_completions`**。不使用网关 `inference_endpoint` 或按 id 的启发式——未配置 override 时行为与 0.1.12 完全一致。
 - 实例之间互相隔离：一个实例的 override 不影响另一个实例的同名模型。
 - 文件不存在（`ENOENT`）表示清空 override；有效 object 替换当前配置；JSON/根结构畸形时 warning 并继续使用该实例的 last-known-good（首次加载则无 override，不与其他实例共享）。其他文件系统错误（如 `EACCES` / `EISDIR`）不会静默改路由：显式刷新在请求 catalog 前失败，后台刷新只 warning，并保留旧模型与缓存。warning 不输出 API key、文件原文或任意底层错误正文。
@@ -369,7 +369,7 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与网关
 
 **`llmgates/2api.json`** — 实例 registry（ID、显示名、scheme、base URL；不含密钥）。
 
-**`llmgates/2api-models/<instanceId>.json`** — 每个实例的出口覆盖，由 `/endpoint`、`/endpoint-setting` 或手工编辑维护；`/llmgates remove` 时随实例一并删除。详见 [模型出口](#模型出口-endpoint--api)。
+**`llmgates/2api-models/<instanceId>.json`** — 每个实例的出口覆盖，由 `/endpoint`、`/endpoint-setting` 或手工编辑维护；`/llmgates remove` 时随实例一并删除。详见 [模型出口](#模型出口endpoint--api)。
 
 **`llmgates/pricing.json`** — 可编辑的 USD / **100 万 token** 单价（`input`、`output`、`cacheRead`、`cacheWrite`）。键为 `modelId` 或 `provider/modelId`（如 `openai/gpt-5.6-sol`）：
 

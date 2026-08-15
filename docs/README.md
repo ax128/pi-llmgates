@@ -13,7 +13,7 @@
 
 ## 设计与实现（内部）
 
-以下文档记录仍然生效的设计决策，可作为实现参考。
+以下文档为实施时的设计记录（历史存档），可作为实现背景参考；部分细节已被后续演进修正，与代码冲突时以代码及其注释为准。
 
 | 文档 | 说明 |
 | --- | --- |
@@ -47,3 +47,13 @@
 | `extensions/tps-stats.ts` | 状态行与 per-model 明细格式化 |
 | `extensions/tps-subagent.ts` | 子代理用量解析（tool / meta / async event） |
 | `extensions/tps-subagent-bridge.ts` | pi-subagents 事件桥接（async/foreground-complete） |
+
+## 脚本
+
+| 脚本 | 职责 |
+| --- | --- |
+| `scripts/pre-publish-gate.sh` | 门禁 §2 自动部分：`check` + `npm pack` + tarball 断言（见 [pre-publish-gate.md](./pre-publish-gate.md)） |
+| `scripts/gate-record-pass.sh` | §4 功能验证通过后写入 `.gate/pre-publish-pass.json` |
+| `scripts/npm-publish-auth-link.mjs` | 取出 npm 浏览器认证链接，发布时发给操作者 |
+| `scripts/publish-npm.sh` | 发布唯一入口：校验 gate + check + 显式 build + publish（含 bump 后 re-pack）；不要绕过它直接 `npm publish` |
+| `scripts/local-cpa-smoke.mjs` | 本地手工冒烟：读 `--agent-dir`（默认 `~/.pi/agent`）真实凭证与 registry，对 `cpa` 实例的 `claude-opus-4-8` 复现一次流式请求；仅人工调试用，不进 CI，也非发版门禁环节 |

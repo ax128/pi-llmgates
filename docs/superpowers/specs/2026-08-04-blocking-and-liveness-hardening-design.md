@@ -90,8 +90,9 @@ shared guard still excludes other endpoint commands for the duration, and outcom
 order still follows display order.
 
 Concurrent targets do reach shared files: every 2API instance persists into the
-same `2api.json`. The endpoint-interactive spec (§8.7) states this extension never
-holds two file locks at once, and concurrency would have broken that — same-process
+same `2api.json`. The file-lock contract documented on `withFileLock()` (`extensions/util.ts`) —
+that this extension never holds two file locks at once — would have been broken by
+concurrency: same-process
 callers racing one `.lock` get ELOCKED and burn `LOCK_OPTIONS.retries`, which on
 exhaustion turns a routine write into a reported failure. So `withFileLock()`
 (`util.ts`) now queues same-path callers in memory *before* anyone calls
@@ -100,7 +101,8 @@ convention. All four lock sites use it — `compat/storage.ts`, `lib.ts`, and bo
 `model-overrides.ts`, the last of which had the same exposure already, since
 `/llmgates remove` and `/endpoint-setting` are guarded by different mechanisms and
 do not exclude each other. Bodies must not re-enter the same path; every current
-one is a self-contained read/modify/atomic write, as §8.7 requires.
+one is a self-contained read/modify/atomic write, as the `withFileLock` contract
+requires.
 
 ### 5. Interaction cancellation
 
