@@ -23,7 +23,7 @@
 ### A. 准备（Agent 自己做）
 
 1. 确认 §0 门禁已通过（`.gate/pre-publish-pass.json` + 对话 PASS 回执）
-2. 确认或升版本：`package.json`、`package-lock.json`、README 中的 `@x.y.z` / `@vX.Y.Z`
+2. 确认或升版本：`package.json`、`package-lock.json`、README 中的 `@x.y.z` / `@vX.Y.Z`，以及本文档 §1 / §2 / §D 示例中的版本号
 3. `npm run check` 通过
 4. commit + `git push origin HEAD`
 5. 打 tag（可先本地）：`VERSION=$(node -p "require('./package.json').version")` → `git tag "v$VERSION"`
@@ -54,10 +54,14 @@ node ./scripts/npm-publish-auth-link.mjs
 ```bash
 set -a && source .env && set +a
 VERSION=$(node -p "require('./package.json').version")
-npm publish --access public --ignore-scripts --otp="<用户回复的验证码>"
+./scripts/publish-npm.sh --otp="<用户回复的验证码>"
 npm view @llmgates_api/pi-llmgates-provider version   # 须等于 $VERSION
 git push origin "v$VERSION"                          # 若尚未推送 tag
 ```
+
+**禁止**绕过脚本直接 `npm publish`：那会跳过 gate 校验（§0）、发布时的显式 build 与 bump 后的 re-pack（§3.3）——正是本手册 §0 要防的路径。
+
+脚本默认还会再跑一次 `npm run check`（typecheck + 全量测试）。OTP 有时效，**且仅当 §A 已在同一 commit 上跑通 check** 时，可用 `SKIP_CHECK=1 ./scripts/publish-npm.sh --otp="<验证码>"` 跳过这次重复检查——gate 校验、显式 build 与 bump 后 re-pack 仍照常执行。未在当前 commit 跑过 check 就不要用。
 
 若用户只说「已验证」且未给码：再跑一次 `npm-publish-auth-link.mjs` 拿新链接，或请用户发当前 OTP。
 
@@ -159,6 +163,7 @@ npm pack --dry-run
 1. `package.json` → `"version"`
 2. `package-lock.json` → 根 `version` 与 `packages[""].version`
 3. `README.md` → 安装示例中的版本
+4. `docs/npm-package.md` → §1 / §2 / §D 示例中的版本
 
 ### 3.3 脚本
 
@@ -212,6 +217,6 @@ git push origin "v$VERSION"
 | 更新 | §2 |
 | **发布** | **先 [pre-publish-gate.md](./pre-publish-gate.md)（含 `gate-record-pass.sh`），再「Agent 标准发布对话」A→B→C→D** |
 | EOTP / 要链接 | 跑 `npm-publish-auth-link.mjs`，把链接给用户，等回复 |
-| 用户回了验证码 | `npm publish --ignore-scripts --otp=...`，再给安装命令 |
+| 用户回了验证码 | `./scripts/publish-npm.sh --otp=...`（不要裸 `npm publish`），再给安装命令 |
 
 **不要**：把 `.env` / OTP 写进仓库；不要 `git add .env`；不要覆盖已发布版本。

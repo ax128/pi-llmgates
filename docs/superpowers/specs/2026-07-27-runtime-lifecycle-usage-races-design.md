@@ -1,5 +1,12 @@
 # Runtime lifecycle and usage race fixes
 
+**Status:** implemented (design snapshot — some details below were superseded by later work; where this conflicts with the code, the code wins).
+
+> **2026-08-15 revision (checked against the code):**
+>
+> - "TPS attribution" below ends with "Event-based usage ingestion keeps its existing exact `sessionId` check" — that is no longer true. `subagentEventMatchesSession()` (`extensions/tps-subagent.ts`) now accepts three equivalent identity forms: the bare session ID, the full session-file path, and its basename.
+> - The run-ID ownership gate for file-based artifacts (`allowedRunIds`) is unchanged and still in force.
+
 ## Goal
 
 Fix the six independently confirmed runtime defects without changing unrelated provider behavior or user-facing configuration:
