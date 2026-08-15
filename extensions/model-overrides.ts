@@ -1,16 +1,15 @@
 /**
- * Per-model endpoint overrides for every scope this extension governs:
- *   core  → ~/.pi/agent/llmgates/models.json
+ * Per-model endpoint overrides for every gateway instance this extension governs:
  *   2api  → ~/.pi/agent/llmgates/2api-models/<instanceId>.json
  *
  * Manual config: force a model's inference endpoint (→ model.api) regardless of
  * gateway hints. No network, no auto-sync. Reloaded on every catalog refresh so
  * edits take effect without a restart.
  *
- * This module is the SINGLE owner of override file paths (spec rev 6 §6.1). The
- * public API takes an `OverrideScope`, never a path: `overridePath()` is private
- * and derives both branches from module constants, so no caller can steer a write
- * at an arbitrary file. `atomicWriteJson` overwrites unconditionally, and a stray
+ * This module is the SINGLE owner of override file paths. The public API takes an
+ * `OverrideScope`, never a path: `overridePath()` is private and derives every
+ * path from module constants, so no caller can steer a write at an arbitrary
+ * file. `atomicWriteJson` overwrites unconditionally, and a stray
  * `join(agentDir, "models.json")` would silently destroy the user's pi-owned
  * modelOverrides — that is the only user-data-loss path in this feature.
  *
@@ -32,26 +31,18 @@ import {
 	withFileLock,
 } from "./util.js";
 
-export const LLMGATES_MODELS_FILE = "llmgates/models.json";
 export const LLMGATES_2API_MODELS_DIR = "llmgates/2api-models";
 
-export type OverrideScope =
-	| { kind: "core" }
-	| { kind: "2api"; instanceId: string };
-
-const CORE_SCOPE: OverrideScope = { kind: "core" };
+export type OverrideScope = { kind: "2api"; instanceId: string };
 
 /**
- * The one and only place an override file path is constructed. Both branches are
- * derived from the constants above; the 2api instance id must survive
- * `normalizeInstanceId` (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, which excludes
- * `..`, separators, and absolute paths) before it is allowed near a path, because
- * llmgates/2api.json is hand-editable and its ids are therefore untrusted input.
+ * The one and only place an override file path is constructed. It is derived
+ * from the constant above; the instance id must survive `normalizeInstanceId`
+ * (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, which excludes `..`, separators, and
+ * absolute paths) before it is allowed near a path, because llmgates/2api.json is
+ * hand-editable and its ids are therefore untrusted input.
  */
 function overridePath(agentDir: string, scope: OverrideScope): string {
-	if (scope.kind === "core") {
-		return join(agentDir, LLMGATES_MODELS_FILE);
-	}
 	// Instance ids are unique case-insensitively in the registry, so lowercasing
 	// keeps the file name stable across `/llmgates remove` + same-id recreation.
 	const instanceId = normalizeInstanceId(scope.instanceId).toLowerCase();
@@ -60,9 +51,9 @@ function overridePath(agentDir: string, scope: OverrideScope): string {
 
 /** Human-readable scope label for error messages (never contains a full path). */
 function scopeLabel(scope: OverrideScope): string {
-	return scope.kind === "core"
-		? LLMGATES_MODELS_FILE
-		: `${LLMGATES_2API_MODELS_DIR}/${scope.instanceId}.json`;
+	// Lowercased to match the file `overridePath()` actually touches, so a warning
+	// never points at a name that is not on disk.
+	return `${LLMGATES_2API_MODELS_DIR}/${scope.instanceId.toLowerCase()}.json`;
 }
 
 export interface ModelOverrideEntry {
@@ -142,7 +133,7 @@ export function createPerModelOverrideIds(
 
 export function readModelOverridesFile(
 	agentDir: string,
-	scope: OverrideScope = CORE_SCOPE,
+	scope: OverrideScope,
 ): ModelOverrideFile | null | undefined {
 	const path = overridePath(agentDir, scope);
 	let raw: string;
@@ -212,7 +203,7 @@ export interface ModelOverrideBatchWrite {
 /**
  * Locked, lossless read-modify-write of N per-model endpoint overrides in ONE
  * scope — a single lock acquisition and a single atomic write, so a batch can
- * never leave half a configuration behind (spec rev 6 §6.1/§7.1).
+ * never leave half a configuration behind.
  *
  * Only ever touches the file `overridePath()` derives for `scope`. NEVER writes
  * <agentDir>/models.json — that file is pi-owned and an accidental overwrite
@@ -323,9 +314,9 @@ export async function writeModelOverrides(
 /** Single-target convenience wrapper — the shape `/endpoint` has always used. */
 export async function writeModelOverride(
 	agentDir: string,
+	scope: OverrideScope,
 	targetId: string,
 	write: ModelOverrideWrite,
-	scope: OverrideScope = CORE_SCOPE,
 ): Promise<void> {
 	await writeModelOverrides(agentDir, scope, [{ targetId, write }]);
 }
@@ -358,7 +349,7 @@ export async function deleteInstanceOverrides(
 export function reloadModelOverridesFromDisk(
 	agentDir: string,
 	apply: (file: ModelOverrideFile | null) => void,
-	scope: OverrideScope = CORE_SCOPE,
+	scope: OverrideScope,
 ): ModelOverrideFile | null | undefined {
 	const file = readModelOverridesFile(agentDir, scope);
 	if (file === undefined) {

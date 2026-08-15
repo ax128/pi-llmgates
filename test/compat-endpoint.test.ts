@@ -108,7 +108,7 @@ describe("2api per-model endpoint override", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			// Includes a Claude-ish id and an explicit upstream inference_endpoint:
-			// core's heuristic would map both away from chat_completions, and using
+			// An id-shape heuristic would map both away from chat_completions, and using
 			// it here would change behavior for users who configured nothing at all.
 			const provider = makeProvider(agentDir, {
 				payload: [

@@ -1,17 +1,16 @@
 import { readFileSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import type {
-	AuthInteraction,
 	Credential,
 	OAuthCredential,
 	Provider,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { EndpointRefreshResult } from "../provider.js";
+import type { EndpointRefreshResult } from "../catalog-store.js";
+import { compatInstanceAddedMessage } from "../login-ui.js";
 import {
 	createCompatBootstrapProvider,
 	createCompatProvider,
-	runCompatInstanceLogin,
 	type CompatBootstrapResult,
 	type CompatProvider,
 	type CompatProviderOptions,
@@ -21,7 +20,6 @@ import {
 	assertAuthEntryAbsent,
 	decodeCompatRefreshMeta,
 	deleteInstanceOverrides,
-	deleteLegacyBootstrapAuthEntry,
 	deleteProviderAuthEntry,
 	deleteProviderAuthEntryIfEqual,
 	listInstances,
@@ -29,31 +27,19 @@ import {
 	removeInstance,
 	writeProviderOAuthCredential,
 } from "./storage.js";
-import {
-	normalizeInstanceId,
-	type CompatInstance,
-	type CompatScheme,
-} from "./types.js";
+import { normalizeInstanceId, type CompatInstance } from "./types.js";
 
 export interface RegisterCompatGatewaysOptions {
 	reservedProviderIds?: Iterable<string>;
 	fetchImpl?: typeof fetch;
 	now?: () => number;
 	createProvider?: (options: CompatProviderOptions) => CompatProvider;
-	/** Register the legacy llmgates-2api recovery provider immediately. */
-	registerBootstrapProvider?: boolean;
 }
 
 export interface CompatGatewayRegistration {
 	providers: Map<string, CompatProvider>;
+	/** The `/login` entry that adds new gateway instances. */
 	bootstrapProvider: Provider;
-	/** Add and register an instance from the merged `/login LLMGates` flow. */
-	loginInstance(
-		interaction: AuthInteraction,
-		scheme: CompatScheme,
-	): Promise<CompatInstance>;
-	/** Register the legacy recovery provider once, only when core login is unavailable. */
-	registerBootstrapProvider(): void;
 	/**
 	 * Foreground refresh for one instance, routed through this module so the
 	 * refreshed catalog is re-registered with pi. The provider's own
@@ -513,7 +499,36 @@ export function registerCompatGateways(
 				);
 			}
 			provider.startInitialPricingSync();
+			announceInstanceAdded(instance);
 		});
+	}
+
+	/**
+	 * The login flow's own `interaction.notify` renders into pi's login dialog,
+	 * which is torn down as soon as `login()` resolves — so the instance id (the
+	 * one thing the `default` scheme derives rather than asks for, and the handle
+	 * every later `/login <id>` and `/balance <id>` needs) would flash for at most
+	 * one frame. Post it as a session message too, which survives the dialog.
+	 *
+	 * Never let this sink the login: the instance is already persisted and
+	 * registered by the time it runs, and some run modes have no session to post
+	 * into.
+	 */
+	function announceInstanceAdded(instance: CompatInstance): void {
+		try {
+			pi.sendMessage(
+				{
+					customType: "llmgates-login",
+					content: compatInstanceAddedMessage(instance),
+					display: true,
+				},
+				{ triggerTurn: false },
+			);
+		} catch (error) {
+			logWarn(
+				`Added ${instance.id}, but the confirmation message could not be posted: ${errorText(error)}`,
+			);
+		}
 	}
 
 	const bootstrapProvider = createCompatBootstrapProvider({
@@ -524,38 +539,7 @@ export function registerCompatGateways(
 		now: options.now,
 		onValidated: persistValidated,
 	});
-	let bootstrapRegistered = false;
-	function registerBootstrapProvider(): void {
-		if (bootstrapRegistered) return;
-		pi.registerProvider(bootstrapProvider);
-		bootstrapRegistered = true;
-	}
-	if (options.registerBootstrapProvider !== false) {
-		registerBootstrapProvider();
-	} else if (hasAuthEntry(startupAuth, bootstrapProvider.id)) {
-		// Remove the old managed marker once the bootstrap provider disappears
-		// from normal `/login`; instance credentials live under their own ids.
-		void deleteLegacyBootstrapAuthEntry(agentDir).catch((error) => {
-			logWarn(
-				`Failed to remove legacy ${bootstrapProvider.id} auth marker: ${errorText(error)}`,
-			);
-		});
-	}
-
-	function loginInstance(
-		interaction: AuthInteraction,
-		scheme: CompatScheme,
-	): Promise<CompatInstance> {
-		return runCompatInstanceLogin(interaction, {
-			reservedProviderIds,
-			resolveExistingInstanceIds: () =>
-				listInstances(agentDir).map((instance) => instance.id),
-			fetchImpl: options.fetchImpl,
-			now: options.now,
-			scheme,
-			onValidated: persistValidated,
-		});
-	}
+	pi.registerProvider(bootstrapProvider);
 
 	pi.registerCommand("llmgates", {
 		description: "List, remove, or get help for compatible gateway instances",
@@ -717,8 +701,6 @@ export function registerCompatGateways(
 	return {
 		providers,
 		bootstrapProvider,
-		loginInstance,
-		registerBootstrapProvider,
 		refreshEndpointForeground,
 	};
 }

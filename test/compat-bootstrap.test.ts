@@ -12,7 +12,7 @@ import { registerCompatGateways } from "../extensions/compat/index.js";
 import { runCompatInstanceLogin } from "../extensions/compat/provider.js";
 import { addInstance, listInstances } from "../extensions/compat/storage.js";
 import { BOOTSTRAP_PROVIDER_ID } from "../extensions/compat/types.js";
-import { COMPAT_DEFAULT_MERGED_LOGIN_INTRO, COMPAT_MERGED_LOGIN_INTRO } from "../extensions/login-ui.js";
+import { COMPAT_BOOTSTRAP_LOGIN_UI, COMPAT_DEFAULT_LOGIN_INTRO } from "../extensions/login-ui.js";
 import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
 import { DiskMergingCredentialStore } from "./helpers/disk-merging-credential-store.js";
@@ -517,8 +517,9 @@ describe("compat bootstrap transaction", () => {
 });
 
 describe("runCompatInstanceLogin", () => {
-	it("uses the merged-login intro and skips the scheme prompt when scheme is preselected", async () => {
+	it("prompts for the gateway type first and reports the added instance", async () => {
 		const interaction = scriptedAuthInteraction([
+			"newapi",
 			"merged-id",
 			"",
 			BASE_URL,
@@ -526,29 +527,31 @@ describe("runCompatInstanceLogin", () => {
 		]);
 		const onValidated = vi.fn(async () => {});
 		await runCompatInstanceLogin(interaction, {
-			scheme: "newapi",
 			fetchImpl: successfulFetch("merged-model"),
 			now: () => NOW,
 			onValidated,
 		});
-		expect(interaction.messages[0]).toBe(COMPAT_MERGED_LOGIN_INTRO);
+		expect(interaction.messages[0]).toBe(COMPAT_BOOTSTRAP_LOGIN_UI.intro.message);
 		expect(interaction.prompts.map((prompt) => prompt.type)).toEqual([
+			"select",
 			"text",
 			"text",
 			"text",
 			"secret",
 		]);
+		// The id is the only handle for `/login <id>` later, so it is reported back.
+		expect(interaction.messages.at(-1)).toContain("merged-id");
 		expect(onValidated).toHaveBeenCalledOnce();
 	});
 
 	it("adds a default gateway with only baseUrl and apiKey and derives the instance id", async () => {
 		const interaction = scriptedAuthInteraction([
+			"default",
 			"https://api.foo.com/v1",
 			"default-key",
 		]);
 		const onValidated = vi.fn(async () => {});
 		await runCompatInstanceLogin(interaction, {
-			scheme: "default",
 			fetchImpl: vi.fn(async (input) => {
 				expect(String(input)).toBe("https://api.foo.com/v1/models");
 				return new Response(JSON.stringify([{ id: "gpt-4o" }]));
@@ -556,8 +559,10 @@ describe("runCompatInstanceLogin", () => {
 			now: () => NOW,
 			onValidated,
 		});
-		expect(interaction.messages[0]).toBe(COMPAT_DEFAULT_MERGED_LOGIN_INTRO);
+		// The generic flow skips the id/name prompts, so its intro must say so.
+		expect(interaction.messages[0]).toBe(COMPAT_DEFAULT_LOGIN_INTRO);
 		expect(interaction.prompts.map((prompt) => prompt.type)).toEqual([
+			"select",
 			"text",
 			"secret",
 		]);
@@ -571,16 +576,17 @@ describe("runCompatInstanceLogin", () => {
 				},
 			}),
 		);
+		// The derived id is otherwise unknowable to the user.
+		expect(interaction.messages.at(-1)).toContain("api.foo.com");
 	});
 
 	it("reports model probe failures for default gateways", async () => {
-		const attemptAnswers = ["https://api.foo.com/v1", "bad-key"];
+		const attemptAnswers = ["default", "https://api.foo.com/v1", "bad-key"];
 		const interaction = scriptedAuthInteraction(
 			Array.from({ length: 5 }, () => attemptAnswers).flat(),
 		);
 		await expect(
 			runCompatInstanceLogin(interaction, {
-				scheme: "default",
 				fetchImpl: vi.fn(async () => new Response("nope", { status: 401 })),
 				now: () => NOW,
 				onValidated: vi.fn(async () => {}),

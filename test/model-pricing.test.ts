@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { toPiModel } from "../extensions/catalog.js";
+import { mapCompatModelsPayload } from "../extensions/compat/catalog.js";
 import { applyPricingCacheToResolver, clearPricingCacheMemory } from "../extensions/model-pricing-cache.js";
 import {
 	KNOWN_UPSTREAM_VENDOR_IDS,
@@ -97,12 +97,15 @@ describe("resolveModelCostRates", () => {
 	});
 
 	it("applies resolved cost to catalog models", () => {
-		const mapped = toPiModel({
-			id: "claude-sonnet-4-6",
-			provider_id: "anthropic",
-			inference_endpoint: "messages",
-		});
-		expect(mapped?.cost.input).toBe(3);
+		const { models } = mapCompatModelsPayload(
+			[{ id: "claude-sonnet-4-6", provider_id: "anthropic" }],
+			{
+				providerId: "work-newapi",
+				inferenceBaseUrl: "https://gateway.example/v1",
+				endpointOverride: () => "messages",
+			},
+		);
+		expect(models[0]?.cost.input).toBe(3);
 		expect(MODEL_PRICING_LAST_UPDATED).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 	});
 });

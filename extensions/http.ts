@@ -34,6 +34,22 @@ export class HttpStatusError extends Error {
 	}
 }
 
+/**
+ * A 2xx whose body is not JSON. Named so callers that probe several optional
+ * routes can tell it apart from a transport failure: gateways commonly answer an
+ * unrouted path with their web UI (`NoRoute` → 200 + HTML) instead of a 404, so
+ * "not JSON" usually means "this deployment does not serve that route", not
+ * "the request failed".
+ */
+export class InvalidJsonError extends Error {
+	readonly operation: string;
+	constructor(operation: string) {
+		super(`${operation} returned invalid JSON`);
+		this.name = "InvalidJsonError";
+		this.operation = operation;
+	}
+}
+
 export class ResponseLimitError extends Error {
 	readonly operation: string;
 	constructor(operation: string, maxBytes: number) {
@@ -226,7 +242,7 @@ export async function requestLimitedJson(options: {
 			try {
 				return JSON.parse(text) as unknown;
 			} catch {
-				throw new Error(`${operation} returned invalid JSON`);
+				throw new InvalidJsonError(operation);
 			}
 		}
 	} catch (error) {

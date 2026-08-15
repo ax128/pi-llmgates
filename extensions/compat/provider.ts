@@ -20,6 +20,7 @@ import {
 import {
 	catalogStoreFromRefreshContext,
 	type CatalogStore,
+	type EndpointRefreshResult,
 } from "../catalog-store.js";
 import {
 	applyAnthropicAdaptiveCompatToModel,
@@ -51,18 +52,18 @@ import {
 	MODELS_REQUEST_TIMEOUT_MS,
 	requestLimitedJson,
 } from "../http.js";
-import { CREDENTIAL_TTL_MS } from "../lib.js";
 import {
 	abortError,
 	CATALOG_BACKGROUND_REFRESH_MS,
+	CREDENTIAL_TTL_MS,
 	keysEqual,
 	MAX_LOGIN_ATTEMPTS,
 	PENDING_TTL_MS,
 } from "../util.js";
 import {
 	COMPAT_BOOTSTRAP_LOGIN_UI,
-	COMPAT_DEFAULT_MERGED_LOGIN_INTRO,
-	COMPAT_MERGED_LOGIN_INTRO,
+	COMPAT_DEFAULT_LOGIN_INTRO,
+	compatInstanceAddedMessage,
 	compatInstanceLoginUi,
 	formatLoginValidationFailure,
 	translateLoginError,
@@ -72,10 +73,6 @@ import {
 	compatModelsUrl,
 	mapCompatModelsPayload,
 } from "./catalog.js";
-// Type-only import of the shared tri-state refresh result. This is a pure type
-// and carries no path or file access, so it does not weaken the scope isolation
-// enforced by the override-path scan.
-import type { EndpointRefreshResult } from "../provider.js";
 import {
 	decodeCompatRefreshMeta,
 	encodeCompatRefreshMeta,
@@ -95,7 +92,7 @@ import {
 	type CompatScheme,
 } from "./types.js";
 
-/** Same shape as the core provider's API_STREAMS: one adapter per supported api. */
+/** One stream adapter per supported api. */
 const COMPAT_API_STREAMS: Record<string, ProviderStreams> = {
 	"openai-completions": openAICompletionsApi(),
 	"anthropic-messages": anthropicMessagesApi(),
@@ -157,9 +154,9 @@ export interface CompatProvider extends Provider {
 	shutdown(): Promise<void>;
 	startBackgroundRefresh(options?: { force?: boolean }): Promise<void>;
 	/**
-	 * Foreground catalog refresh for /endpoint-setting, structurally identical to
-	 * the core provider's: bypasses the freshness window, reloads this instance's
-	 * overrides from disk, re-fetches, and commits+publishes synchronously.
+	 * Foreground catalog refresh for the endpoint commands: bypasses the freshness
+	 * window, reloads this instance's overrides from disk, re-fetches, and
+	 * commits+publishes synchronously.
 	 *
 	 * Returns offline/not-ready/superseded without throwing; THROWS on network,
 	 * override-file I/O, or store-write errors so the command can report `partial`.
@@ -189,11 +186,7 @@ export interface CompatBootstrapProviderOptions {
 	onValidated(result: CompatBootstrapResult): Promise<void>;
 }
 
-export interface CompatInstanceLoginOptions
-	extends CompatBootstrapProviderOptions {
-	/** Preselected scheme; when set the scheme prompt is skipped. */
-	scheme?: CompatScheme;
-}
+export type CompatInstanceLoginOptions = CompatBootstrapProviderOptions;
 
 function logWarn(providerId: string, message: string): void {
 	console.warn(`[pi-llmgates-compat:${providerId}] ${message}`);
@@ -210,9 +203,8 @@ function isCompatScheme(value: string): value is CompatScheme {
 }
 
 /**
- * Interactive "add a 2API instance" flow, shared by the merged LLMGates login
- * (scheme preselected) and the fallback bootstrap provider (scheme prompted).
- * Persists through `onValidated` and resolves with the stored instance.
+ * Interactive "add a gateway instance" flow behind the bootstrap provider's
+ * `/login`. Persists through `onValidated` and resolves with the stored instance.
  */
 export async function runCompatInstanceLogin(
 	interaction: AuthInteraction,
@@ -226,25 +218,20 @@ export async function runCompatInstanceLogin(
 	let lastError: Error | undefined;
 	for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
 		if (interaction.signal?.aborted) throw abortError();
-		const rawScheme =
-			options.scheme ??
-			(await interaction.prompt({
-				type: "select",
-				message: COMPAT_BOOTSTRAP_LOGIN_UI.scheme.message,
-				options: COMPAT_BOOTSTRAP_LOGIN_UI.scheme.options,
-			}));
+		const rawScheme = await interaction.prompt({
+			type: "select",
+			message: COMPAT_BOOTSTRAP_LOGIN_UI.scheme.message,
+			options: COMPAT_BOOTSTRAP_LOGIN_UI.scheme.options,
+		});
 		const scheme = isCompatScheme(rawScheme) ? rawScheme : undefined;
 		const isDefaultScheme = scheme === "default";
 
 		if (attempt === 1) {
-			const introMessage = options.scheme
-				? isDefaultScheme
-					? COMPAT_DEFAULT_MERGED_LOGIN_INTRO
-					: COMPAT_MERGED_LOGIN_INTRO
-				: COMPAT_BOOTSTRAP_LOGIN_UI.intro.message;
 			interaction.notify({
 				type: "info",
-				message: introMessage,
+				message: isDefaultScheme
+					? COMPAT_DEFAULT_LOGIN_INTRO
+					: COMPAT_BOOTSTRAP_LOGIN_UI.intro.message,
 			});
 		}
 
@@ -355,6 +342,12 @@ export async function runCompatInstanceLogin(
 			validationNonce: randomBytes(16).toString("hex"),
 		};
 		await options.onValidated({ instance, credential, initialCatalog });
+		// The `default` scheme derives the instance id from the host, so the user
+		// cannot know it otherwise — and every scheme needs the id for `/login <id>`.
+		interaction.notify({
+			type: "info",
+			message: compatInstanceAddedMessage(instance),
+		});
 		return instance;
 	}
 	throw lastError ?? new Error("Login validation failed");
@@ -768,7 +761,7 @@ export function createCompatProvider(
 		signal: AbortSignal | undefined,
 		fetchGeneration: number,
 	): Promise<CatalogResult> {
-		// Reload from disk on every fetch (same as core) so an externally edited
+		// Reload from disk on every fetch so an externally edited
 		// override file takes effect without restarting pi.
 		const requestEndpointOverride = reloadEndpointOverride();
 		const payload = await requestLimitedJson({
@@ -1217,7 +1210,7 @@ export function createCompatProvider(
 				// pi shows "{name} is configured outside pi." when this api_key entry
 				// is picked in the /login auth-type selector; the name doubles as the
 				// guidance to go back and choose the oauth re-configuration entry.
-				name: `${currentInstance.name} 凭证由 /login LLMGates 管理（重配置请选另一登录项）`,
+				name: `${currentInstance.name} 凭证由 /login ${providerId} 管理（重配置请选另一登录项）`,
 				async check() {
 					const connection = connectionFromCredential(
 						readProviderOAuthCredential(agentDir, providerId),

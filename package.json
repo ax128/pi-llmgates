@@ -1,12 +1,15 @@
 {
   "name": "@llmgates_api/pi-llmgates-provider",
   "version": "0.2.13",
-  "description": "Pi provider extension for LLMGates: dynamic models from /v1/models and /login setup",
+  "description": "Pi provider extension for OpenAI-compatible gateways (NewAPI, Sub2API, CLIProxyAPI): dynamic models from /v1/models and /login setup",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension",
     "llmgates",
+    "newapi",
+    "sub2api",
+    "cliproxyapi",
     "tps"
   ],
   "license": "MIT",

@@ -3,7 +3,6 @@ import { join } from "node:path";
 import {
 	existsSync,
 	mkdtempSync,
-	readFileSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -36,11 +35,12 @@ import {
 	type SelectorSelection,
 	type SelectorSnapshot,
 } from "../extensions/endpoint-selector.js";
-import type { EndpointRefreshResult } from "../extensions/provider.js";
+import type { EndpointRefreshResult } from "../extensions/catalog-store.js";
 import { runCatalogReloadCommand } from "../extensions/llmgates-reload.js";
 
-const CORE = "llmgates";
-const TWO_API = "cpa";
+const MAIN = "work-newapi";
+const CPA = "cpa";
+const MAIN_SCOPE = { kind: "2api", instanceId: MAIN } as const;
 /** Step-2 label for `messages`, straight from SELECTOR_ENDPOINT_OPTIONS. */
 const MESSAGES_CHOICE = SELECTOR_ENDPOINT_OPTIONS.find(
 	(option) => option.choice === "messages",
@@ -50,7 +50,7 @@ afterEach(() => {
 	releaseEndpointInFlight();
 });
 
-function model(id: string, api: Api, provider = CORE, name = id): Model<Api> {
+function model(id: string, api: Api, provider = MAIN, name = id): Model<Api> {
 	return {
 		id,
 		name,
@@ -67,7 +67,7 @@ function model(id: string, api: Api, provider = CORE, name = id): Model<Api> {
 
 function tempDir(): { dir: string; cleanup: () => void } {
 	const dir = mkdtempSync(join(tmpdir(), "llmgates-setting-"));
-	mkdirSync(join(dir, "llmgates"), { recursive: true, mode: 0o700 });
+	mkdirSync(join(dir, "llmgates/2api-models"), { recursive: true, mode: 0o700 });
 	return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -145,7 +145,7 @@ function harness(options: HarnessOptions) {
 		agentDir: options.agentDir,
 		targets: () => targets,
 		writeOverrides: async (scope, writes) => {
-			order.push(`write:${scope.kind === "core" ? "core" : scope.instanceId}`);
+			order.push(`write:${scope.instanceId}`);
 			writeCalls.push({ scope, writes });
 			if (options.writeImpl) return options.writeImpl(scope, writes);
 			await writeModelOverrides(options.agentDir, scope, writes);
@@ -205,38 +205,38 @@ describe("buildSelectorSnapshot", () => {
 	it("groups managed providers and summarizes everything else", () => {
 		const targets: EndpointSettingTarget[] = [
 			{
-				providerId: CORE,
-				label: "core",
-				scope: { kind: "core" },
+				providerId: MAIN,
+				label: `gateway/${MAIN}`,
+				scope: MAIN_SCOPE,
 				refreshEndpointForeground: async () => ({ status: "not-ready" }),
 			},
 			{
-				providerId: TWO_API,
+				providerId: CPA,
 				label: "gateway/cpa",
-				scope: { kind: "2api", instanceId: TWO_API },
+				scope: { kind: "2api", instanceId: CPA },
 				refreshEndpointForeground: async () => ({ status: "not-ready" }),
 			},
 		];
 		const snapshot = buildSelectorSnapshot(
 			targets,
 			[
-				model("core-a", "openai-completions"),
-				model("core-b", "anthropic-messages"),
-				model("cpa-a", "openai-completions", TWO_API),
+				model("gw-a", "openai-completions"),
+				model("gw-b", "anthropic-messages"),
+				model("cpa-a", "openai-completions", CPA),
 				model("x1", "openai-responses", "openai"),
 				model("x2", "openai-responses", "openai"),
 				model("y1", "openai-responses", "cc"),
 			],
-			(target, modelId) => target.providerId === CORE && modelId === "core-b",
+			(target, modelId) => target.providerId === MAIN && modelId === "gw-b",
 		);
 
 		expect(snapshot.groups.map((group) => group.providerId)).toEqual([
-			CORE,
-			TWO_API,
+			MAIN,
+			CPA,
 		]);
 		expect(snapshot.groups[0]!.models).toEqual([
-			{ id: "core-a", name: "core-a", endpoint: "chat", hasOverride: false },
-			{ id: "core-b", name: "core-b", endpoint: "messages", hasOverride: true },
+			{ id: "gw-a", name: "gw-a", endpoint: "chat", hasOverride: false },
+			{ id: "gw-b", name: "gw-b", endpoint: "messages", hasOverride: true },
 		]);
 		expect(snapshot.unmanaged).toEqual({
 			total: 3,
@@ -251,9 +251,9 @@ describe("buildSelectorSnapshot", () => {
 		const snapshot = buildSelectorSnapshot(
 			[
 				{
-					providerId: CORE,
-					label: "core",
-					scope: { kind: "core" },
+					providerId: MAIN,
+					label: `gateway/${MAIN}`,
+					scope: MAIN_SCOPE,
 					refreshEndpointForeground: async () => ({ status: "not-ready" }),
 				},
 			],
@@ -280,7 +280,7 @@ describe("/endpoint-setting override marker", () => {
 		const { dir, cleanup } = tempDir();
 		try {
 			writeFileSync(
-				join(dir, "llmgates/models.json"),
+				join(dir, `llmgates/2api-models/${MAIN}.json`),
 				JSON.stringify({
 					defaults: { endpoint: "responses" },
 					models: { m2: { endpoint: "messages" } },
@@ -288,7 +288,7 @@ describe("/endpoint-setting override marker", () => {
 			);
 			const h = harness({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				registry: [
 					model("m1", "openai-responses"),
 					model("m2", "anthropic-messages"),
@@ -313,27 +313,23 @@ describe("/endpoint-setting override marker", () => {
 		const { dir, cleanup } = tempDir();
 		try {
 			writeFileSync(
-				join(dir, "llmgates/models.json"),
+				join(dir, `llmgates/2api-models/${MAIN}.json`),
 				JSON.stringify({ models: { m1: { endpoint: "messages" } } }),
 			);
-			mkdirSync(join(dir, "llmgates/2api-models"), {
-				recursive: true,
-				mode: 0o700,
-			});
 			writeFileSync(
-				join(dir, `llmgates/2api-models/${TWO_API}.json`),
+				join(dir, `llmgates/2api-models/${CPA}.json`),
 				JSON.stringify({ models: { x1: { endpoint: "responses" } } }),
 			);
 			const h = harness({
 				agentDir: dir,
 				targets: [
-					{ providerId: CORE, scope: { kind: "core" } },
-					{ providerId: TWO_API, scope: { kind: "2api", instanceId: TWO_API } },
+					{ providerId: MAIN, scope: MAIN_SCOPE },
+					{ providerId: CPA, scope: { kind: "2api", instanceId: CPA } },
 				],
 				registry: [
 					model("m1", "anthropic-messages"),
-					model("x1", "openai-responses", TWO_API),
-					model("x2", "openai-completions", TWO_API),
+					model("x1", "openai-responses", CPA),
+					model("x2", "openai-completions", CPA),
 				],
 				pick: undefined,
 			});
@@ -367,7 +363,7 @@ describe("/endpoint-setting mode guard", () => {
 				const h = harness({
 					agentDir: dir,
 					mode,
-					targets: [{ providerId: CORE, scope: { kind: "core" } }],
+					targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 					registry: [model("m1", "openai-completions")],
 					editor: "[x] m1",
 					select: "messages   → anthropic-messages",
@@ -379,7 +375,7 @@ describe("/endpoint-setting mode guard", () => {
 					{ message: expect.stringMatching(/\/endpoint </), level: "error" },
 				]);
 				expect(h.writeCalls).toEqual([]);
-				expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+				expect(existsSync(join(dir, `llmgates/2api-models/${MAIN}.json`))).toBe(false);
 			} finally {
 				cleanup();
 			}
@@ -392,7 +388,7 @@ describe("/endpoint-setting mode guard", () => {
 			const h = harness({
 				agentDir: dir,
 				mode,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				registry: [model("m1", "anthropic-messages")],
 				initialRegistry: [model("m1", "openai-completions")],
 				editor: "[x] m1",
@@ -402,7 +398,7 @@ describe("/endpoint-setting mode guard", () => {
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
 			expect(h.notifications[0]?.level).toBe("info");
-			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe(
+			expect(readModelOverridesFile(dir, MAIN_SCOPE)?.models?.m1?.endpoint).toBe(
 				"messages",
 			);
 		} finally {
@@ -420,7 +416,7 @@ describe("/endpoint-setting mode guard", () => {
 				const h = harness({
 					agentDir: dir,
 					mode,
-					targets: [{ providerId: CORE, scope: { kind: "core" } }],
+					targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 					registry: [model("m1", "anthropic-messages")],
 					initialRegistry: [model("m1", "openai-completions")],
 					editor: "[x] m1",
@@ -457,7 +453,7 @@ describe("/endpoint-setting cancellation", () => {
 		try {
 			const h = harness({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				registry: [model("m1", "openai-completions")],
 				...overrides,
 			});
@@ -469,7 +465,7 @@ describe("/endpoint-setting cancellation", () => {
 			]);
 			expect(h.writeCalls).toEqual([]);
 			expect(h.refreshCalls).toEqual([]);
-			expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+			expect(existsSync(join(dir, `llmgates/2api-models/${MAIN}.json`))).toBe(false);
 			expect(statSync(piModels).mtimeMs).toBe(before);
 		} finally {
 			cleanup();
@@ -484,19 +480,19 @@ describe("/endpoint-setting batch write", () => {
 			const after = [
 				model("c1", "anthropic-messages"),
 				model("c2", "anthropic-messages"),
-				model("p1", "anthropic-messages", TWO_API),
+				model("p1", "anthropic-messages", CPA),
 			];
 			const h = harness({
 				agentDir: dir,
 				targets: [
-					{ providerId: CORE, scope: { kind: "core" } },
-					{ providerId: TWO_API, scope: { kind: "2api", instanceId: TWO_API } },
+					{ providerId: MAIN, scope: MAIN_SCOPE },
+					{ providerId: CPA, scope: { kind: "2api", instanceId: CPA } },
 				],
 				registry: after,
 				initialRegistry: [
 					model("c1", "openai-completions"),
 					model("c2", "openai-completions"),
-					model("p1", "openai-completions", TWO_API),
+					model("p1", "openai-completions", CPA),
 				],
 				editor: "[x] c1\n[x] c2\n[x] p1",
 				select: "messages   → anthropic-messages",
@@ -505,19 +501,19 @@ describe("/endpoint-setting batch write", () => {
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
 			expect(h.writeCalls).toHaveLength(2);
-			expect(h.writeCalls[0]!.scope).toEqual({ kind: "core" });
+			expect(h.writeCalls[0]!.scope).toEqual(MAIN_SCOPE);
 			expect(h.writeCalls[0]!.writes.map((entry) => entry.targetId)).toEqual([
 				"c1",
 				"c2",
 			]);
 			expect(h.writeCalls[1]!.scope).toEqual({
 				kind: "2api",
-				instanceId: TWO_API,
+				instanceId: CPA,
 			});
 			expect(h.writeCalls[1]!.writes.map((entry) => entry.targetId)).toEqual([
 				"p1",
 			]);
-			expect(h.refreshCalls).toEqual([CORE, TWO_API]);
+			expect(h.refreshCalls).toEqual([MAIN, CPA]);
 			expect(h.notifications).toEqual([
 				{ message: expect.stringMatching(/3 model/), level: "info" },
 			]);
@@ -532,12 +528,12 @@ describe("/endpoint-setting batch write", () => {
 			const h = harness({
 				agentDir: dir,
 				targets: [
-					{ providerId: CORE, scope: { kind: "core" } },
-					{ providerId: TWO_API, scope: { kind: "2api", instanceId: TWO_API } },
+					{ providerId: MAIN, scope: MAIN_SCOPE },
+					{ providerId: CPA, scope: { kind: "2api", instanceId: CPA } },
 				],
 				registry: [
 					model("c1", "anthropic-messages"),
-					model("p1", "anthropic-messages", TWO_API),
+					model("p1", "anthropic-messages", CPA),
 				],
 				editor: "[x] c1\n[x] p1",
 				select: "messages   → anthropic-messages",
@@ -545,10 +541,10 @@ describe("/endpoint-setting batch write", () => {
 
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
-			// No interleaving: core's lock is released before the 2API lock is taken.
+			// No interleaving: one instance's lock is released before the next is taken.
 			expect(h.order).toEqual([
-				"write:core",
-				"refresh:llmgates",
+				`write:${MAIN}`,
+				`refresh:${MAIN}`,
 				"write:cpa",
 				"refresh:cpa",
 			]);
@@ -563,12 +559,12 @@ describe("/endpoint-setting batch write", () => {
 			const h = harness({
 				agentDir: dir,
 				targets: [
-					{ providerId: CORE, scope: { kind: "core" } },
-					{ providerId: TWO_API, scope: { kind: "2api", instanceId: TWO_API } },
+					{ providerId: MAIN, scope: MAIN_SCOPE },
+					{ providerId: CPA, scope: { kind: "2api", instanceId: CPA } },
 				],
 				registry: [
 					model("c1", "anthropic-messages"),
-					model("p1", "anthropic-messages", TWO_API),
+					model("p1", "anthropic-messages", CPA),
 				],
 				editor: "[x] c1\n[x] p1",
 				select: "messages   → anthropic-messages",
@@ -576,11 +572,11 @@ describe("/endpoint-setting batch write", () => {
 
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
-			expect(readModelOverridesFile(dir)?.models).toEqual({
+			expect(readModelOverridesFile(dir, MAIN_SCOPE)?.models).toEqual({
 				c1: { endpoint: "messages" },
 			});
 			expect(
-				readModelOverridesFile(dir, { kind: "2api", instanceId: TWO_API })
+				readModelOverridesFile(dir, { kind: "2api", instanceId: CPA })
 					?.models,
 			).toEqual({ p1: { endpoint: "messages" } });
 		} finally {
@@ -598,23 +594,23 @@ describe("/endpoint-setting batch write", () => {
 				// tui picker carries the provider on every row.
 				mode: "rpc",
 				targets: [
-					{ providerId: CORE, label: "core", scope: { kind: "core" } },
+					{ providerId: MAIN, label: `gateway/${MAIN}`, scope: MAIN_SCOPE },
 					{
-						providerId: TWO_API,
+						providerId: CPA,
 						label: "gateway/cpa",
-						scope: { kind: "2api", instanceId: TWO_API },
+						scope: { kind: "2api", instanceId: CPA },
 					},
 				],
-				// A 2API relay re-exporting the same upstream id core already serves: the
+				// Two gateways re-exporting the same upstream id: the
 				// two rendered rows are visually identical, so only the group header can
 				// disambiguate them. Both must be reachable and land in separate files.
 				registry: [
 					model("shared", "anthropic-messages"),
-					model("shared", "anthropic-messages", TWO_API),
+					model("shared", "anthropic-messages", CPA),
 				],
 				initialRegistry: [
 					model("shared", "openai-completions"),
-					model("shared", "openai-completions", TWO_API),
+					model("shared", "openai-completions", CPA),
 				],
 				editor: () => Promise.resolve(checkAll(prefill)),
 				select: "messages   → anthropic-messages",
@@ -629,14 +625,14 @@ describe("/endpoint-setting batch write", () => {
 
 			expect(h.notifications[0]?.level).toBe("info");
 			expect(h.writeCalls.map((call) => call.scope)).toEqual([
-				{ kind: "core" },
-				{ kind: "2api", instanceId: TWO_API },
+				MAIN_SCOPE,
+				{ kind: "2api", instanceId: CPA },
 			]);
-			expect(readModelOverridesFile(dir)?.models?.shared?.endpoint).toBe(
+			expect(readModelOverridesFile(dir, MAIN_SCOPE)?.models?.shared?.endpoint).toBe(
 				"messages",
 			);
 			expect(
-				readModelOverridesFile(dir, { kind: "2api", instanceId: TWO_API })
+				readModelOverridesFile(dir, { kind: "2api", instanceId: CPA })
 					?.models?.shared?.endpoint,
 			).toBe("messages");
 		} finally {
@@ -647,12 +643,12 @@ describe("/endpoint-setting batch write", () => {
 	it("clears overrides for auto and verifies against the refreshed api", async () => {
 		const { dir, cleanup } = tempDir();
 		try {
-			await writeModelOverrides(dir, { kind: "core" }, [
+			await writeModelOverrides(dir, MAIN_SCOPE, [
 				{ targetId: "m1", write: { kind: "set", endpoint: "messages" } },
 			]);
 			const h = harness({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				// `auto` cannot know the resulting api in advance; it must match
 				// whatever this refresh produced.
 				registry: [model("m1", "openai-responses")],
@@ -664,7 +660,7 @@ describe("/endpoint-setting batch write", () => {
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
 			expect(h.notifications[0]?.level).toBe("info");
-			expect(readModelOverridesFile(dir)?.models?.m1).toBeUndefined();
+			expect(readModelOverridesFile(dir, MAIN_SCOPE)?.models?.m1).toBeUndefined();
 		} finally {
 			cleanup();
 		}
@@ -700,14 +696,14 @@ describe("/endpoint-setting tri-state", () => {
 			try {
 				const h = await runWith({
 					agentDir: dir,
-					targets: [{ providerId: CORE, scope: { kind: "core" }, refresh }],
+					targets: [{ providerId: MAIN, scope: MAIN_SCOPE, refresh }],
 				});
 
 				expect(h.notifications).toEqual([
 					{ message: expect.stringMatching(pattern), level: "warning" },
 				]);
 				// The file was still written: partial, never ok, never failed.
-				expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe(
+				expect(readModelOverridesFile(dir, MAIN_SCOPE)?.models?.m1?.endpoint).toBe(
 					"messages",
 				);
 			} finally {
@@ -723,8 +719,8 @@ describe("/endpoint-setting tri-state", () => {
 				agentDir: dir,
 				targets: [
 					{
-						providerId: CORE,
-						scope: { kind: "core" },
+						providerId: MAIN,
+						scope: MAIN_SCOPE,
 						refresh: async () => {
 							throw new Error("network down");
 						},
@@ -735,7 +731,7 @@ describe("/endpoint-setting tri-state", () => {
 			expect(h.notifications).toEqual([
 				{ message: expect.stringMatching(/network down/), level: "warning" },
 			]);
-			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe(
+			expect(readModelOverridesFile(dir, MAIN_SCOPE)?.models?.m1?.endpoint).toBe(
 				"messages",
 			);
 		} finally {
@@ -748,7 +744,7 @@ describe("/endpoint-setting tri-state", () => {
 		try {
 			const h = await runWith({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				// m2 stayed on the old api after the refresh.
 				registry: [
 					model("m1", "anthropic-messages"),
@@ -784,7 +780,7 @@ describe("/endpoint-setting tri-state", () => {
 			try {
 				const h = await runWith({
 					agentDir: dir,
-					targets: [{ providerId: CORE, scope: { kind: "core" } }],
+					targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 					current: model("m1", "openai-completions"),
 					setModelImpl: setModelImpl as (model: Model<Api>) => Promise<boolean>,
 				});
@@ -803,7 +799,7 @@ describe("/endpoint-setting tri-state", () => {
 		try {
 			const h = await runWith({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				current: model("m1", "openai-completions"),
 			});
 
@@ -820,7 +816,7 @@ describe("/endpoint-setting tri-state", () => {
 		try {
 			const h = await runWith({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				current: model("other", "openai-completions"),
 			});
 
@@ -837,20 +833,20 @@ describe("/endpoint-setting tri-state", () => {
 			const h = await runWith({
 				agentDir: dir,
 				targets: [
-					{ providerId: CORE, scope: { kind: "core" } },
-					{ providerId: TWO_API, scope: { kind: "2api", instanceId: TWO_API } },
+					{ providerId: MAIN, scope: MAIN_SCOPE },
+					{ providerId: CPA, scope: { kind: "2api", instanceId: CPA } },
 				],
 				registry: [
 					model("c1", "anthropic-messages"),
-					model("p1", "anthropic-messages", TWO_API),
+					model("p1", "anthropic-messages", CPA),
 				],
 				initialRegistry: [
 					model("c1", "openai-completions"),
-					model("p1", "openai-completions", TWO_API),
+					model("p1", "openai-completions", CPA),
 				],
 				editor: "[x] c1\n[x] p1",
 				writeImpl: async (scope, writes) => {
-					if (scope.kind === "2api") throw new Error("disk full");
+					if (scope.instanceId === CPA) throw new Error("disk full");
 					await writeModelOverrides(dir, scope, writes);
 				},
 			});
@@ -858,9 +854,9 @@ describe("/endpoint-setting tri-state", () => {
 			expect(h.notifications).toHaveLength(1);
 			expect(h.notifications[0]?.level).toBe("warning");
 			// Each provider's state is spelled out; the successful half stays applied.
-			expect(h.notifications[0]?.message).toMatch(/llmgates.*applied/s);
+			expect(h.notifications[0]?.message).toMatch(new RegExp(`${MAIN}.*applied`, "s"));
 			expect(h.notifications[0]?.message).toMatch(/cpa.*disk full/s);
-			expect(readModelOverridesFile(dir)?.models?.c1?.endpoint).toBe(
+			expect(readModelOverridesFile(dir, MAIN_SCOPE)?.models?.c1?.endpoint).toBe(
 				"messages",
 			);
 		} finally {
@@ -874,16 +870,16 @@ describe("/endpoint-setting tri-state", () => {
 			const h = await runWith({
 				agentDir: dir,
 				targets: [
-					{ providerId: CORE, scope: { kind: "core" } },
-					{ providerId: TWO_API, scope: { kind: "2api", instanceId: TWO_API } },
+					{ providerId: MAIN, scope: MAIN_SCOPE },
+					{ providerId: CPA, scope: { kind: "2api", instanceId: CPA } },
 				],
 				registry: [
 					model("c1", "anthropic-messages"),
-					model("p1", "anthropic-messages", TWO_API),
+					model("p1", "anthropic-messages", CPA),
 				],
 				initialRegistry: [
 					model("c1", "openai-completions"),
-					model("p1", "openai-completions", TWO_API),
+					model("p1", "openai-completions", CPA),
 				],
 				editor: "[x] c1\n[x] p1",
 				writeImpl: async () => {
@@ -895,7 +891,7 @@ describe("/endpoint-setting tri-state", () => {
 				{ message: expect.stringMatching(/failed/i), level: "error" },
 			]);
 			expect(h.refreshCalls).toEqual([]);
-			expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+			expect(existsSync(join(dir, `llmgates/2api-models/${MAIN}.json`))).toBe(false);
 		} finally {
 			cleanup();
 		}
@@ -906,7 +902,7 @@ describe("/endpoint-setting tri-state", () => {
 		try {
 			const h = harness({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				registry: [model("m1", "openai-completions")],
 				editor: async () => {
 					throw new Error("editor exploded");
@@ -930,23 +926,23 @@ describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 	it("renders the managed groups and discloses unmanaged models in the prefill", async () => {
 		const { dir, cleanup } = tempDir();
 		try {
-			await writeModelOverrides(dir, { kind: "core" }, [
+			await writeModelOverrides(dir, MAIN_SCOPE, [
 				{ targetId: "c1", write: { kind: "set", endpoint: "messages" } },
 			]);
 			const h = harness({
 				agentDir: dir,
 				mode: "rpc",
 				targets: [
-					{ providerId: CORE, label: "core", scope: { kind: "core" } },
+					{ providerId: MAIN, label: `gateway/${MAIN}`, scope: MAIN_SCOPE },
 					{
-						providerId: TWO_API,
+						providerId: CPA,
 						label: "gateway/cpa",
-						scope: { kind: "2api", instanceId: TWO_API },
+						scope: { kind: "2api", instanceId: CPA },
 					},
 				],
 				registry: [
-					model("c1", "anthropic-messages", CORE, "Core One"),
-					model("p1", "openai-completions", TWO_API, "Gateway One"),
+					model("c1", "anthropic-messages", MAIN, "Core One"),
+					model("p1", "openai-completions", CPA, "Gateway One"),
 					model("x1", "openai-responses", "openai"),
 				],
 				editor: undefined,
@@ -956,7 +952,7 @@ describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 			await runEndpointSettingCommand(h.runtime, h.ctx);
 
 			const prefill = h.prefill();
-			expect(prefill).toMatch(/# ── llmgates · core ──/);
+			expect(prefill).toMatch(new RegExp(`# ── ${MAIN} · gateway/${MAIN} ──`));
 			expect(prefill).toMatch(/# ── cpa · gateway\/cpa ──/);
 			expect(prefill).toMatch(/^\[ ] c1\s+Core One\s+messages \*$/m);
 			expect(prefill).toMatch(/^\[ ] p1\s+Gateway One\s+chat$/m);
@@ -973,7 +969,7 @@ describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 			const h = harness({
 				agentDir: dir,
 				mode: "rpc",
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				registry: [model("m1", "anthropic-messages")],
 				initialRegistry: [model("m1", "openai-completions")],
 				editor: "[x] m1\n[x] not-a-model\nnonsense line",
@@ -987,7 +983,7 @@ describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 			expect(h.notifications[0]?.message).toMatch(/not-a-model/);
 			expect(h.notifications[0]?.message).toMatch(/nonsense line/);
 			// The rejections do not stop the valid selection from being applied.
-			expect(readModelOverridesFile(dir)?.models?.m1?.endpoint).toBe(
+			expect(readModelOverridesFile(dir, MAIN_SCOPE)?.models?.m1?.endpoint).toBe(
 				"messages",
 			);
 		} finally {
@@ -1001,19 +997,19 @@ describe("/endpoint-setting editor checklist (rpc fallback)", () => {
 			let prefill = "";
 			const after = [
 				model("c1", "anthropic-messages"),
-				model("p1", "anthropic-messages", TWO_API),
+				model("p1", "anthropic-messages", CPA),
 			];
 			const h = harness({
 				agentDir: dir,
 				mode: "rpc",
 				targets: [
-					{ providerId: CORE, scope: { kind: "core" } },
-					{ providerId: TWO_API, scope: { kind: "2api", instanceId: TWO_API } },
+					{ providerId: MAIN, scope: MAIN_SCOPE },
+					{ providerId: CPA, scope: { kind: "2api", instanceId: CPA } },
 				],
 				registry: after,
 				initialRegistry: [
 					model("c1", "openai-completions"),
-					model("p1", "openai-completions", TWO_API),
+					model("p1", "openai-completions", CPA),
 				],
 				editor: () => Promise.resolve(checkAll(prefill)),
 				select: "messages   → anthropic-messages",
@@ -1048,7 +1044,7 @@ describe("endpoint in-flight guard", () => {
 			await runEndpointCommand(
 				"messages m1",
 				{
-					coreProviderId: CORE,
+					managedProviderIds: () => [MAIN],
 					refreshEndpointForeground: async () => ({ status: "ok", models: [] }),
 					writeOverride: async () => {
 						throw new Error("must not write");
@@ -1066,7 +1062,7 @@ describe("endpoint in-flight guard", () => {
 			expect(notifications).toEqual([
 				{ message: expect.stringMatching(/already running/i), level: "error" },
 			]);
-			expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+			expect(existsSync(join(dir, `llmgates/2api-models/${MAIN}.json`))).toBe(false);
 		} finally {
 			releaseEndpointInFlight();
 			cleanup();
@@ -1080,8 +1076,8 @@ describe("endpoint in-flight guard", () => {
 			await runCatalogReloadCommand(
 				() => [
 					{
-						providerId: CORE,
-						label: "core",
+						providerId: MAIN,
+						label: `gateway/${MAIN}`,
 						refreshEndpointForeground: async () => ({ status: "ok", models: [] }),
 					},
 				],
@@ -1110,7 +1106,7 @@ describe("endpoint in-flight guard", () => {
 			expect(acquireEndpointInFlight()).toBe(true);
 			const h = harness({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				registry: [model("m1", "openai-completions")],
 				editor: "[x] m1",
 				select: "messages   → anthropic-messages",
@@ -1133,7 +1129,7 @@ describe("endpoint in-flight guard", () => {
 		try {
 			const h = harness({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				registry: [model("m1", "openai-completions")],
 				editor: undefined,
 				select: undefined,
@@ -1155,7 +1151,7 @@ describe("/endpoint-setting bounded idle wait", () => {
 		try {
 			const h = harness({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				registry: [model("m1", "openai-completions")],
 				editor: "[x] m1",
 				select: MESSAGES_CHOICE,
@@ -1173,7 +1169,7 @@ describe("/endpoint-setting bounded idle wait", () => {
 				message: expect.stringMatching(/still busy/i),
 				level: "error",
 			});
-			expect(existsSync(join(dir, "llmgates/models.json"))).toBe(false);
+			expect(existsSync(join(dir, `llmgates/2api-models/${MAIN}.json`))).toBe(false);
 			// Guard released → the next command can run.
 			expect(acquireEndpointInFlight()).toBe(true);
 		} finally {
@@ -1224,7 +1220,7 @@ describe("/endpoint-setting interaction teardown", () => {
 			const interaction = createInteractionCancellation();
 			const h = harness({
 				agentDir: dir,
-				targets: [{ providerId: CORE, scope: { kind: "core" } }],
+				targets: [{ providerId: MAIN, scope: MAIN_SCOPE }],
 				registry: [model("m1", "openai-completions")],
 				editor: "[x] m1",
 				select: MESSAGES_CHOICE,

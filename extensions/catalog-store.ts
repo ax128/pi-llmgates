@@ -8,7 +8,7 @@
  * synchronously right after the store write and answers false once a newer
  * refresh has superseded this one.
  *
- * Both providers keep the store handle past the refresh call (background and
+ * The provider keeps the store handle past the refresh call (background and
  * /endpoint foreground refreshes commit through it), so this adapter exposes the
  * union as one long-lived object: `read()` for the restore phase, `commit()` for
  * the write-then-publish transaction.
@@ -21,6 +21,17 @@ export interface CatalogStoreEntry {
 	models: readonly Model<Api>[];
 	checkedAt?: number;
 }
+
+/**
+ * Tri-state result of a foreground catalog refresh, shared by every command that
+ * drives one (`/endpoint`, `/endpoint-setting`, `/llmgates-reload`) and by the
+ * gateway providers that produce it.
+ */
+export type EndpointRefreshResult =
+	| { status: "offline" }
+	| { status: "not-ready" }
+	| { status: "superseded" }
+	| { status: "ok"; models: Model<Api>[] };
 
 export interface CatalogStore {
 	/** Cached catalog for this refresh phase. Rejects only on the legacy read path. */

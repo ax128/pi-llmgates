@@ -78,7 +78,11 @@ function credential(
 }
 
 describe("compat instance provider", () => {
-	it("creation tolerates llmgates/models.json being a directory", () => {
+	// `llmgates/models.json` was the removed core provider's override file. Nothing
+	// reads it anymore, but it survives an upgrade on disk — these two cases pin
+	// that a leftover copy can neither break instance construction nor leak its
+	// endpoint config into an instance's catalog.
+	it("creation tolerates a leftover llmgates/models.json being a directory", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			mkdirSync(join(agentDir, "llmgates/models.json"));
@@ -89,7 +93,7 @@ describe("compat instance provider", () => {
 		}
 	});
 
-	it("forced refresh keeps openai-completions transport regardless of endpoint config file", async () => {
+	it("forced refresh keeps openai-completions transport regardless of a leftover core override file", async () => {
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
@@ -366,7 +370,10 @@ describe("compat instance provider", () => {
 		}
 	});
 
-	it("does not use LLMGATES_API_KEY or llmgates/config.json as instance credentials", async () => {
+	// Leftovers from the removed core provider (ambient env key, an apiKey still in
+	// llmgates/config.json) survive an upgrade; an instance must ignore both rather
+	// than silently authenticating with a credential the user never gave it.
+	it("does not use ambient env or llmgates/config.json as instance credentials", async () => {
 		let hits = 0;
 		const server = await startLoopbackServer([
 			{
@@ -1137,66 +1144,65 @@ describe("compat instance provider", () => {
 	});
 });
 
-describe("two-way isolation between core and 2api endpoint overrides", () => {
-	// Each scope owns its own file: core reads llmgates/models.json, each 2api
-	// instance reads llmgates/2api-models/<id>.json. Both directions are enforced
-	// so a /endpoint change can never leak into 2api routing and vice versa.
-	// model-overrides.ts is the single path owner and is therefore exempt from both
-	// scans; every other module must go through its scope API. Constant identifiers
+describe("override path ownership and per-instance isolation", () => {
+	// Each gateway instance owns its own file: llmgates/2api-models/<id>.json.
+	// model-overrides.ts is the single path owner and is therefore exempt from the
+	// scan; every other module must go through its scope API. Constant identifiers
 	// are matched alongside literals, because a segmented
 	// join(agentDir, "llmgates", "2api-models", ...) would evade a literal-only check.
-	const CORE_OVERRIDE_PATH = /LLMGATES_MODELS_FILE|llmgates\/models\.json/;
-	const COMPAT_OVERRIDE_PATH = /LLMGATES_2API_MODELS_DIR|2api-models/;
+	const OVERRIDE_PATH = /LLMGATES_2API_MODELS_DIR|2api-models/;
 
-	it("compat modules never reference the core override path", () => {
-		const root = join(import.meta.dirname, "..", "extensions", "compat");
-		// Enumerated from disk, not a hardcoded list, so a newly added compat module
-		// is covered automatically instead of silently escaping the scan.
-		const files = readdirSync(root, { withFileTypes: true })
-			.filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
-			.map((entry) => entry.name);
+	it("no module other than model-overrides.ts references the override path", () => {
+		const root = join(import.meta.dirname, "..", "extensions");
+		// Enumerated from disk, not a hardcoded list, so a newly added module is
+		// covered automatically instead of silently escaping the scan.
+		const files = [
+			...readdirSync(root, { withFileTypes: true })
+				.filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+				.map((entry) => entry.name)
+				.filter((name) => name !== "model-overrides.ts"),
+			...readdirSync(join(root, "compat"), { withFileTypes: true })
+				.filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+				.map((entry) => join("compat", entry.name)),
+		];
 
 		expect(files).toEqual(
-			expect.arrayContaining(["index.ts", "provider.ts", "catalog.ts", "storage.ts", "types.ts"]),
+			expect.arrayContaining([
+				"index.ts",
+				"endpoint.ts",
+				join("compat", "index.ts"),
+				join("compat", "provider.ts"),
+				join("compat", "catalog.ts"),
+				join("compat", "storage.ts"),
+				join("compat", "types.ts"),
+			]),
 		);
 		for (const file of files) {
 			const src = readFileSync(join(root, file), "utf8");
-			expect(src, `compat/${file} must not reference the core override path`).not.toMatch(
-				CORE_OVERRIDE_PATH,
+			expect(src, `${file} must not reference the override path`).not.toMatch(
+				OVERRIDE_PATH,
 			);
 		}
 	});
 
-	it("core modules other than model-overrides never reference the 2api override path", () => {
-		const root = join(import.meta.dirname, "..", "extensions");
-		const files = readdirSync(root, { withFileTypes: true })
-			.filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
-			.map((entry) => entry.name)
-			.filter((name) => name !== "model-overrides.ts");
-
-		expect(files).toContain("provider.ts");
-		for (const file of files) {
-			const src = readFileSync(join(root, file), "utf8");
-			expect(src, `${file} must not reference the 2api override path`).not.toMatch(
-				COMPAT_OVERRIDE_PATH,
-			);
-		}
-	});
-
-	it("model-overrides.ts owns both scope paths", () => {
+	it("model-overrides.ts owns the override path", () => {
 		const src = readFileSync(
 			join(import.meta.dirname, "..", "extensions", "model-overrides.ts"),
 			"utf8",
 		);
-		expect(src).toMatch(CORE_OVERRIDE_PATH);
-		expect(src).toMatch(COMPAT_OVERRIDE_PATH);
+		expect(src).toMatch(OVERRIDE_PATH);
 	});
 
-	it("a core /endpoint override does not affect a 2api instance", async () => {
+	it("another instance's override does not affect this instance's routing", async () => {
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
-			await writeModelOverride(agentDir, "shared-model", { kind: "set", endpoint: "messages" });
+			await writeModelOverride(
+				agentDir,
+				{ kind: "2api", instanceId: "other-instance" },
+				"shared-model",
+				{ kind: "set", endpoint: "messages" },
+			);
 			const provider = createCompatProvider({
 				agentDir,
 				instance: INSTANCE,
@@ -1211,12 +1217,15 @@ describe("two-way isolation between core and 2api endpoint overrides", () => {
 			});
 
 			expect(provider.getModels()[0]?.api).toBe("openai-completions");
+			expect(
+				readModelOverridesFile(agentDir, { kind: "2api", instanceId: INSTANCE.id }),
+			).toBeNull();
 		} finally {
 			cleanup();
 		}
 	});
 
-	it("a 2api override does not affect the core provider", async () => {
+	it("this instance's override does not create another instance's file", async () => {
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
@@ -1224,7 +1233,9 @@ describe("two-way isolation between core and 2api endpoint overrides", () => {
 				{ targetId: "shared-model", write: { kind: "set", endpoint: "responses" } },
 			]);
 
-			expect(readModelOverridesFile(agentDir)).toBeNull();
+			expect(
+				readModelOverridesFile(agentDir, { kind: "2api", instanceId: "other-instance" }),
+			).toBeNull();
 		} finally {
 			cleanup();
 		}

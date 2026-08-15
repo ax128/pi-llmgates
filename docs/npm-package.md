@@ -2,7 +2,7 @@
 
 包名：`@llmgates_api/pi-llmgates-provider`  
 仓库：`https://github.com/ax128/pi-llmgates`  
-作用：Pi coding agent 的 LLMGates Provider 扩展（`pi` keyword package）。
+作用：Pi coding agent 的多网关 Provider 扩展（`pi` keyword package）。
 
 本页供 **Agent / 维护者** 按步骤执行。用户向安装说明见根目录 [README.md](../README.md)。
 
@@ -76,7 +76,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider@VERSION
 pi install -l npm:@llmgates_api/pi-llmgates-provider@VERSION
 ```
 
-并提醒：安装后 `/reload` 或重启 pi，再 `/login LLMGates`。
+并提醒：安装后 `/reload` 或重启 pi，再 `/login` 选择「LLMGates 网关」添加网关实例。
 
 ### 对话节奏（一句话）
 
@@ -119,7 +119,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider@0.2.13
 pi install -l npm:@llmgates_api/pi-llmgates-provider
 ```
 
-安装后：`/reload` 或重启 pi，再 `/login LLMGates`。
+安装后：`/reload` 或重启 pi，再 `/login` 选择「LLMGates 网关」添加网关实例。
 
 ```bash
 npm view @llmgates_api/pi-llmgates-provider version

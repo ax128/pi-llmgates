@@ -12,8 +12,8 @@ function snapshot(): SelectorSnapshot {
 	return {
 		groups: [
 			{
-				providerId: "llmgates",
-				label: "core",
+				providerId: "work-newapi",
+				label: "gateway/work",
 				models: [
 					{ id: "gpt-5.6-sol", name: "GPT-5.6 Sol", endpoint: "chat", hasOverride: false },
 					{ id: "claude-opus-4-8", name: "Opus 4.8", endpoint: "messages", hasOverride: true },
@@ -41,7 +41,7 @@ describe("renderSelectorList", () => {
 	it("groups by provider, labels ownership, and marks existing overrides", () => {
 		const text = renderSelectorList(snapshot());
 
-		expect(text).toMatch(/# ── llmgates · core ──/);
+		expect(text).toMatch(/# ── work-newapi · gateway\/work ──/);
 		expect(text).toMatch(/# ── cpa · gateway\/cpa ──/);
 		// Every managed model is rendered unchecked with id / name / current endpoint.
 		expect(text).toMatch(/^\[ ] gpt-5\.6-sol\s+GPT-5\.6 Sol\s+chat$/m);
@@ -92,8 +92,8 @@ describe("parseSelectorList", () => {
 		);
 
 		expect(result.selected).toEqual([
-			{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
-			{ modelId: "claude-opus-4-8", providerId: "llmgates" },
+			{ modelId: "gpt-5.6-sol", providerId: "work-newapi" },
+			{ modelId: "claude-opus-4-8", providerId: "work-newapi" },
 		]);
 		expect(result.rejected).toEqual([]);
 		expect(result.warnings).toEqual([]);
@@ -105,7 +105,7 @@ describe("parseSelectorList", () => {
 			snapshot(),
 		);
 		expect(result.selected).toEqual([
-			{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
+			{ modelId: "gpt-5.6-sol", providerId: "work-newapi" },
 			{ modelId: "claude-sonnet-5", providerId: "cpa" },
 		]);
 	});
@@ -116,7 +116,7 @@ describe("parseSelectorList", () => {
 			snapshot(),
 		);
 
-		expect(result.selected).toEqual([{ modelId: "gpt-5.6-sol", providerId: "llmgates" }]);
+		expect(result.selected).toEqual([{ modelId: "gpt-5.6-sol", providerId: "work-newapi" }]);
 		expect(result.rejected).toHaveLength(1);
 		expect(result.rejected[0]).toContain("gpt-4o");
 		expect(result.rejected[0]).toMatch(/管辖|写入通道/);
@@ -134,7 +134,7 @@ describe("parseSelectorList", () => {
 			snapshot(),
 		);
 
-		expect(result.selected).toEqual([{ modelId: "gpt-5.6-sol", providerId: "llmgates" }]);
+		expect(result.selected).toEqual([{ modelId: "gpt-5.6-sol", providerId: "work-newapi" }]);
 		expect(result.warnings).toEqual(["[x gpt-5.6-sol", "totally bogus"]);
 	});
 
@@ -143,7 +143,7 @@ describe("parseSelectorList", () => {
 			"[x] gpt-5.6-sol  a  chat\n[x] gpt-5.6-sol  a  chat",
 			snapshot(),
 		);
-		expect(result.selected).toEqual([{ modelId: "gpt-5.6-sol", providerId: "llmgates" }]);
+		expect(result.selected).toEqual([{ modelId: "gpt-5.6-sol", providerId: "work-newapi" }]);
 	});
 
 	it("treats an emptied buffer as zero selections", () => {
@@ -156,8 +156,8 @@ describe("parseSelectorList", () => {
 			return {
 				groups: [
 					{
-						providerId: "llmgates",
-						label: "core",
+						providerId: "work-newapi",
+						label: "gateway/work",
 						models: [{ id: "shared", name: "Shared", endpoint: "chat", hasOverride: false }],
 					},
 					{
@@ -176,7 +176,7 @@ describe("parseSelectorList", () => {
 
 			// Both are reachable, and neither is silently retargeted at the other.
 			expect(parseSelectorList(checked, snap).selected).toEqual([
-				{ modelId: "shared", providerId: "llmgates" },
+				{ modelId: "shared", providerId: "work-newapi" },
 				{ modelId: "shared", providerId: "cpa" },
 			]);
 		});
@@ -197,14 +197,14 @@ describe("parseSelectorList", () => {
 			expect(result.selected).toEqual([]);
 			expect(result.rejected).toHaveLength(1);
 			expect(result.rejected[0]).toContain("shared");
-			expect(result.rejected[0]).toContain("llmgates / cpa");
+			expect(result.rejected[0]).toContain("work-newapi / cpa");
 		});
 
 		it("does not let the unmanaged summary header carry a group over to later rows", () => {
 			const snap = collidingSnapshot();
 			const result = parseSelectorList(
 				[
-					"# ── llmgates · core ──",
+					"# ── work-newapi · gateway/work ──",
 					"# ── 本扩展不管辖（无 api 写入通道，不可配置）──",
 					"[x] shared  Shared  chat",
 				].join("\n"),
@@ -218,7 +218,7 @@ describe("parseSelectorList", () => {
 		it("still resolves an unambiguous id even with no group header present", () => {
 			// Only one provider owns `gpt-5.6-sol`, so a stripped header is harmless.
 			expect(parseSelectorList("[x] gpt-5.6-sol  a  chat", snapshot()).selected).toEqual([
-				{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
+				{ modelId: "gpt-5.6-sol", providerId: "work-newapi" },
 			]);
 		});
 	});

@@ -1,8 +1,6 @@
 /**
  * /endpoint-setting selector rendering + parsing (pure functions, no UI, no I/O).
  *
- * Spec: docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md (rev 7) §4.3/§4.4.
- *
  * TUI step 1 uses `endpoint-picker.ts` (structured selection, no parsing). RPC step 1
  * still renders a checklist into `ui.editor`; the user flips `[ ]` to `[x]` and the
  * edited text comes back here via `parseSelectorList`. Model IDs are resolved against
@@ -34,7 +32,7 @@ export interface SelectorModelRow {
 export interface SelectorGroup {
 	/** pi provider id — the write target for every row in this group. */
 	providerId: string;
-	/** Ownership label shown in the group header, e.g. "core" or "gateway/cpa". */
+	/** Ownership label shown in the group header, e.g. "gateway/cpa". */
 	label: string;
 	models: SelectorModelRow[];
 }
@@ -124,8 +122,8 @@ const GROUP_HEADER_PATTERN = /^#\s*──\s*(\S+)\s*·/;
  * unparseable lines become warnings without aborting the rest.
  *
  * Resolution is GROUP-AWARE. The same model id can legitimately exist under two
- * providers — a 2API relay commonly re-exports the same upstream ids that core
- * serves — and their rendered rows are visually identical, so only the enclosing
+ * providers — two gateways commonly re-export the same upstream ids — and their
+ * rendered rows are visually identical, so only the enclosing
  * group header tells them apart. Binding such an id to whichever group happened
  * to come first would write the override to the WRONG provider's file and leave
  * the other provider's model permanently unreachable from the selector, all while

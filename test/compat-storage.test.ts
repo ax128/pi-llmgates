@@ -6,7 +6,6 @@ import {
 	addInstance,
 	assertAuthEntryAbsent,
 	decodeCompatRefreshMeta,
-	deleteLegacyBootstrapAuthEntry,
 	deleteProviderAuthEntry,
 	deleteProviderAuthEntryIfEqual,
 	encodeCompatRefreshMeta,
@@ -233,39 +232,6 @@ describe("provider auth storage", () => {
 			expect(readJson(path).sibling).toBeDefined();
 		} finally {
 			parent.cleanup();
-		}
-	});
-
-	it("deletes only a validated legacy bootstrap marker", async () => {
-		const { agentDir, cleanup } = withTempAgentDir();
-		const path = join(agentDir, "auth.json");
-		const marker = {
-			type: "oauth",
-			access: "managed",
-			refresh: JSON.stringify({ version: 1, lastInstanceId: "old-instance" }),
-			expires: 4_102_444_800_000,
-		};
-		try {
-			writeJson(path, { "llmgates-2api": credential("real-core-secret") });
-			expect(await deleteLegacyBootstrapAuthEntry(agentDir)).toBe(false);
-			expect(readJson(path)["llmgates-2api"]).toEqual(
-				credential("real-core-secret"),
-			);
-
-			writeJson(path, {
-				"llmgates-2api": { ...marker, unexpected: true },
-			});
-			expect(await deleteLegacyBootstrapAuthEntry(agentDir)).toBe(false);
-			expect(readJson(path)["llmgates-2api"]).toEqual({
-				...marker,
-				unexpected: true,
-			});
-
-			writeJson(path, { "LLMGATES-2API": marker, sibling: credential("keep") });
-			expect(await deleteLegacyBootstrapAuthEntry(agentDir)).toBe(true);
-			expect(readJson(path)).toEqual({ sibling: credential("keep") });
-		} finally {
-			cleanup();
 		}
 	});
 

@@ -1,24 +1,24 @@
 /**
- * /endpoint command — switch (or clear, with `auto`) ONE core model's inference
+ * /endpoint command — switch (or clear, with `auto`) ONE model's inference
  * endpoint and activate it in the current session.
  *
- * Spec: docs/superpowers/specs/2026-07-28-endpoint-command-design.md (rev 3).
- *
- * Flow (spec §命令执行顺序):
+ * Flow:
  *   in-flight guard → parse → bounded waitForIdle → resolve target → locked write →
  *   foreground refresh → registry verify → rebind current model → tri-state notify.
  *
- * The command targets ONLY the core provider (id passed in at registration; it
- * never re-resolves provider identity). The 2API compatibility provider is never
- * a target. Failures are tri-state (ok / partial / failed) and never bubble as an
- * uncaught rejection: whether a failure is `partial` vs `failed` depends on
- * whether the per-model override file was already written.
+ * The command targets the gateway instances this extension registers. Without a
+ * model id it acts on the current model; with one it resolves across every
+ * instance and refuses an id that more than one instance publishes. Failures are
+ * tri-state (ok / partial / failed) and never bubble as an uncaught rejection:
+ * whether a failure is `partial` vs `failed` depends on whether the per-model
+ * override file was already written.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import type { EndpointRefreshResult } from "./catalog-store.js";
+import type { CompatGatewayRegistration } from "./compat/index.js";
 import { writeModelOverride, type ModelOverrideWrite } from "./model-overrides.js";
-import type { EndpointRefreshResult, LLMGatesProvider } from "./provider.js";
 
 export const ENDPOINT_COMMAND = "endpoint";
 export const ENDPOINT_USAGE = "Usage: /endpoint <chat|messages|responses|auto> [model-id]";
@@ -65,11 +65,16 @@ export interface EndpointModelLookup {
 	find(provider: string, modelId: string): Model<Api> | undefined;
 }
 
-/** Provider-side dependencies (foreground refresh + override writer). */
+/** Provider-side dependencies (target set, foreground refresh, override writer). */
 export interface EndpointRuntime {
-	coreProviderId: string;
-	refreshEndpointForeground(): Promise<EndpointRefreshResult>;
-	writeOverride(targetId: string, write: ModelOverrideWrite): Promise<void>;
+	/** Ids of the gateway instances this extension manages, in display order. */
+	managedProviderIds(): string[];
+	refreshEndpointForeground(providerId: string): Promise<EndpointRefreshResult>;
+	writeOverride(
+		providerId: string,
+		targetId: string,
+		write: ModelOverrideWrite,
+	): Promise<void>;
 }
 
 /** Context-side dependencies. `getModel` is a getter so post-rebind reads are fresh. */
@@ -176,21 +181,21 @@ export async function runEndpointCommand(
 			return;
 		}
 
-		const target = resolveTarget(parsed, runtime.coreProviderId, ctx);
+		const target = resolveTarget(parsed, runtime, ctx);
 		if (!target) return; // resolveTarget already notified (failed)
 
-		const { targetId, isCurrent } = target;
+		const { providerId, targetId, isCurrent } = target;
 
 		const write: ModelOverrideWrite =
 			parsed.value === "auto"
 				? { kind: "delete" }
 				: { kind: "set", endpoint: WRITE_VALUE[parsed.value] };
-		await runtime.writeOverride(targetId, write);
+		await runtime.writeOverride(providerId, targetId, write);
 		fileWritten = true;
 
 		let refresh: EndpointRefreshResult;
 		try {
-			refresh = await runtime.refreshEndpointForeground();
+			refresh = await runtime.refreshEndpointForeground(providerId);
 		} catch (error) {
 			notifyPartial(
 				ctx,
@@ -217,7 +222,7 @@ export async function runEndpointCommand(
 			parsed.value === "auto"
 				? refresh.models.find((m) => m.id === targetId)?.api
 				: EXPECTED_API[parsed.value];
-		const actualApi = ctx.modelRegistry.find(runtime.coreProviderId, targetId)?.api;
+		const actualApi = ctx.modelRegistry.find(providerId, targetId)?.api;
 		if (actualApi === undefined || expectedApi === undefined || actualApi !== expectedApi) {
 			notifyPartial(
 				ctx,
@@ -227,7 +232,7 @@ export async function runEndpointCommand(
 		}
 
 		if (isCurrent) {
-			const updated = ctx.modelRegistry.find(runtime.coreProviderId, targetId);
+			const updated = ctx.modelRegistry.find(providerId, targetId);
 			if (!updated) {
 				notifyPartial(
 					ctx,
@@ -262,8 +267,8 @@ export async function runEndpointCommand(
 
 		ctx.notify(
 			parsed.value === "auto"
-				? `Cleared per-model endpoint for ${targetId}.`
-				: `Endpoint for ${targetId} set to ${parsed.value}.`,
+				? `Cleared per-model endpoint for ${targetId} (${providerId}).`
+				: `Endpoint for ${targetId} (${providerId}) set to ${parsed.value}.`,
 			"info",
 		);
 	} catch (error) {
@@ -283,23 +288,65 @@ function notifyPartial(ctx: EndpointCommandContext, message: string): void {
 	ctx.notify(message, "warning");
 }
 
+export interface ResolvedEndpointTarget {
+	providerId: string;
+	targetId: string;
+	isCurrent: boolean;
+}
+
+/**
+ * Pick the one model this invocation configures.
+ *
+ * A bare model id is resolved across every managed instance. Two instances can
+ * legitimately publish the same id (the same upstream behind two gateways), and
+ * silently picking the first would write the override into a file the user never
+ * named — so an ambiguous id is refused and the current-model path is offered
+ * instead, which is unambiguous by construction.
+ */
 function resolveTarget(
 	parsed: ParsedEndpointArgs,
-	coreProviderId: string,
+	runtime: EndpointRuntime,
 	ctx: EndpointCommandContext,
-): { targetId: string; isCurrent: boolean } | undefined {
+): ResolvedEndpointTarget | undefined {
+	const managed = runtime.managedProviderIds();
+	if (managed.length === 0) {
+		ctx.notify(
+			"No gateway instances are configured. Add one with /login, then retry.",
+			"error",
+		);
+		return undefined;
+	}
+
 	if (parsed.modelId) {
-		const found = ctx.modelRegistry.find(coreProviderId, parsed.modelId);
-		if (!found) {
+		const matches = managed.flatMap((providerId) => {
+			const model = ctx.modelRegistry.find(providerId, parsed.modelId!);
+			return model ? [{ providerId, model }] : [];
+		});
+		if (matches.length === 0) {
 			ctx.notify(
-				`Model "${parsed.modelId}" was not found in the core provider "${coreProviderId}".`,
+				`Model "${parsed.modelId}" was not found in any configured gateway instance (${managed.join(", ")}).`,
 				"error",
 			);
 			return undefined;
 		}
+		if (matches.length > 1) {
+			ctx.notify(
+				`Model "${parsed.modelId}" exists in more than one gateway instance (${matches
+					.map((match) => match.providerId)
+					.join(", ")}). Select it with /model, then run /endpoint ${parsed.value} without a model id.`,
+				"error",
+			);
+			return undefined;
+		}
+		const only = matches[0]!;
 		const current = ctx.getModel();
-		const isCurrent = current?.provider === coreProviderId && current?.id === found.id;
-		return { targetId: found.id, isCurrent };
+		const isCurrent =
+			current?.provider === only.providerId && current?.id === only.model.id;
+		return {
+			providerId: only.providerId,
+			targetId: only.model.id,
+			isCurrent,
+		};
 	}
 
 	const current = ctx.getModel();
@@ -307,14 +354,14 @@ function resolveTarget(
 		ctx.notify("No current model. Specify a model id: /endpoint <value> <model-id>.", "error");
 		return undefined;
 	}
-	if (current.provider !== coreProviderId) {
+	if (!managed.includes(current.provider)) {
 		ctx.notify(
-			`The current model belongs to provider "${current.provider}", not the core LLMGates provider "${coreProviderId}". Specify a core model id: /endpoint <value> <model-id>.`,
+			`The current model belongs to provider "${current.provider}", which this extension does not manage. Specify a gateway model id: /endpoint <value> <model-id>.`,
 			"error",
 		);
 		return undefined;
 	}
-	return { targetId: current.id, isCurrent: true };
+	return { providerId: current.provider, targetId: current.id, isCurrent: true };
 }
 
 /** Minimal model_select handler shape (provider + api only — avoids importing ModelSelectEvent). */
@@ -332,22 +379,34 @@ export interface ReconcilerContext {
  * registry's latest (composed) object so inference uses the new endpoint.
  *
  * Has its own reentry guard so a `setModel` that re-emits `model_select` cannot
- * recurse, regardless of upstream dedup behavior. Ignores non-core providers and
+ * recurse, regardless of upstream dedup behavior. Ignores unmanaged providers and
  * no-op api matches; swallows setModel failures as warnings (never bubbles).
+ *
+ * `managedProviderIds` is a callback, not a snapshot: instances are added and
+ * removed while the session runs, and a frozen set would stop reconciling for
+ * every gateway added after startup.
  *
  * Known cost: each stale scoped selection that needs reconciliation adds one
  * model_change session entry and one settings write through pi.setModel(). Remove
  * this workaround if Pi exposes a public scoped-model update API.
  */
 export function createModelSelectReconciler(
-	coreProviderId: string,
+	managedProviderIds: () => Iterable<string>,
 	setModel: (model: Model<Api>) => Promise<boolean>,
 ): (event: ModelSelectLikeEvent, ctx: ReconcilerContext) => Promise<void> {
 	let reconciling = false;
 	return async (event, ctx) => {
 		if (reconciling) return;
-		if (event.model.provider !== coreProviderId) return;
-		const latest = ctx.modelRegistry.find(coreProviderId, event.model.id);
+		const providerId = event.model.provider;
+		let managed = false;
+		for (const id of managedProviderIds()) {
+			if (id === providerId) {
+				managed = true;
+				break;
+			}
+		}
+		if (!managed) return;
+		const latest = ctx.modelRegistry.find(providerId, event.model.id);
 		if (!latest) return;
 		if (latest.api === event.model.api) return;
 		reconciling = true;
@@ -355,7 +414,7 @@ export function createModelSelectReconciler(
 			const rebound = await setModel(latest);
 			if (!rebound) {
 				console.warn(
-					`[pi-llmgates-provider] model_select reconciliation failed: no configured auth for ${coreProviderId}/${latest.id}`,
+					`[pi-llmgates-provider] model_select reconciliation failed: no configured auth for ${providerId}/${latest.id}`,
 				);
 			}
 		} catch (error) {
@@ -371,18 +430,24 @@ export function createModelSelectReconciler(
 export function registerEndpointCommand(
 	pi: ExtensionAPI,
 	agentDir: string,
-	coreProviderId: string,
-	provider: LLMGatesProvider,
+	compat: CompatGatewayRegistration,
 ): void {
 	pi.registerCommand(ENDPOINT_COMMAND, {
-		description: "Switch a core model's inference endpoint: /endpoint <chat|messages|responses|auto> [model-id]",
+		description: "Switch a model's inference endpoint: /endpoint <chat|messages|responses|auto> [model-id]",
 		handler: async (args, ctx) => {
 			await runEndpointCommand(
 				args,
 				{
-					coreProviderId,
-					refreshEndpointForeground: () => provider.refreshEndpointForeground(),
-					writeOverride: (targetId, write) => writeModelOverride(agentDir, targetId, write),
+					managedProviderIds: () => [...compat.providers.keys()],
+					refreshEndpointForeground: (providerId) =>
+						compat.refreshEndpointForeground(providerId),
+					writeOverride: (providerId, targetId, write) =>
+						writeModelOverride(
+							agentDir,
+							{ kind: "2api", instanceId: providerId },
+							targetId,
+							write,
+						),
 				},
 				{
 					waitForIdle: () => ctx.waitForIdle(),

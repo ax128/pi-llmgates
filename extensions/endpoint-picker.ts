@@ -1,7 +1,6 @@
 /**
  * /endpoint-setting step 1 — interactive checkbox picker (tui only).
  *
- * Spec: docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md §4 (rev 7).
  * rev 6 rendered the checklist into `ui.editor`, which made the step a free-text
  * buffer: the user could type anything and the model ids had to be re-resolved by
  * parsing. This module replaces that step in tui mode with a real component shown

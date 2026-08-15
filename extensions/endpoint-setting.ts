@@ -1,13 +1,11 @@
 /**
- * /endpoint-setting — interactive, multi-select endpoint configuration across the
- * core provider and every 2API instance this extension governs.
- *
- * Spec: docs/superpowers/specs/2026-07-29-endpoint-interactive-design.md (rev 7).
+ * /endpoint-setting — interactive, multi-select endpoint configuration across
+ * every gateway instance this extension governs.
  *
  * `/endpoint` is deliberately untouched: this is a separate command sharing only
  * the in-flight guard, so the single-model path has no new code in it at all.
  *
- * Flow (spec §7.1):
+ * Flow:
  *   in-flight guard → mode guard → step 1 (frozen id→provider snapshot) →
  *   tui: ui.custom checkbox picker · rpc: ui.editor checklist + parse →
  *   ui.select → bounded waitForIdle → group by provider →
@@ -15,13 +13,13 @@
  *   verify each api → rebind current model → merge tri-state → notify.
  *
  * Every provider group is processed SERIALLY and holds at most one override lock
- * at a time (spec §8.7): the lock has retries configured, so nesting core and
- * 2API locks would not deadlock but would degrade into a long retry that looks
- * like a hung command.
+ * at a time: the lock has retries configured, so nesting two instance locks would
+ * not deadlock but would degrade into a long retry that looks like a hung command.
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { EndpointRefreshResult } from "./catalog-store.js";
 import type { CompatGatewayRegistration } from "./compat/index.js";
 import { createEndpointPicker } from "./endpoint-picker.js";
 import {
@@ -50,7 +48,6 @@ import {
 	type ModelOverrideWrite,
 	type OverrideScope,
 } from "./model-overrides.js";
-import type { EndpointRefreshResult, LLMGatesProvider } from "./provider.js";
 
 export const ENDPOINT_SETTING_COMMAND = "endpoint-setting";
 
@@ -246,7 +243,7 @@ export async function runEndpointSettingCommand(
 		}
 
 		if (!(await waitForIdleBounded(() => ctx.waitForIdle(), ctx.idleWaitTimeoutMs))) {
-			// The idle wait sits after step 1 and step 2 by design (§7.1) — being idle
+			// The idle wait sits after step 1 and step 2 by design — being idle
 			// matters at write time, not at pick time — so a timeout here throws away
 			// interaction the user already finished. Say so, and say how much, rather
 			// than leaving them to rediscover it by reopening the picker.
@@ -485,7 +482,7 @@ export function mergeOutcomes(
 			`${describeChoice(choice)} for ${total} model(s).${
 				choice === "auto"
 					? ""
-					: " If the upstream does not support it, run /endpoint-setting again and choose auto (core models may also use /endpoint auto <model-id>)."
+					: " If the upstream does not support it, run /endpoint-setting again and choose auto (or /endpoint auto <model-id> for a single model)."
 			}${notes}`,
 			"info",
 		];
@@ -543,27 +540,11 @@ export function createInteractionCancellation(): InteractionCancellation {
 	};
 }
 
-/**
- * Registration handle. The command is registered at most once, but the core
- * provider may only become available later in startup (see index.ts): the handle
- * lets the core group be attached afterwards without re-registering, since
- * re-registering the same command name is not a defined operation.
- */
-export interface EndpointSettingRegistration {
-	setCore(core: { providerId: string; provider: LLMGatesProvider }): void;
-}
-
 export function registerEndpointSettingCommand(
 	pi: ExtensionAPI,
 	agentDir: string,
-	options: {
-		core?: { providerId: string; provider: LLMGatesProvider };
-		compat?: CompatGatewayRegistration;
-	},
-): EndpointSettingRegistration {
-	let core = options.core;
-	const compat = options.compat;
-
+	compat: CompatGatewayRegistration,
+): void {
 	const interaction = createInteractionCancellation();
 	pi.on("session_shutdown", () => {
 		interaction.cancel();
@@ -571,23 +552,14 @@ export function registerEndpointSettingCommand(
 
 	function targets(): EndpointSettingTarget[] {
 		const list: EndpointSettingTarget[] = [];
-		if (core) {
-			const { providerId, provider } = core;
-			list.push({
-				providerId,
-				label: "core",
-				scope: { kind: "core" },
-				refreshEndpointForeground: () => provider.refreshEndpointForeground(),
-			});
-		}
-		for (const [instanceId, provider] of compat?.providers ?? []) {
+		for (const [instanceId, provider] of compat.providers) {
 			list.push({
 				providerId: instanceId,
 				label: `gateway/${provider.name}`,
 				scope: { kind: "2api", instanceId },
 				// Routed through compat/index so the refreshed catalog is re-registered.
 				refreshEndpointForeground: () =>
-					compat!.refreshEndpointForeground(instanceId),
+					compat.refreshEndpointForeground(instanceId),
 			});
 		}
 		return list;
@@ -633,10 +605,4 @@ export function registerEndpointSettingCommand(
 			);
 		},
 	});
-
-	return {
-		setCore(next) {
-			core = next;
-		},
-	};
 }

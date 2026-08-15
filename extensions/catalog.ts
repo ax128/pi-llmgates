@@ -3,7 +3,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import packageJson from "../package.json" with { type: "json" };
-import { resolveModelCostRates } from "./model-pricing.js";
 import { envFlag, isPlainObject } from "./util.js";
 
 // Matches pi-ai ModelThinkingLevel (off + minimal/low/medium/high/xhigh/max). No "ultra".
@@ -13,10 +12,6 @@ export type ThinkingLevelMap = Partial<
 
 export type PiApiType = "openai-responses" | "openai-completions" | "anthropic-messages";
 
-export const DEFAULT_PROVIDER_ID = "llmgates";
-export const DEFAULT_PROVIDER_NAME = "LLMGates";
-export const DEFAULT_BASE_URL = "https://apihk.llmgates.com/v1";
-export const CLIENT_VERSION = "pi";
 export const PACKAGE_VERSION = packageJson.version;
 export const USER_AGENT = `pi-llmgates-provider/${PACKAGE_VERSION}`;
 
@@ -37,7 +32,7 @@ const BUILTIN_MODELS = {
 	anthropic: new Map(getModels("anthropic").map((model) => [model.id, model])),
 };
 
-/** LLMGates tags for image/video generation — not selectable in pi coding agent. */
+/** Gateway tags for image/video generation — not selectable in pi coding agent. */
 const GENERATION_CAPABILITY_TAGS = new Set([
 	"image_generation",
 	"image_edit",
@@ -55,62 +50,19 @@ export interface GatewayModel {
 	max_output_tokens?: number | null;
 	capability_tags?: string[];
 	provider_id?: string;
-	web_chat_endpoint?: string;
-	inference_endpoint?: string;
 	input_modalities?: string[];
 	// Deliberately never read: thinking levels are the fixed UNIVERSAL_THINKING_LEVEL_MAP
-	// for every plugin model (README「思考等级」; asserted by test/catalog.test.ts).
+	// for every model (README「思考等级」; asserted by test/compat-catalog.test.ts).
 	supported_reasoning_levels?: Array<{ effort?: string } | string>;
 	service_tiers?: unknown[];
-	visibility?: string;
 }
 
-export interface PiProviderModel {
-	id: string;
-	name: string;
-	reasoning: boolean;
-	input: Array<"text" | "image">;
-	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
-	contextWindow: number;
-	maxTokens: number;
-	api: PiApiType;
-	thinkingLevelMap?: ThinkingLevelMap;
-	compat?: { forceAdaptiveThinking?: true; supportsTemperature?: false };
-}
-
-export interface CreditsSnapshot {
-	is_active?: boolean;
-	unit?: string;
-	balance?: number;
-	remaining_usd?: string;
-	wallet_usd?: string;
-	bonus_usd?: string;
-	subscription_usd?: string;
-	subscription_total_usd?: string;
-	subscription_used_usd?: string;
-}
-
-/** Trim user/base config; do not rewrite explicit gateway hostnames. */
-export function normalizeGatewayBaseUrl(baseUrl: string | undefined): string | undefined {
-	if (!baseUrl?.trim()) {
-		return undefined;
-	}
-	return baseUrl.trim();
-}
-
-export function firstNonEmpty(...values: Array<string | undefined | null>): string | undefined {
-	for (const value of values) {
-		if (typeof value === "string" && value.trim()) {
-			return value.trim();
-		}
-	}
-	return undefined;
-}
-
-export function resolveEndpoints(baseUrlInput: string): {
-	inferenceBaseUrl: string;
-	modelsUrl: string;
-} {
+/**
+ * Canonical OpenAI-compatible inference base URL: origin + a path that ends in
+ * exactly one `/v1`. A missing scheme defaults to https; a doubled `/v1/v1`
+ * (pasting `…/v1` into a field that already appends it) collapses to one.
+ */
+export function normalizeInferenceBaseUrl(baseUrlInput: string): string {
 	let raw = baseUrlInput.trim();
 	if (!raw) {
 		throw new Error("baseUrl is empty");
@@ -132,10 +84,7 @@ export function resolveEndpoints(baseUrlInput: string): {
 		path = `${path}/v1`.replace(/\/{2,}/g, "/");
 	}
 
-	const inferenceBaseUrl = `${url.origin}${path}`;
-	const modelsUrl = `${inferenceBaseUrl}/models?client_version=${encodeURIComponent(CLIENT_VERSION)}`;
-
-	return { inferenceBaseUrl, modelsUrl };
+	return `${url.origin}${path}`;
 }
 
 export function gatewayModelId(model: GatewayModel): string {
@@ -161,29 +110,6 @@ export function isPiSelectableModel(model: GatewayModel): boolean {
 		return true;
 	}
 	return !tags.some((tag) => GENERATION_CAPABILITY_TAGS.has(tag) || tag.startsWith("video_"));
-}
-
-export function defaultInferenceEndpoint(model: GatewayModel): string {
-	const provider = (model.provider_id ?? "").trim().toLowerCase();
-	const id = gatewayModelId(model).toLowerCase();
-
-	if (provider === "anthropic" || id.includes("claude")) {
-		return "messages";
-	}
-
-	if (/^gpt-[34]|^gpt-3\.|^text-|^davinci|^chatgpt/i.test(id)) {
-		return "chat_completions";
-	}
-
-	return "responses";
-}
-
-export function resolveInferenceEndpoint(model: GatewayModel): string {
-	const explicit = firstNonEmpty(model.inference_endpoint, model.web_chat_endpoint);
-	if (explicit) {
-		return explicit.toLowerCase();
-	}
-	return defaultInferenceEndpoint(model);
 }
 
 export function toPiApiType(endpoint: string, providerId: string): PiApiType {
@@ -358,120 +284,6 @@ export function buildInputModalities(model: GatewayModel): Array<"text" | "image
 	return input;
 }
 
-export function toPiModel(model: GatewayModel): PiProviderModel | null;
-export function toPiModel(
-	model: GatewayModel,
-	endpointOverride: (modelId: string) => string | undefined,
-): PiProviderModel | null;
-export function toPiModel(
-	model: GatewayModel,
-	endpointOverride?: unknown,
-): PiProviderModel | null {
-	const id = gatewayModelId(model);
-	if (!id) {
-		return null;
-	}
-	if (String(model.visibility ?? "").toLowerCase() === "hide") {
-		return null;
-	}
-	if (!isPiSelectableModel(model)) {
-		return null;
-	}
-
-	const providerId = (model.provider_id ?? "").trim().toLowerCase();
-	const override = typeof endpointOverride === "function" ? endpointOverride(id) : undefined;
-	const endpoint = override ?? resolveInferenceEndpoint(model);
-	const api = toPiApiType(endpoint, providerId);
-	const thinking = resolveThinkingMetadata(id, api);
-
-	const contextWindow =
-		(typeof model.context_window === "number" && model.context_window > 0 ? model.context_window : undefined) ??
-		DEFAULT_CONTEXT_WINDOW;
-
-	const maxTokens =
-		(typeof model.max_output_tokens === "number" && model.max_output_tokens > 0
-			? model.max_output_tokens
-			: undefined) ?? DEFAULT_MAX_TOKENS;
-
-	return {
-		id,
-		name: (model.display_name ?? model.name ?? id).trim() || id,
-		reasoning: thinking.reasoning,
-		input: buildInputModalities(model),
-		cost: resolveModelCostRates(id, providerId || undefined),
-		contextWindow,
-		maxTokens,
-		api,
-		thinkingLevelMap: thinking.thinkingLevelMap,
-		...(thinking.compat ? { compat: thinking.compat } : {}),
-	};
-}
-
-/** Patch registered model costs after async pricing sync (mutates array in place). */
-export function applyGatewayModelCosts(
-	models: Model<Api>[],
-	gatewayModels: readonly GatewayModel[],
-	piProviderId: string,
-): void {
-	const vendorById = new Map<string, string>();
-	for (const gatewayModel of gatewayModels) {
-		const id = gatewayModelId(gatewayModel);
-		if (!id) {
-			continue;
-		}
-		const vendor = (gatewayModel.provider_id ?? "").trim().toLowerCase();
-		if (vendor) {
-			vendorById.set(id, vendor);
-		}
-	}
-
-	for (const model of models) {
-		if (model.provider !== piProviderId) {
-			continue;
-		}
-		const vendor = vendorById.get(model.id);
-		model.cost = resolveModelCostRates(model.id, vendor || undefined);
-	}
-}
-
-export function resolveCreditsUrl(inferenceBaseUrl: string): string {
-	return `${inferenceBaseUrl.replace(/\/+$/, "")}/user/balance`;
-}
-
-function parseUsd(value: string | number | undefined): number {
-	if (typeof value === "number" && Number.isFinite(value)) {
-		return value;
-	}
-	if (typeof value === "string" && value.trim()) {
-		const parsed = Number.parseFloat(value);
-		return Number.isFinite(parsed) ? parsed : 0;
-	}
-	return 0;
-}
-
-export function formatCreditsMessage(snapshot: CreditsSnapshot): string {
-	const unit = snapshot.unit ?? "USD";
-	const balance = parseUsd(snapshot.balance ?? snapshot.remaining_usd);
-	const wallet = parseUsd(snapshot.wallet_usd);
-	const subscriptionRemaining = parseUsd(snapshot.subscription_usd);
-	const subscriptionTotal = parseUsd(snapshot.subscription_total_usd);
-	const subscriptionUsed = parseUsd(snapshot.subscription_used_usd);
-	const pct = subscriptionTotal > 0 ? Math.round((subscriptionUsed / subscriptionTotal) * 100) : 0;
-
-	const parts = [
-		`Available: ${balance.toFixed(2)} ${unit}`,
-		`wallet ${wallet.toFixed(2)}`,
-		`subscription remaining ${subscriptionRemaining.toFixed(2)}`,
-	];
-	if (subscriptionTotal > 0) {
-		parts.push(`subscription used ${subscriptionUsed.toFixed(2)} / ${subscriptionTotal.toFixed(2)} (${pct}%)`);
-	}
-	if (snapshot.is_active === false) {
-		parts.unshift("Account inactive.");
-	}
-	return parts.join(" · ");
-}
-
 export function parseGatewayModelsPayload(payload: unknown): GatewayModel[] {
 	let list: unknown;
 	if (Array.isArray(payload)) {
@@ -490,39 +302,6 @@ export function parseGatewayModelsPayload(payload: unknown): GatewayModel[] {
 		}
 	}
 	return list as GatewayModel[];
-}
-
-export function parseCreditsPayload(payload: unknown): CreditsSnapshot {
-	if (!isPlainObject(payload)) {
-		throw new Error("Invalid balance payload: expected object");
-	}
-
-	const snapshot: CreditsSnapshot = {};
-	if (typeof payload.is_active === "boolean") {
-		snapshot.is_active = payload.is_active;
-	}
-	if (typeof payload.unit === "string") {
-		snapshot.unit = payload.unit;
-	}
-	if (typeof payload.balance === "number" && Number.isFinite(payload.balance)) {
-		snapshot.balance = payload.balance;
-	}
-	for (const key of [
-		"remaining_usd",
-		"wallet_usd",
-		"bonus_usd",
-		"subscription_usd",
-		"subscription_total_usd",
-		"subscription_used_usd",
-	] as const) {
-		const raw = payload[key];
-		if (typeof raw === "string") {
-			snapshot[key] = raw;
-		} else if (typeof raw === "number" && Number.isFinite(raw)) {
-			snapshot[key] = String(raw);
-		}
-	}
-	return snapshot;
 }
 
 export function isOfflineMode(): boolean {
@@ -566,16 +345,4 @@ export function storedModelBaseUrlMatches(
 /** Normalize a cached model's baseUrl after endpoint or plugin upgrades. */
 export function applyInferenceBaseUrlToModel(model: Model<Api>, canonicalInferenceBaseUrl: string): void {
 	model.baseUrl = inferenceBaseUrlForApi(canonicalInferenceBaseUrl, model.api as PiApiType);
-}
-
-export function providerModelsToStoredModels(
-	providerId: string,
-	models: PiProviderModel[],
-	inferenceBaseUrl: string,
-): Model<Api>[] {
-	return models.map((model) => ({
-		...model,
-		provider: providerId,
-		baseUrl: inferenceBaseUrlForApi(inferenceBaseUrl, model.api),
-	}));
 }

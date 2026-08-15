@@ -5,7 +5,8 @@
 ## 项目是什么
 
 Pi coding agent 扩展包：`@llmgates_api/pi-llmgates-provider`。  
-从 LLMGates `/v1/models` 拉模型、注册 native Provider，并提供 TPS / 2API 兼容层。
+并行接入多个 OpenAI 兼容网关（NewAPI / Sub2API / CLIProxyAPI / 通用）：从各网关 `/v1/models` 拉模型、
+注册为独立的 native Provider，并提供出口切换、额度查询与 TPS 统计。
 
 用户文档：[README.md](./README.md)  
 设计索引：[docs/README.md](./docs/README.md)

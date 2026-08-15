@@ -13,63 +13,35 @@
 
 ## 设计与实现（内部）
 
-以下文档记录本项目的设计决策与历史演进；标注「当前有效」的可作为实现参考，标注「已实施 / superseded / 归档」的仅供回溯。
-
-### 规格（Specs）
-
-| 文档 | 状态 |
-| --- | --- |
-| [blocking-and-liveness-hardening-design.md](./superpowers/specs/2026-08-04-blocking-and-liveness-hardening-design.md) | **当前有效** — 锁 compromise、定价同步取消、有界 idle 等待、并发 reload、扫描上限与句柄 unref |
-| [endpoint-command-design.md](./superpowers/specs/2026-07-28-endpoint-command-design.md) | **当前有效** — `/endpoint` 单模型出口切换/清除、持久化与 runtime 生效规格（idle 等待改为有界，见上一行；rev 4 修订 pi 0.84 的 publish 抢占语义） |
-| [endpoint-interactive-design.md](./superpowers/specs/2026-07-29-endpoint-interactive-design.md) | **当前有效** — `/endpoint-setting` 跨 provider 批量出口 + 2API 多出口（扩展 endpoint-command，非取代；rev 8 同步 pi 0.84 语义） |
-| [runtime-lifecycle-usage-races-design.md](./superpowers/specs/2026-07-27-runtime-lifecycle-usage-races-design.md) | **当前有效** — 运行时生命周期与用量竞态修复 |
-| [subagent-usage-tps-design.md](./superpowers/specs/2026-07-24-subagent-usage-tps-design.md) | **当前有效** — TPS 子代理全路径用量采集（含 async 旁路） |
-| [native-provider-security-hardening-design.md](./superpowers/specs/2026-07-22-native-provider-security-hardening-design.md) | **当前有效** — native Provider、认证边界、HTTP 客户端、缓存与测试验收 |
-| [pr12-thinking-level-fixes-design.md](./superpowers/specs/2026-07-26-pr12-thinking-level-fixes-design.md) | **部分 superseded** — endpoint override 与 catalog 生命周期仍有效；thinking 解析链已被 PR #22 universal map 取代（见根 README「思考等级」）；2API 固定 `openai-completions` 部分已被 PR #21 endpoint-interactive 取代 |
-
-### 实施计划（Plans）
-
-以下均为**已实施**的历史验收清单，供回溯，勿作为待办。
+以下文档记录仍然生效的设计决策，可作为实现参考。
 
 | 文档 | 说明 |
 | --- | --- |
-| [pr12-thinking-level-fixes-plan.md](./superpowers/plans/2026-07-26-pr12-thinking-level-fixes-plan.md) | PR #12 验收清单（thinking 部分随 PR #22 superseded） |
-| [subagent-usage-tps-plan.md](./superpowers/plans/2026-07-24-subagent-usage-tps-plan.md) | TPS 子代理用量采集：Task 1–9 |
-| [native-provider-security-hardening-plan.md](./superpowers/plans/2026-07-22-native-provider-security-hardening-plan.md) | native Provider 安全加固 Task 分解 |
-| [runtime-lifecycle-usage-races-plan.md](./superpowers/plans/2026-07-27-runtime-lifecycle-usage-races-plan.md) | 运行时生命周期与用量竞态修复 Task 分解 |
-
-### 归档（Archive）
-
-仅作审查历史，**已被取代、勿据其实施**：
-
-| 文档 | 说明 |
-| --- | --- |
-| [provider-security-and-nonblocking-design.md](./superpowers/archive/2026-07-22-provider-security-and-nonblocking-design.md) | 已被 native-provider-security-hardening-design 取代 |
-| [provider-security-and-nonblocking-plan.md](./superpowers/archive/2026-07-22-provider-security-and-nonblocking-plan.md) | 同上（未实施即被取代） |
+| [blocking-and-liveness-hardening-design.md](./superpowers/specs/2026-08-04-blocking-and-liveness-hardening-design.md) | 锁 compromise、定价同步取消、有界 idle 等待、并发 reload、扫描上限与句柄 unref |
+| [runtime-lifecycle-usage-races-design.md](./superpowers/specs/2026-07-27-runtime-lifecycle-usage-races-design.md) | 运行时生命周期与用量竞态修复 |
+| [subagent-usage-tps-design.md](./superpowers/specs/2026-07-24-subagent-usage-tps-design.md) | TPS 子代理全路径用量采集（含 async 旁路） |
 
 ## 源码入口
 
 | 路径 | 职责 |
 | --- | --- |
-| `extensions/index.ts` | LLMGates 主 Provider 注册与会话生命周期 |
-| `extensions/provider.ts` | native Provider：登录、模型目录、推理委托 |
-| `extensions/connection.ts` | 连接解析、凭证优先级、`llmgates/config.json` |
-| `extensions/catalog.ts` | 网关 catalog 映射、universal thinking map、endpoint/api 解析、余额解析 |
+| `extensions/index.ts` | 扩展入口：注册网关实例、命令与 model_select 兜底 |
+| `extensions/compat/` | 多网关兼容层：登录入口、实例 provider、注册表与 catalog 映射 |
+| `extensions/connection.ts` | URL 传输策略、保留 provider id、`llmgates/config.json` |
+| `extensions/catalog.ts` | catalog 解析、universal thinking map、endpoint/api 与 baseUrl 规范化 |
 | `extensions/catalog-store.ts` | 刷新上下文缓存适配：pi-ai <0.84 的 `context.store` 与 ≥0.84 的 `stored` + `publish()` |
 | `extensions/http.ts` | 有界网络：超时、AbortSignal 合并、同源重定向、5 MiB 上限 |
-| `extensions/model-overrides.ts` | endpoint override 文件唯一出口（`llmgates/models.json`、`2api-models/`） |
+| `extensions/model-overrides.ts` | endpoint override 文件唯一出口（`llmgates/2api-models/<id>.json`） |
 | `extensions/model-pricing.ts` | 静态定价规则（离线兜底） |
 | `extensions/model-pricing-cache.ts` | LiteLLM 零售价同步与缓存 |
-| `extensions/balance.ts` | `/balance` 命令 |
+| `extensions/balance.ts` | `/balance` 命令：网关额度探测与格式化 |
 | `extensions/endpoint.ts` | `/endpoint` 单模型出口切换与共享 in-flight 锁 |
-| `extensions/endpoint-setting.ts` | `/endpoint-setting` 跨 provider 批量出口选择器 |
+| `extensions/endpoint-setting.ts` | `/endpoint-setting` 跨实例批量出口选择器 |
 | `extensions/endpoint-picker.ts` | `/endpoint-setting` TUI 勾选组件（`ui.custom`，零 pi-tui import） |
 | `extensions/endpoint-selector.ts` | `/endpoint-setting` RPC 文本清单渲染与解析（纯函数） |
 | `extensions/terminal-width.ts` | 终端可见宽度（CJK/emoji），TUI 组件渲染辅助 |
-| `extensions/llmgates-reload.ts` | `/llmgates-reload` 强制刷新 core 与 2API catalog |
-| `extensions/compat/` | 2API 多网关兼容层（由 `/login LLMGates` 选择网关类型、`/llmgates` 管理） |
-| `extensions/login-ui.ts` | `/login LLMGates` 统一网关选择、错误中文化与登录提示 |
-| `extensions/lib.ts` | `llmgates/config.json` 配置写入（保留 ambient apiKey） |
+| `extensions/llmgates-reload.ts` | `/llmgates-reload` 强制刷新全部实例 catalog |
+| `extensions/login-ui.ts` | 登录文案、网关类型选项与错误中文化 |
 | `extensions/util.ts` | 原子写、文件锁、envFlag、legacy 配置迁移 |
 | `extensions/tps.ts` | TUI 统计与 `/calls` 命令 |
 | `extensions/tps-stats.ts` | 状态行与 per-model 明细格式化 |

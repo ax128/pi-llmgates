@@ -1,20 +1,15 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import extensionFactory from "../extensions/index.js";
+import { encodeCompatRefreshMeta } from "../extensions/compat/storage.js";
+import { BOOTSTRAP_PROVIDER_ID } from "../extensions/compat/types.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
-import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
+import { withTempAgentDir, writeJson } from "./helpers/temp-agent-dir.js";
 
-const envKeys = [
-	"LLMGATES_PROVIDER_ID",
-	"LLMGATES_PROVIDER_NAME",
-	"LLMGATES_API_KEY",
-	"LLMGATES_BASE_URL",
-	"LLMGATES_PRICING_AUTO_UPDATE",
-	"PI_CODING_AGENT_DIR",
-] as const;
+const envKeys = ["LLMGATES_PRICING_AUTO_UPDATE", "PI_CODING_AGENT_DIR"] as const;
 afterEach(() => {
 	for (const key of envKeys) delete process.env[key];
 });
@@ -22,37 +17,44 @@ afterEach(() => {
 /** Minimal ExtensionAPI capturing registrations. The factory only uses these methods. */
 function fakePi(options?: {
 	onRegisterProvider?: (provider: unknown) => void;
+	onSendMessage?: () => void;
 }): {
 	pi: ExtensionAPI;
 	commands: Map<string, unknown>;
 	providers: unknown[];
 	events: Map<string, number>;
-	messages: Array<{ message: unknown; options: unknown }>;
+	sessionMessages: string[];
 } {
 	const commands = new Map<string, unknown>();
 	const providers: unknown[] = [];
 	const events = new Map<string, number>();
-	const messages: Array<{ message: unknown; options: unknown }> = [];
+	const sessionMessages: string[] = [];
 	const pi = {
-		registerCommand: vi.fn((name: string, options: unknown) => {
-			commands.set(name, options);
+		registerCommand: vi.fn((name: string, commandOptions: unknown) => {
+			commands.set(name, commandOptions);
 		}),
 		registerProvider: vi.fn((provider: unknown) => {
 			options?.onRegisterProvider?.(provider);
 			providers.push(provider);
 		}),
-		sendMessage: vi.fn((message: unknown, options: unknown) => {
-			messages.push({ message, options });
+		unregisterProvider: vi.fn(),
+		sendMessage: vi.fn((message: { content?: unknown }) => {
+			options?.onSendMessage?.();
+			sessionMessages.push(String(message?.content ?? ""));
 		}),
 		on: vi.fn((event: string) => {
 			events.set(event, (events.get(event) ?? 0) + 1);
 		}),
 	} as unknown as ExtensionAPI;
-	return { pi, commands, providers, events, messages };
+	return { pi, commands, providers, events, sessionMessages };
+}
+
+function providerIds(providers: readonly unknown[]): string[] {
+	return providers.map((provider) => String((provider as { id?: string })?.id));
 }
 
 describe("extension entrypoints", () => {
-	it("owns core, balance, and compat registration in one entrypoint", () => {
+	it("owns gateway, command, and reconciliation registration in one entrypoint", () => {
 		const root = join(import.meta.dirname, "..");
 		const pkg = JSON.parse(
 			readFileSync(join(root, "package.json"), "utf8"),
@@ -71,28 +73,24 @@ describe("extension entrypoints", () => {
 		expect(entrypoint).toMatch(/registerEndpointCommand/);
 		expect(entrypoint).toMatch(/registerEndpointSettingCommand/);
 		expect(entrypoint).toMatch(/registerCatalogReloadCommand/);
+		expect(entrypoint).toMatch(/registerBalanceCommand/);
 		expect(entrypoint).toMatch(/model_select/);
-		expect(entrypoint).not.toMatch(/modelCount > 0/);
 	});
 
-	it("registers /endpoint and mounts model_select reconciliation in the success path", () => {
+	it("registers the login entry and every command with no instance configured", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		const { pi, commands, providers, events } = fakePi();
 		try {
 			extensionFactory(pi);
+			// Commands exist before any instance does: a fresh install must still be
+			// able to reach /balance and /llmgates-reload after the first /login.
 			expect(commands.has("endpoint")).toBe(true);
-			// No 2API instances here: the late phase must still register the selector
-			// and the catalog reload, or a core-only user would never see them.
 			expect(commands.has("endpoint-setting")).toBe(true);
 			expect(commands.has("llmgates-reload")).toBe(true);
 			expect(commands.has("balance")).toBe(true);
-			expect(
-				providers.some((p) => (p as { id?: string })?.id === "llmgates"),
-			).toBe(true); // core provider
-			expect(
-				providers.some((p) => (p as { id?: string })?.id === "llmgates-2api"),
-			).toBe(false);
+			expect(commands.has("llmgates")).toBe(true);
+			expect(providerIds(providers)).toEqual([BOOTSTRAP_PROVIDER_ID]);
 			expect(events.get("model_select")).toBe(1); // reconciliation mounted
 			expect(events.get("session_start")).toBeGreaterThanOrEqual(1);
 		} finally {
@@ -100,42 +98,43 @@ describe("extension entrypoints", () => {
 		}
 	});
 
-	it("removes the legacy 2API bootstrap marker in the merged login path", async () => {
+	it("registers a stored instance alongside the login entry", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		process.env.PI_CODING_AGENT_DIR = agentDir;
-		writeFileSync(
-			join(agentDir, "auth.json"),
-			JSON.stringify({
-				"llmgates-2api": {
-					type: "oauth",
-					access: "managed",
-					refresh: JSON.stringify({
-						version: 1,
-						lastInstanceId: "old-instance",
-					}),
-					expires: Date.now() + 60_000,
+		writeJson(join(agentDir, "llmgates/2api.json"), {
+			instances: [
+				{
+					id: "work-newapi",
+					name: "Work",
+					scheme: "newapi",
+					baseUrl: "https://compat.example/v1",
 				},
-			}),
-			{ mode: 0o600 },
-		);
+			],
+		});
+		writeJson(join(agentDir, "auth.json"), {
+			"work-newapi": {
+				type: "oauth",
+				access: "stored-key",
+				refresh: encodeCompatRefreshMeta({
+					baseUrl: "https://compat.example/v1",
+					scheme: "newapi",
+				}),
+				expires: Date.now() + 60_000,
+			},
+		});
 		const { pi, providers } = fakePi();
 		try {
 			extensionFactory(pi);
-			await vi.waitFor(() => {
-				const auth = JSON.parse(
-					readFileSync(join(agentDir, "auth.json"), "utf8"),
-				) as Record<string, unknown>;
-				expect(auth["llmgates-2api"]).toBeUndefined();
-			});
-			expect(
-				providers.some((p) => (p as { id?: string })?.id === "llmgates-2api"),
-			).toBe(false);
+			expect(providerIds(providers)).toEqual([
+				BOOTSTRAP_PROVIDER_ID,
+				"work-newapi",
+			]);
 		} finally {
 			cleanup();
 		}
 	});
 
-	it("routes a compat scheme through the merged login and announces it via a session message", async () => {
+	it("adds an instance through the login entry and registers it immediately", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
@@ -148,13 +147,14 @@ describe("extension entrypoints", () => {
 				}
 				throw new Error(`unexpected URL: ${url}`);
 			});
-		const { pi, providers, messages } = fakePi();
+		const { pi, providers, sessionMessages } = fakePi();
 		try {
 			extensionFactory(pi);
-			const core = providers.find(
-				(p) => (p as { id?: string })?.id === "llmgates",
+			const bootstrap = providers.find(
+				(provider) =>
+					(provider as { id?: string })?.id === BOOTSTRAP_PROVIDER_ID,
 			) as Provider | undefined;
-			expect(core).toBeDefined();
+			expect(bootstrap).toBeDefined();
 			const interaction = scriptedAuthInteraction([
 				"newapi",
 				"merged-instance",
@@ -163,131 +163,111 @@ describe("extension entrypoints", () => {
 				"merged-key",
 			]);
 
-			// The compat branch persists the instance itself and must not return a
-			// credential for core — the login ends with the pi-swallowed sentinel.
-			await expect(core!.auth.oauth!.login(interaction)).rejects.toThrow(
-				"Login cancelled",
-			);
+			const marker = await bootstrap!.auth.oauth!.login(interaction);
+			expect(marker.access).toBe("managed");
+			expect(interaction.messages.at(-1)).toContain("merged-instance");
+			// The dialog notify above dies with the dialog pi tears down the moment
+			// login() resolves, so the id — the only handle /login <id> and
+			// /balance <id> accept — must also reach the session transcript.
+			expect(sessionMessages.at(-1)).toContain("merged-instance");
 
-			expect(messages).toHaveLength(1);
-			expect(messages[0]?.message).toMatchObject({
-				customType: "llmgates-login",
-				display: true,
-			});
-			expect(
-				String((messages[0]?.message as { content?: unknown }).content),
-			).toContain("merged-instance");
-			expect(messages[0]?.options).toMatchObject({ triggerTurn: false });
-
-			// The instance credential lives under its own id; core auth is untouched.
+			// The instance credential lives under its own id, never the login entry's.
 			const auth = JSON.parse(
 				readFileSync(join(agentDir, "auth.json"), "utf8"),
 			) as Record<string, { access?: string }>;
 			expect(auth["merged-instance"]?.access).toBe("merged-key");
-			expect(auth.llmgates).toBeUndefined();
-			expect(
-				providers.some((p) => (p as { id?: string })?.id === "merged-instance"),
-			).toBe(true);
-			expect(
-				providers.some((p) => (p as { id?: string })?.id === "llmgates-2api"),
-			).toBe(false);
+			expect(providerIds(providers)).toContain("merged-instance");
 		} finally {
 			fetchSpy.mockRestore();
 			cleanup();
 		}
 	});
 
-	it("registers the compat recovery provider when core registration fails", () => {
+	it("keeps a login that succeeded when the confirmation message cannot be posted", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		process.env.PI_CODING_AGENT_DIR = agentDir;
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(
+				async () => new Response(JSON.stringify([{ id: "m1" }])),
+			);
+		// print/json modes have no session to post into; the instance is already
+		// persisted and registered by then, so this must not undo any of it.
 		const { pi, providers } = fakePi({
+			onSendMessage() {
+				throw new Error("no session");
+			},
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			extensionFactory(pi);
+			const bootstrap = providers.find(
+				(provider) =>
+					(provider as { id?: string })?.id === BOOTSTRAP_PROVIDER_ID,
+			) as Provider | undefined;
+			const marker = await bootstrap!.auth.oauth!.login(
+				scriptedAuthInteraction([
+					"newapi",
+					"quiet-instance",
+					"",
+					"https://compat.example/v1",
+					"key",
+				]),
+			);
+			expect(marker.access).toBe("managed");
+			expect(providerIds(providers)).toContain("quiet-instance");
+			const auth = JSON.parse(
+				readFileSync(join(agentDir, "auth.json"), "utf8"),
+			) as Record<string, { access?: string }>;
+			expect(auth["quiet-instance"]?.access).toBe("key");
+		} finally {
+			warn.mockRestore();
+			fetchSpy.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("degrades with a warning instead of throwing when registration fails", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		const { pi, commands } = fakePi({
 			onRegisterProvider(provider) {
-				if ((provider as { id?: string }).id === "llmgates") {
-					throw new Error("core registration failed");
+				if ((provider as { id?: string }).id === BOOTSTRAP_PROVIDER_ID) {
+					throw new Error("login entry registration failed");
 				}
 			},
 		});
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			// The factory runs inside pi's extension loader: rethrowing here can abort
-			// the load and take the 2API providers and every registered command with
-			// it. Degrade to "core unavailable, recovery login present" and warn.
+			// the load and take unrelated extensions down with it.
 			expect(() => extensionFactory(pi)).not.toThrow();
-			expect(
-				providers.some((p) => (p as { id?: string })?.id === "llmgates"),
-			).toBe(false);
-			expect(
-				providers.some((p) => (p as { id?: string })?.id === "llmgates-2api"),
-			).toBe(true);
-			expect(
-				warn.mock.calls.some(([message]) =>
-					/core registration failed/i.test(String(message)),
-				),
-			).toBe(true);
-		} finally {
-			warn.mockRestore();
-			cleanup();
-		}
-	});
-
-	it("registers the compat recovery provider when core construction fails", () => {
-		const { agentDir, cleanup } = withTempAgentDir();
-		process.env.PI_CODING_AGENT_DIR = agentDir;
-		// Provider construction reads llmgates/pricing.json before pi.registerProvider
-		// is ever reached, and that reader rethrows everything that is not ENOENT. A
-		// directory in the file's place is the portable way to produce one of those
-		// (EISDIR); a permission or I/O error lands in the same branch.
-		mkdirSync(join(agentDir, "llmgates", "pricing.json"), { recursive: true });
-		const { pi, providers } = fakePi();
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			// Same contract as a failed registration: the factory runs inside pi's
-			// extension loader, so throwing here can abort the load and take the 2API
-			// providers and every registered command with it.
-			expect(() => extensionFactory(pi)).not.toThrow();
-			expect(
-				providers.some((p) => (p as { id?: string })?.id === "llmgates"),
-			).toBe(false);
-			expect(
-				providers.some((p) => (p as { id?: string })?.id === "llmgates-2api"),
-			).toBe(true);
-			expect(
-				warn.mock.calls.some(([message]) =>
-					/failed to initialize provider/i.test(String(message)),
-				),
-			).toBe(true);
-		} finally {
-			warn.mockRestore();
-			cleanup();
-		}
-	});
-
-	it("does NOT register /endpoint in the legacy fail-closed branch", () => {
-		const { agentDir, cleanup } = withTempAgentDir();
-		process.env.PI_CODING_AGENT_DIR = agentDir;
-		// Legacy auth.json with an api_key entry triggers the fail-closed branch,
-		// which can only honor a blocked /balance — never a runtime /endpoint.
-		writeFileSync(
-			join(agentDir, "auth.json"),
-			JSON.stringify({ llmgates: { type: "api_key", key: "legacy-key" } }),
-			{ mode: 0o600 },
-		);
-		const { pi, commands, providers, events } = fakePi();
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			extensionFactory(pi);
-			expect(commands.has("balance")).toBe(true);
 			expect(commands.has("endpoint")).toBe(false);
-			// No 2API instance either, so there is nothing to configure or refresh.
-			expect(commands.has("endpoint-setting")).toBe(false);
-			expect(commands.has("llmgates-reload")).toBe(false);
 			expect(
-				providers.some((p) => (p as { id?: string })?.id === "llmgates"),
-			).toBe(false); // core never registered
-			expect(
-				providers.some((p) => (p as { id?: string })?.id === "llmgates-2api"),
-			).toBe(true); // recovery login remains available
-			expect(events.get("model_select")).toBeUndefined();
+				warn.mock.calls.some(([message]) =>
+					/login entry registration failed/i.test(String(message)),
+				),
+			).toBe(true);
+		} finally {
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("degrades without throwing when the instance registry is malformed", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		writeFileSync(join(agentDir, "llmgates/2api.json"), "{ not json", {
+			mode: 0o600,
+		});
+		const { pi, commands, providers } = fakePi();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(() => extensionFactory(pi)).not.toThrow();
+			expect(providers).toHaveLength(0);
+			expect(commands.has("endpoint")).toBe(false);
+			expect(warn).toHaveBeenCalled();
 		} finally {
 			warn.mockRestore();
 			cleanup();
