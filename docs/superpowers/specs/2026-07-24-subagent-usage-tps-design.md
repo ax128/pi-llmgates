@@ -266,7 +266,7 @@ interface SubagentUsageRecord {
 ## 7. 配置与环境变量
 
 | 变量 | 默认 | 说明 |
-|------|------|------|
+| ------ | ------ | ------ |
 | `LLMGATES_TPS_SUBAGENT` | 启用 | 设为 `0` / `false` / `no` 时跳过 bridge 与 meta 的 subagent 扩展解析 |
 | `LLMGATES_DEBUG` | 关 | 采集/解析失败时 `console.warn` |
 
@@ -286,7 +286,7 @@ Bridge 注册时须传入 pi session `cwd` 作为 `workspaceRoot`；`status.json
 ## 9. 测试策略
 
 | 层级 | 内容 |
-|------|------|
+| ------ | ------ |
 | 单元 | `tps-subagent.ts` 各 extract*、normalize、sourceKey、dedup |
 | 单元 | `tps-subagent-bridge.ts` sessionId 过滤、register/unregister |
 | 集成 | mock `ExtensionAPI.events` emit async-complete → stats 变化 |

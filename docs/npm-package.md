@@ -61,6 +61,8 @@ git push origin "v$VERSION"                          # 若尚未推送 tag
 
 **禁止**绕过脚本直接 `npm publish`：那会跳过 gate 校验（§0）、发布时的显式 build 与 bump 后的 re-pack（§3.3）——正是本手册 §0 要防的路径。
 
+脚本默认还会再跑一次 `npm run check`（typecheck + 全量测试）。OTP 有时效，**且仅当 §A 已在同一 commit 上跑通 check** 时，可用 `SKIP_CHECK=1 ./scripts/publish-npm.sh --otp="<验证码>"` 跳过这次重复检查——gate 校验、显式 build 与 bump 后 re-pack 仍照常执行。未在当前 commit 跑过 check 就不要用。
+
 若用户只说「已验证」且未给码：再跑一次 `npm-publish-auth-link.mjs` 拿新链接，或请用户发当前 OTP。
 
 ### D. 发布成功后（Agent → 用户）
