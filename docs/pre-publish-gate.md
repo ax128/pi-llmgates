@@ -91,22 +91,30 @@ npm run gate
 
 用 **§2 生成的 `.tgz`** 安装，**不要**用 `pi install .`（源码目录）代替——发版验证必须走与 npm registry 相同的打包产物。
 
+> **不要跑 `pi install ./xxx.tgz`。** pi 只把 `.tgz` 路径当 local source 记进 `packages`，之后**每次启动都失败**：
+>
+> ```
+> Error: Failed to load extension ".../xxx.tgz": Unknown file extension ".tgz"
+> Hint: Start without extensions using "pi -ne".
+> ```
+>
+> pi 直接退回 shell、没有任何 TUI。**恢复办法**：`pi uninstall ./llmgates_api-pi-llmgates-provider-<ver>.tgz`（把该条目摘掉即可，不必 `-ne`）。0.83 与 0.84.2 上均实测如此。
+
+正确做法是解包后安装**目录**（内容与日后 registry tarball 一致），并在包目录内装生产依赖：
+
 ```bash
 VERSION=$(node -p "require('./package.json').version")
 TGZ="llmgates_api-pi-llmgates-provider-${VERSION}.tgz"
 
-pi install "./${TGZ}"
-# 或仅当前项目：pi install -l "./${TGZ}"
-```
+# 已装 registry 版时先摘掉，否则两份同时加载（见 §3.1）
+pi uninstall npm:@llmgates_api/pi-llmgates-provider
 
-> **pi 0.83 注意：** `pi install ./xxx.tgz` 目前只把 `.tgz` 路径当 local source 记入 settings，启动会报 `Unknown file extension ".tgz"`。临时变通：解包后安装目录（内容与日后 registry tarball 一致），并在包目录内装生产依赖：
->
-> ```bash
-> rm -rf /tmp/llg-pkg && mkdir -p /tmp/llg-pkg
-> tar -xzf "./${TGZ}" -C /tmp/llg-pkg --strip-components=1
-> (cd /tmp/llg-pkg && npm install --omit=dev --ignore-scripts --no-audit --no-fund)
-> pi install /tmp/llg-pkg
-> ```
+rm -rf /tmp/llg-pkg && mkdir -p /tmp/llg-pkg
+tar -xzf "./${TGZ}" -C /tmp/llg-pkg --strip-components=1
+(cd /tmp/llg-pkg && npm install --omit=dev --ignore-scripts --no-audit --no-fund)
+pi install /tmp/llg-pkg
+# 或仅当前项目：pi install -l /tmp/llg-pkg
+```
 
 启动 pi 并加载扩展：
 
@@ -115,19 +123,31 @@ pi
 /reload    # 若已在运行；或重启 pi
 ```
 
+§4 做完后恢复日常环境：
+
+```bash
+pi uninstall /tmp/llg-pkg
+pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
+```
+
 **通过标准：**
 
-- [ ] `pi install "./${TGZ}"` 成功
+- [ ] `pi install /tmp/llg-pkg` 成功
+- [ ] `pi` 能正常进入 TUI（起不来通常就是 `packages` 里混进了 `.tgz` 路径）
 - [ ] 扩展加载无 startup 报错（注意终端与 pi 日志）
+- [ ] `/llmgates`、`/balance` 等命令是**原名**而不是 `llmgates:1` / `llmgates:2`（带后缀 = 装了两份，见 §3.1）
 
 ### 3.1 本地 `.tgz` 与 registry 安装
 
 | 方式 | 说明 |
 | --- | --- |
-| `pi install ./xxx.tgz` | **发版门禁推荐**；pi 0.83 下需先解包再装目录（见上方注意框） |
+| 解包 `.tgz` 后 `pi install <目录>` | **发版门禁唯一推荐**（见上方步骤） |
+| `pi install ./xxx.tgz` | **不要用**：pi 会拒绝启动，须 `pi uninstall` 该路径才能恢复 |
 | `pi install npm:@scope/pkg@ver` | 经 registry 拉取；publish 后可选做最终确认 |
 | `pi install .` | 源码目录，**不能**代替 §3 |
 | `pi install -l …` | 仅当前项目；与全局安装路径不同，但包内容相同 |
+
+**同一扩展不要装两份。** registry 版与本地解包目录同时在 `packages` 里时，pi 不会报错，而是把两份都加载并给命令加后缀消歧——6 个命令变成 `llmgates:1`…`calls:2`，原名 `/llmgates` 反而不存在，provider 也会重复注册。验证前先 `pi uninstall npm:@llmgates_api/pi-llmgates-provider`。
 
 发版前用 `.tgz` 验证扩展文件与 `files` 白名单即可；publish 后 registry tarball 内容应与 bump 后 `npm pack` 一致。
 
@@ -267,7 +287,7 @@ ln -s "$PWD/node_modules/@earendil-works/pi-coding-agent" <pkgdir>/node_modules/
 - commit: `main` @ `<full-sha>`
 - 构建: `npm run check` ✅ · tarball `llmgates_api-pi-llmgates-provider-<version>.tgz`
 - tarball sha256: `<sha256>`（见 `.gate/pre-publish-build.json`）
-- 本地安装: `pi install ./llmgates_api-pi-llmgates-provider-<version>.tgz` ✅
+- 本地安装: 解包 `.tgz` 后 `pi install /tmp/llg-pkg` ✅
 - 功能验证: （列出实际执行的项，如 login、catalog、/endpoint、2API…）
 - 验证人: （姓名 / Agent + 用户确认）
 - 时间: YYYY-MM-DD
@@ -322,7 +342,7 @@ ln -s "$PWD/node_modules/@earendil-works/pi-coding-agent" <pkgdir>/node_modules/
 | --- | --- | --- |
 | 单元测试通过 | 装的是源码目录 | 与 registry 相同的 tarball |
 | 类型正确 | 未验证 `files` 白名单 | 验证实际打进包的内容 |
-| 无网络 / 无 TUI | 路径与用户安装不一致 | `pi install ./xxx.tgz` ≈ npm 安装 |
+| 无网络 / 无 TUI | 路径与用户安装不一致 | 装解包后的 tarball ≈ npm 安装 |
 | 易「合并即 publish」 | 易误以为已等价发版 | 强制一次可复现的发布物验证 |
 
 目标：**registry 上的版本 = 已在本地 `.tgz` 里验证过的版本**。
