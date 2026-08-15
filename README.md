@@ -129,7 +129,7 @@ pi
 | Base URL | 须完整填写，通常以 `/v1` 结尾 |
 | API Key | 须显式输入；以 literal string 存入 `auth.json`，不展开 `!cmd`、`$ENV` 或 `${...}` |
 
-添加成功后登录流程会回显实例 ID（`default` 类型的 ID 是自动派生的），随后执行 `/model` 选择该实例下的模型。
+添加成功后会在会话里留下一条含实例 ID 的消息（`default` 类型的 ID 是自动派生的，只能从这里或 `/llmgates list` 读到），随后执行 `/model` 选择该实例下的模型。
 
 运行 `/logout`，在选择器中选择实例的显示名称（可输入实例 ID 搜索），Pi 会删除 `auth.json` 凭证；本扩展监听该文件变更并异步删除对应的 registry 记录、停止 provider 和 endpoint override。该实例不会保留为可恢复配置；若当前进程无法监听文件，执行 `/reload` 或重启会完成清理。
 
@@ -184,7 +184,9 @@ pi
 1. `GET {baseUrl}/dashboard/billing/subscription` + `/dashboard/billing/usage`（NewAPI / one-api 的 OpenAI 兼容计费接口）→ 显示 `剩余 / 总额`
 2. `GET {baseUrl}/user/balance` → 读取其中的余额字段
 
-两者都不可用时（例如 CLIProxyAPI 本身不做计费）会明确显示 *balance is not available from this gateway*，不会显示为 0。
+两者都不可用时（例如 CLIProxyAPI 本身不做计费）会明确显示 *balance is not available from this gateway*，不会显示为 0。网关把未匹配路由回落到前端页面（200 + HTML，one-api 系的默认行为）也算「不提供该接口」，会继续试下一种；只有超时、中断、网络错误才报错。
+
+读数只认货币字段（`balance` / `remaining` / `remaining_usd` / `credit` / `credits`，单位取 `unit` 或 `currency`，缺省 USD）。one-api 的内部配额单位（`quota` / `remain_quota`，默认 500000 = 1 USD）**不会**被当成金额——宁可显示「不提供」，也不显示一个大 5 个数量级的数字；这类网关的真实余额由上面第 1 条的计费接口给出。
 
 ### 已知限制
 
@@ -192,6 +194,7 @@ pi
 - 若 `auth.json` 整体缺失或暂时损坏（如手动重置凭证、同步工具改写中途），本轮清理会被跳过以防止误删全部实例；文件恢复可读后清理自动继续。
 - `/llmgates remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能短暂列出已删除的 ID，执行 `/reload` 后会完成清理。
 - 若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/llmgates remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
+- 若 `~/.pi/agent/llmgates/2api.json` 无法解析（手工编辑出错、重复实例 ID 等），扩展**不注册任何 provider 与命令**——包括 `/login` 里的「LLMGates 网关」入口，pi 里看不到任何提示。启动日志会打印具体原因（含文件名），修好或删除该文件后 `/reload` 即可恢复。
 
 ## 功能概览
 
@@ -406,7 +409,7 @@ Pi 内置 footer 在 OAuth 登录时可能仍显示 `(sub)`，该标记与网关
 | 现象 | 处理 |
 | --- | --- |
 | 安装后扩展未加载 | `/reload` 或重启 pi |
-| `/login` 里看不到入口 | 确认已 `/reload`；入口名为「LLMGates 网关」 |
+| `/login` 里看不到入口 | 确认已 `/reload`；入口名为「LLMGates 网关」。若命令也一并消失，看启动日志——多半是 `llmgates/2api.json` 解析失败，见 [已知限制](#已知限制) |
 | 安装后无模型 | 先 `/login` 添加实例；检查网关侧 key 的模型权限与 `GET /v1/models` |
 | 启动时 `401` / `403` | `/login <实例 id>` 重新配置该实例的 key |
 | `/balance` 显示 *not available* | 该网关未暴露可识别的额度接口（如 CLIProxyAPI），属预期行为 |

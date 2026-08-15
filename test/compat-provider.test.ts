@@ -78,7 +78,11 @@ function credential(
 }
 
 describe("compat instance provider", () => {
-	it("creation tolerates llmgates/models.json being a directory", () => {
+	// `llmgates/models.json` was the removed core provider's override file. Nothing
+	// reads it anymore, but it survives an upgrade on disk — these two cases pin
+	// that a leftover copy can neither break instance construction nor leak its
+	// endpoint config into an instance's catalog.
+	it("creation tolerates a leftover llmgates/models.json being a directory", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			mkdirSync(join(agentDir, "llmgates/models.json"));
@@ -89,7 +93,7 @@ describe("compat instance provider", () => {
 		}
 	});
 
-	it("forced refresh keeps openai-completions transport regardless of endpoint config file", async () => {
+	it("forced refresh keeps openai-completions transport regardless of a leftover core override file", async () => {
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {

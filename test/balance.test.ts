@@ -58,15 +58,28 @@ describe("payload parsers", () => {
 			remaining: 12.5,
 		});
 		expect(
-			parseGatewayBalancePayload({ data: { remain_quota: "3", currency: "USD" } }),
+			parseGatewayBalancePayload({ data: { balance: "3", currency: "USD" } }),
 		).toEqual({ unit: "USD", remaining: 3 });
-		expect(parseGatewayBalancePayload({ quota: 7, used: 2 })).toEqual({
+		expect(parseGatewayBalancePayload({ credits: 7, used: 2 })).toEqual({
 			unit: "USD",
 			remaining: 7,
 			used: 2,
 		});
 		expect(parseGatewayBalancePayload({ unrelated: true })).toBeUndefined();
 		expect(parseGatewayBalancePayload("nope")).toBeUndefined();
+	});
+
+	it("ignores one-api quota units rather than reporting them as currency", () => {
+		// 2_500_000 quota units is 5 USD at the default QuotaPerUnit, so reading it
+		// as an amount would overstate the balance by five orders of magnitude.
+		expect(parseGatewayBalancePayload({ remain_quota: 2_500_000 })).toBeUndefined();
+		expect(
+			parseGatewayBalancePayload({ quota: 2_500_000, used_quota: 500_000 }),
+		).toBeUndefined();
+		// A currency field alongside the quota still wins.
+		expect(
+			parseGatewayBalancePayload({ remain_quota: 2_500_000, balance: 5 }),
+		).toEqual({ unit: "USD", remaining: 5 });
 	});
 });
 
@@ -141,6 +154,46 @@ describe("fetchGatewayBalance", () => {
 		expect(
 			await fetchGatewayBalance({ apiKey: "k", baseUrl: BASE_URL, fetchImpl: impl }),
 		).toBeUndefined();
+	});
+
+	it("treats a web-UI answer on an unrouted probe as unsupported, not as a failure", async () => {
+		// one-api-derived gateways route every unmatched path to their SPA, so an
+		// absent billing route answers 200 + HTML instead of 404. That must not
+		// abort the chain before /user/balance is tried.
+		const html = () =>
+			new Response("<!doctype html><title>gateway</title>", {
+				status: 200,
+				headers: { "content-type": "text/html" },
+			});
+		const { impl, urls } = routedFetch({
+			[`${BASE_URL}/dashboard/billing`]: html,
+			[BALANCE_URL]: () => json({ balance: 9 }),
+		});
+
+		expect(
+			await fetchGatewayBalance({ apiKey: "k", baseUrl: BASE_URL, fetchImpl: impl }),
+		).toEqual({ unit: "USD", remaining: 9 });
+		expect(urls).toEqual([SUBSCRIPTION_URL, BALANCE_URL]);
+	});
+
+	it("says not available when every probe answers with the web UI", async () => {
+		const { impl } = routedFetch({
+			[BASE_URL]: () => new Response("<html></html>", { status: 200 }),
+		});
+
+		expect(
+			await fetchGatewayBalance({ apiKey: "k", baseUrl: BASE_URL, fetchImpl: impl }),
+		).toBeUndefined();
+	});
+
+	it("still surfaces a transport failure instead of calling it unsupported", async () => {
+		const impl = (async () => {
+			throw new TypeError("fetch failed");
+		}) as typeof fetch;
+
+		await expect(
+			fetchGatewayBalance({ apiKey: "k", baseUrl: BASE_URL, fetchImpl: impl }),
+		).rejects.toThrow(/fetch failed/);
 	});
 
 	it("does not report unauthorized when another shape answers", async () => {

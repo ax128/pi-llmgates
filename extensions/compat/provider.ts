@@ -1210,7 +1210,7 @@ export function createCompatProvider(
 				// pi shows "{name} is configured outside pi." when this api_key entry
 				// is picked in the /login auth-type selector; the name doubles as the
 				// guidance to go back and choose the oauth re-configuration entry.
-				name: `${currentInstance.name} 凭证由 /login LLMGates 管理（重配置请选另一登录项）`,
+				name: `${currentInstance.name} 凭证由 /login ${providerId} 管理（重配置请选另一登录项）`,
 				async check() {
 					const connection = connectionFromCredential(
 						readProviderOAuthCredential(agentDir, providerId),

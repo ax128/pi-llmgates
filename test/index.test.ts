@@ -17,15 +17,18 @@ afterEach(() => {
 /** Minimal ExtensionAPI capturing registrations. The factory only uses these methods. */
 function fakePi(options?: {
 	onRegisterProvider?: (provider: unknown) => void;
+	onSendMessage?: () => void;
 }): {
 	pi: ExtensionAPI;
 	commands: Map<string, unknown>;
 	providers: unknown[];
 	events: Map<string, number>;
+	sessionMessages: string[];
 } {
 	const commands = new Map<string, unknown>();
 	const providers: unknown[] = [];
 	const events = new Map<string, number>();
+	const sessionMessages: string[] = [];
 	const pi = {
 		registerCommand: vi.fn((name: string, commandOptions: unknown) => {
 			commands.set(name, commandOptions);
@@ -35,12 +38,15 @@ function fakePi(options?: {
 			providers.push(provider);
 		}),
 		unregisterProvider: vi.fn(),
-		sendMessage: vi.fn(),
+		sendMessage: vi.fn((message: { content?: unknown }) => {
+			options?.onSendMessage?.();
+			sessionMessages.push(String(message?.content ?? ""));
+		}),
 		on: vi.fn((event: string) => {
 			events.set(event, (events.get(event) ?? 0) + 1);
 		}),
 	} as unknown as ExtensionAPI;
-	return { pi, commands, providers, events };
+	return { pi, commands, providers, events, sessionMessages };
 }
 
 function providerIds(providers: readonly unknown[]): string[] {
@@ -141,7 +147,7 @@ describe("extension entrypoints", () => {
 				}
 				throw new Error(`unexpected URL: ${url}`);
 			});
-		const { pi, providers } = fakePi();
+		const { pi, providers, sessionMessages } = fakePi();
 		try {
 			extensionFactory(pi);
 			const bootstrap = providers.find(
@@ -160,6 +166,10 @@ describe("extension entrypoints", () => {
 			const marker = await bootstrap!.auth.oauth!.login(interaction);
 			expect(marker.access).toBe("managed");
 			expect(interaction.messages.at(-1)).toContain("merged-instance");
+			// The dialog notify above dies with the dialog pi tears down the moment
+			// login() resolves, so the id — the only handle /login <id> and
+			// /balance <id> accept — must also reach the session transcript.
+			expect(sessionMessages.at(-1)).toContain("merged-instance");
 
 			// The instance credential lives under its own id, never the login entry's.
 			const auth = JSON.parse(
@@ -168,6 +178,51 @@ describe("extension entrypoints", () => {
 			expect(auth["merged-instance"]?.access).toBe("merged-key");
 			expect(providerIds(providers)).toContain("merged-instance");
 		} finally {
+			fetchSpy.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("keeps a login that succeeded when the confirmation message cannot be posted", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(
+				async () => new Response(JSON.stringify([{ id: "m1" }])),
+			);
+		// print/json modes have no session to post into; the instance is already
+		// persisted and registered by then, so this must not undo any of it.
+		const { pi, providers } = fakePi({
+			onSendMessage() {
+				throw new Error("no session");
+			},
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			extensionFactory(pi);
+			const bootstrap = providers.find(
+				(provider) =>
+					(provider as { id?: string })?.id === BOOTSTRAP_PROVIDER_ID,
+			) as Provider | undefined;
+			const marker = await bootstrap!.auth.oauth!.login(
+				scriptedAuthInteraction([
+					"newapi",
+					"quiet-instance",
+					"",
+					"https://compat.example/v1",
+					"key",
+				]),
+			);
+			expect(marker.access).toBe("managed");
+			expect(providerIds(providers)).toContain("quiet-instance");
+			const auth = JSON.parse(
+				readFileSync(join(agentDir, "auth.json"), "utf8"),
+			) as Record<string, { access?: string }>;
+			expect(auth["quiet-instance"]?.access).toBe("key");
+		} finally {
+			warn.mockRestore();
 			fetchSpy.mockRestore();
 			cleanup();
 		}

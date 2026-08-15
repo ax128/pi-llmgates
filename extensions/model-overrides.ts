@@ -51,7 +51,9 @@ function overridePath(agentDir: string, scope: OverrideScope): string {
 
 /** Human-readable scope label for error messages (never contains a full path). */
 function scopeLabel(scope: OverrideScope): string {
-	return `${LLMGATES_2API_MODELS_DIR}/${scope.instanceId}.json`;
+	// Lowercased to match the file `overridePath()` actually touches, so a warning
+	// never points at a name that is not on disk.
+	return `${LLMGATES_2API_MODELS_DIR}/${scope.instanceId.toLowerCase()}.json`;
 }
 
 export interface ModelOverrideEntry {

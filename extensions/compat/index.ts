@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { EndpointRefreshResult } from "../catalog-store.js";
+import { compatInstanceAddedMessage } from "../login-ui.js";
 import {
 	createCompatBootstrapProvider,
 	createCompatProvider,
@@ -498,7 +499,36 @@ export function registerCompatGateways(
 				);
 			}
 			provider.startInitialPricingSync();
+			announceInstanceAdded(instance);
 		});
+	}
+
+	/**
+	 * The login flow's own `interaction.notify` renders into pi's login dialog,
+	 * which is torn down as soon as `login()` resolves — so the instance id (the
+	 * one thing the `default` scheme derives rather than asks for, and the handle
+	 * every later `/login <id>` and `/balance <id>` needs) would flash for at most
+	 * one frame. Post it as a session message too, which survives the dialog.
+	 *
+	 * Never let this sink the login: the instance is already persisted and
+	 * registered by the time it runs, and some run modes have no session to post
+	 * into.
+	 */
+	function announceInstanceAdded(instance: CompatInstance): void {
+		try {
+			pi.sendMessage(
+				{
+					customType: "llmgates-login",
+					content: compatInstanceAddedMessage(instance),
+					display: true,
+				},
+				{ triggerTurn: false },
+			);
+		} catch (error) {
+			logWarn(
+				`Added ${instance.id}, but the confirmation message could not be posted: ${errorText(error)}`,
+			);
+		}
 	}
 
 	const bootstrapProvider = createCompatBootstrapProvider({

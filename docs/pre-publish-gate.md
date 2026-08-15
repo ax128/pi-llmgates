@@ -160,11 +160,20 @@ pi
 
 **多网关兼容层**
 
-- [ ] `/login` 选择 NewAPI / CLIProxyAPI / Sub2API / 通用网关添加实例（无错误横幅，登录流程内出现成功提示且实例立即可用）
+- [ ] `/login` 选择 NewAPI / CLIProxyAPI / Sub2API / 通用网关添加实例（无错误横幅，实例立即可用，且**会话里留下**一条含实例 ID 的成功消息——登录对话框内那条会随对话框销毁，通用网关的 ID 只能从这里读到）
 - [ ] `/logout` 中选择实例显示名称（可用 ID 搜索）后，registry / provider / endpoint override 被清理；重启或 `/reload` 后不再出现（若涉及 logout 清理）
 - [ ] 同 ID 的 auth 条目仍存在时拒绝覆盖（若涉及登录恢复）
 - [ ] `/llmgates list` / `/llmgates remove <id>`
 - [ ] 多实例并存无串线
+
+**余额（`/balance`）**
+
+只能对真实网关验证，改动 `balance.ts` 时必测：
+
+- [ ] NewAPI 实例：`/balance` 显示金额（走 `dashboard/billing/subscription` + `usage`）
+- [ ] CLIProxyAPI 或其他无计费接口的实例：显示 *balance is not available from this gateway*，**不是** 0、也不是 `returned invalid JSON`（这类网关常把未匹配路由回落到前端页面，返回 200 + HTML）
+- [ ] `/balance <instance-id>` 只查一个；多实例时一个失败不掩盖另一个
+- [ ] key 失效的实例显示 *unauthorized; run /login \<id\> again*
 
 **TPS / 子代理用量**
 
@@ -186,18 +195,20 @@ Agent **可以**在本机执行 §2 脚本、用 §3 命令安装 `.tgz`、根�
 
 ### 4.4 rpc 驱动的隔离验证（Agent 推荐做法）
 
-`/endpoint-setting` 这类交互式命令没法用 `pi -p` 驱动，但 `pi --mode rpc` 会把扩展的 UI 请求以 JSON 事件吐到 stdout，可直接断言。**务必配合 `PI_CODING_AGENT_DIR` 用隔离 agent dir**——否则 `/endpoint …` 会真的写进用户的 `~/.pi/agent/llmgates/models.json`。
+`/endpoint-setting` 这类交互式命令没法用 `pi -p` 驱动，但 `pi --mode rpc` 会把扩展的 UI 请求以 JSON 事件吐到 stdout，可直接断言。**务必配合 `PI_CODING_AGENT_DIR` 用隔离 agent dir**——否则 `/endpoint …` 会真的写进用户的 `~/.pi/agent/llmgates/2api-models/<实例 id>.json`。
 
 准备隔离环境（只复制验证所需，不碰用户配置）：
 
 ```bash
 ISO=/tmp/llg-iso-agent
-rm -rf "$ISO" && mkdir -p "$ISO/llmgates" && chmod 700 "$ISO"
+rm -rf "$ISO" && mkdir -p "$ISO/llmgates/2api-models" && chmod 700 "$ISO"
 cp ~/.pi/agent/auth.json "$ISO/auth.json"              # 网关凭证
+cp ~/.pi/agent/llmgates/2api.json "$ISO/llmgates/"     # 实例 registry（缺了就没有 provider）
 cp ~/.pi/agent/models-store.json "$ISO/" 2>/dev/null   # 省一次联网 catalog
 printf '{"packages":["/tmp/llg-gate"]}\n' > "$ISO/settings.json"   # 只加载待验包
-# 按本次改动构造 override 前置状态，例如验 `*` 标记就要先有 defaults：
-cat >"$ISO/llmgates/models.json" <<'JSON'
+# 按本次改动构造 override 前置状态，例如验 `*` 标记就要先有 defaults。
+# 文件名是实例 ID 的小写形式，每个实例一份：
+cat >"$ISO/llmgates/2api-models/work-newapi.json" <<'JSON'
 { "defaults": { "endpoint": "messages" },
   "models": { "glm-5": { "endpoint": "chat_completions" } } }
 JSON
@@ -217,7 +228,7 @@ node -e 'process.stdout.write(JSON.stringify({type:"prompt",id:"p1",message:"/en
 | `editor` | `prefill` | `/endpoint-setting` 第一步的完整清单文本——可直接断言 `*` 标记、行数、分组 |
 | `notify` | `message` | 命令结果与取消提示，如 `Cancelled; no configuration was changed.` |
 
-非交互命令（`/endpoint <ep> <model>`、`/llmgates-reload`、`/llmgates list`、`/balance`）同样走 `prompt`，结果落在 `notify` 的 `message`；写入类命令验完直接 `cat "$ISO/llmgates/models.json"` 比对前后差异。命令是否注册可用 `{"type":"get_commands"}` 一次性列出。
+非交互命令（`/endpoint <ep> <model>`、`/llmgates-reload`、`/llmgates list`、`/balance`）同样走 `prompt`，结果落在 `notify` 的 `message`；写入类命令验完直接 `cat "$ISO/llmgates/2api-models/<实例 id>.json"` 比对前后差异。命令是否注册可用 `{"type":"get_commands"}` 一次性列出。
 
 若要绕过 pi 直接对 `dist/` 做纯函数断言（如 override 解析），需把 peer 依赖软链进解包目录再 import——`npm install --omit=dev` **不会**安装 root 包自己的 `peerDependencies`，那是 pi 在运行时提供的：
 

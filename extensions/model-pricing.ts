@@ -1,6 +1,6 @@
 /**
  * Reference retail API prices (USD per 1M tokens) for common gateway models.
- * Used for local cost estimates; actual LLMGates billing may differ — use /balance for account totals.
+ * Used for local cost estimates; a gateway's actual billing may differ — use /balance for account totals.
  *
  * Sources (checked 2026-07-23): OpenAI API pricing, Anthropic Claude pricing,
  * Google Gemini API pricing, DeepSeek API pricing, xAI docs pricing.
@@ -14,7 +14,6 @@ import {
 
 export { KNOWN_UPSTREAM_VENDOR_IDS } from "./model-pricing-cache.js";
 
-export const DEFAULT_PROVIDER_ID = "llmgates";
 export const MODEL_PRICING_LAST_UPDATED = "2026-07-23";
 
 export interface ModelPriceRule {

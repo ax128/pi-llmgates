@@ -8,7 +8,8 @@
  *      remaining is the difference.
  *   2. `/user/balance` — a single object carrying a remaining-credit field.
  * A gateway that answers neither (CLIProxyAPI has no accounting at all) is
- * reported as "not available", never as zero.
+ * reported as "not available", never as zero — including when it answers an
+ * unrouted probe with its web UI instead of a 404.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -17,6 +18,7 @@ import type { CompatGatewayRegistration } from "./compat/index.js";
 import {
 	BALANCE_REQUEST_TIMEOUT_MS,
 	HttpStatusError,
+	InvalidJsonError,
 	isUnauthorizedStatus,
 	MAX_RESPONSE_BYTES,
 	requestLimitedJson,
@@ -86,15 +88,23 @@ export function parseBillingUsage(payload: unknown): { used: number } | undefine
 	return used === undefined ? undefined : { used: used / 100 };
 }
 
+/**
+ * Currency-denominated fields only. `quota` / `remain_quota` are deliberately NOT
+ * here: in one-api-derived gateways those carry internal quota units (500000 = 1
+ * USD by default), so reading one as an amount would report a balance five orders
+ * of magnitude too large — worse than reporting nothing. Those gateways expose
+ * the same figure in currency through the billing pair probed first.
+ */
 const REMAINING_KEYS = [
 	"balance",
 	"remaining",
 	"remaining_usd",
-	"remain_quota",
 	"credit",
 	"credits",
-	"quota",
 ] as const;
+
+/** Same rule as REMAINING_KEYS: no `used_quota`. */
+const USED_KEYS = ["used", "used_usd"] as const;
 
 /**
  * Generic `/user/balance` object. Some gateways nest the payload under `data`,
@@ -120,7 +130,7 @@ export function parseGatewayBalancePayload(
 				: typeof source.currency === "string" && source.currency.trim()
 					? source.currency.trim()
 					: "USD";
-		const used = firstNumberField(source, ["used", "used_quota", "used_usd"]);
+		const used = firstNumberField(source, USED_KEYS);
 		return { unit, remaining, ...(used !== undefined ? { used } : {}) };
 	}
 	return undefined;
@@ -162,6 +172,17 @@ export interface FetchGatewayBalanceOptions {
 }
 
 /**
+ * "This gateway does not serve that route" — the only kind of failure a probe is
+ * allowed to swallow and move on from. An error status is the polite form; a 2xx
+ * carrying the gateway's web UI instead of JSON is the common one, because
+ * one-api-derived gateways route every unmatched path to their SPA. Anything else
+ * (timeout, abort, DNS, size limit) is a real failure and must surface.
+ */
+function isShapeUnavailable(error: unknown): boolean {
+	return error instanceof HttpStatusError || error instanceof InvalidJsonError;
+}
+
+/**
  * Probe one gateway. Resolves `undefined` when the gateway exposes no balance
  * shape this extension understands; rethrows unauthorized so the caller can tell
  * "wrong key" apart from "unsupported".
@@ -195,7 +216,7 @@ export async function fetchGatewayBalance(
 		);
 	} catch (error) {
 		if (isUnauthorizedStatus(error)) unauthorized = error;
-		else if (!(error instanceof HttpStatusError)) throw error;
+		else if (!isShapeUnavailable(error)) throw error;
 	}
 
 	if (subscription) {
@@ -212,7 +233,7 @@ export async function fetchGatewayBalance(
 				),
 			)?.used;
 		} catch (error) {
-			if (!(error instanceof HttpStatusError)) throw error;
+			if (!isShapeUnavailable(error)) throw error;
 		}
 		return {
 			unit: "USD",
@@ -230,7 +251,7 @@ export async function fetchGatewayBalance(
 		if (balance) return balance;
 	} catch (error) {
 		if (isUnauthorizedStatus(error)) unauthorized = error;
-		else if (!(error instanceof HttpStatusError)) throw error;
+		else if (!isShapeUnavailable(error)) throw error;
 	}
 
 	// Only now is "unauthorized" the whole story: a 401 on one probe while another

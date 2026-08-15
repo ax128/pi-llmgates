@@ -1,7 +1,6 @@
 /**
  * /endpoint-setting selector rendering + parsing (pure functions, no UI, no I/O).
  *
- *
  * TUI step 1 uses `endpoint-picker.ts` (structured selection, no parsing). RPC step 1
  * still renders a checklist into `ui.editor`; the user flips `[ ]` to `[x]` and the
  * edited text comes back here via `parseSelectorList`. Model IDs are resolved against

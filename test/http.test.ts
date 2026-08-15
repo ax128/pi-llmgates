@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	HttpStatusError,
+	InvalidJsonError,
 	MAX_RESPONSE_BYTES,
 	RequestTimeoutError,
 	requestLimitedJson,
@@ -136,6 +137,28 @@ describe("requestLimitedJson", () => {
 				operation: "models",
 			});
 			expect(payload).toEqual([{ id: "m1" }]);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("throws a typed InvalidJsonError when a 2xx body is not JSON", async () => {
+		// Callers that probe several optional routes key on this type to tell
+		// "this deployment does not serve that route" (gateways answer with their
+		// web UI) apart from a transport failure.
+		const server = await startLoopbackServer([
+			{ path: "/balance", body: "<!doctype html><title>gateway</title>" },
+		]);
+		try {
+			await expect(
+				requestLimitedJson({
+					url: `${server.baseUrl}/balance`,
+					headers: {},
+					timeoutMs: 2_000,
+					maxBytes: MAX_RESPONSE_BYTES,
+					operation: "balance",
+				}),
+			).rejects.toBeInstanceOf(InvalidJsonError);
 		} finally {
 			await server.close();
 		}

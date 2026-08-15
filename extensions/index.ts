@@ -54,8 +54,8 @@ export default function (pi: ExtensionAPI): void {
 		compat = registerCompatGateways(pi, agentDir);
 	} catch (error) {
 		logWarn(
-			`${error instanceof Error ? error.message : String(error)} ` +
-				"No gateway was registered; fix the reported problem and run /reload.",
+			`${error instanceof Error ? error.message : String(error)}. ` +
+				"No gateway and no command was registered; fix the reported problem and run /reload.",
 		);
 		return;
 	}
