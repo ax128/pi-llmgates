@@ -149,6 +149,7 @@
 
 0.1.x 的历史未回补，请查阅 git log 与各 `v0.1.*` tag。
 
+[Unreleased]: https://github.com/ax128/pi-llmgates/compare/v0.2.13...HEAD
 [0.2.13]: https://github.com/ax128/pi-llmgates/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/ax128/pi-llmgates/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/ax128/pi-llmgates/compare/v0.2.10...v0.2.11

@@ -104,6 +104,8 @@ pi
 | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA） | `cpa` | 本地 CLI 订阅代理，默认端口 `8317` | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) |
 | 通用 OpenAI 兼容网关 | `default` | 任意实现 `GET /v1/models` 的网关；仅需 URL + API Key，实例 ID 由 hostname 自动生成 | — |
 
+> **从 0.2.13 及更早版本升级**：本扩展曾内置一个 LLMGates 官方网关（core provider，通过 `/login LLMGates` 或 `LLMGATES_API_KEY` / `LLMGATES_BASE_URL` 环境变量连接）。该内置网关**已移除**，升级后它不再注册，其模型会从 `/model` 列表消失。请用 `/login` →「LLMGates 网关」→ **通用网关**，填入原 base URL 与 API Key，把它重新添加为一个普通实例；原 `llmgates/models.json` 里的出口覆盖不会自动迁移，按需在 `llmgates/2api-models/<新实例 id>.json` 中重建。`auth.json` 里遗留的 `llmgates` 条目与 `llmgates/config.json` 里的 `apiKey` / `baseUrl` / `providerId` / `providerName` 不再被读取，也不会自动删除——其中 `apiKey` 是一份没人再用的明文密钥，建议自行删掉。详见 [CHANGELOG](./CHANGELOG.md)。
+
 同一 scheme 可添加多个实例（例如 `work-newapi` 与 `home-newapi`，或两个不同 hostname 的 `default` 实例），不同 scheme 也可并存。`default` 同一 hostname 重复添加时会自动分配 `-2`、`-3` 后缀。Base URL 可不写 `/v1`，扩展会自动规范到 `/v1/models` 探测。默认所有 scheme 共用 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名自动切换协议；如需改用 `messages` / `responses`，用 `/endpoint` 或 `/endpoint-setting` 显式配置（见 [模型出口](#模型出口endpoint--api)）。
 
 ## 添加与管理实例
@@ -411,6 +413,7 @@ Pi 内置 footer 在 OAuth 登录时可能仍显示 `(sub)`，该标记与网关
 | 安装后扩展未加载 | `/reload` 或重启 pi |
 | `/login` 里看不到入口 | 确认已 `/reload`；入口名为「LLMGates 网关」。若命令也一并消失，看启动日志——多半是 `llmgates/2api.json` 解析失败，见 [已知限制](#已知限制) |
 | 安装后无模型 | 先 `/login` 添加实例；检查网关侧 key 的模型权限与 `GET /v1/models` |
+| 升级后原有模型全部消失 | 你此前用的是已移除的内置官方网关（core provider）；按 [支持的网关](#支持的网关) 的升级说明，用「通用网关」把它重新添加为实例 |
 | 启动时 `401` / `403` | `/login <实例 id>` 重新配置该实例的 key |
 | `/balance` 显示 *not available* | 该网关未暴露可识别的额度接口（如 CLIProxyAPI），属预期行为 |
 | Kimi / `tokenization failed` | 升级本扩展后 `/reload`；Kimi 不接受 `developer` role，扩展会注入 compat。也可新建会话再试（中途从其他模型切到 K3 不稳定） |

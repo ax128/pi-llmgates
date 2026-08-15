@@ -25,6 +25,12 @@ if [[ -z "${NPM_TOKEN:-}" ]]; then
 fi
 
 PASS_FILE=".gate/pre-publish-pass.json"
+# What a release commit is allowed to touch after the gate ran: the version
+# literals (docs/npm-package.md carries its own install examples) plus the
+# release notes. Everything else — extensions/, deps, scripts, other docs —
+# invalidates the gate, because the gate validated the built artifact.
+# Keep this in sync with docs/pre-publish-gate.md §6 and npm-package.md §3.2.
+BUMP_ALLOWED='^(package\.json|package-lock\.json|README\.md|CHANGELOG\.md|docs/npm-package\.md)$'
 HEAD="$(git rev-parse HEAD)"
 GATE_COMMIT=""
 if [[ "${GATE_SKIP:-}" == "1" ]]; then
@@ -45,11 +51,10 @@ else
 	if [[ "$HEAD" == "$GATE_COMMIT" ]]; then
 		: # gate commit is current HEAD
 	elif [[ -n "$(git diff --name-only "$GATE_COMMIT" HEAD || true)" ]]; then
-		ALLOWED='^(package\.json|package-lock\.json|README\.md)$'
 		CHANGED="$(git diff --name-only "$GATE_COMMIT" HEAD || true)"
 		while IFS= read -r file; do
 			[[ -z "$file" ]] && continue
-			if [[ ! "$file" =~ $ALLOWED ]]; then
+			if [[ ! "$file" =~ $BUMP_ALLOWED ]]; then
 				echo "error: gate commit ($GATE_COMMIT) != HEAD ($HEAD)" >&2
 				echo "error: non-bump change since gate: $file — re-run full pre-publish gate" >&2
 				exit 1
@@ -82,11 +87,10 @@ fi
 
 if [[ -n "$GATE_VERSION" && "$GATE_VERSION" != "$VERSION" ]]; then
 	echo "==> version bumped since gate ($GATE_VERSION → $VERSION); re-packing publish tarball"
-	ALLOWED='^(package\.json|package-lock\.json|README\.md)$'
 	CHANGED="$(git diff --name-only "$GATE_COMMIT" HEAD || true)"
 	while IFS= read -r file; do
 		[[ -z "$file" ]] && continue
-		if [[ ! "$file" =~ $ALLOWED ]]; then
+		if [[ ! "$file" =~ $BUMP_ALLOWED ]]; then
 			echo "error: non-bump change since gate: $file — re-run full pre-publish gate" >&2
 			exit 1
 		fi

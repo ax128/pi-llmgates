@@ -23,7 +23,7 @@
 ### A. 准备（Agent 自己做）
 
 1. 确认 §0 门禁已通过（`.gate/pre-publish-pass.json` + 对话 PASS 回执）
-2. 确认或升版本：`package.json`、`package-lock.json`、README 中的 `@x.y.z` / `@vX.Y.Z`，以及本文档 §1 / §2 / §D 示例中的版本号
+2. 确认或升版本（§3.2 的五个文件）：`package.json`、`package-lock.json`、README 中的 `@x.y.z` / `@vX.Y.Z`、本文档 §1 / §2 / §D 示例中的版本号，以及 `CHANGELOG.md` 的 `[Unreleased]` 定版
 3. `npm run check` 通过
 4. commit + `git push origin HEAD`
 5. 打 tag（可先本地）：`VERSION=$(node -p "require('./package.json').version")` → `git tag "v$VERSION"`
@@ -164,6 +164,9 @@ npm pack --dry-run
 2. `package-lock.json` → 根 `version` 与 `packages[""].version`
 3. `README.md` → 安装示例中的版本
 4. `docs/npm-package.md` → §1 / §2 / §D 示例中的版本
+5. `CHANGELOG.md` → `[Unreleased]` 定版为 `## [x.y.z] — YYYY-MM-DD`，并在文件末尾补 `[x.y.z]: https://github.com/ax128/pi-llmgates/compare/v<上一版>...vx.y.z`
+
+这五个文件正是 `publish-npm.sh` 的 `BUMP_ALLOWED` 白名单——发布提交碰到白名单以外的文件，publish 会被拒绝并要求重跑门禁（见 [pre-publish-gate.md §6](./pre-publish-gate.md#6-门禁通过后再发布)）。
 
 ### 3.3 脚本
 
