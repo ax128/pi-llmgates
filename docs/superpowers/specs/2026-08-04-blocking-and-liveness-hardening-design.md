@@ -16,7 +16,7 @@ Scope, in severity order:
 5. An open `ui.custom` picker can strand the guard.
 6. Subagent meta scanning does unbounded synchronous I/O on the TUI thread.
 7. Watcher and timer handles can keep the process alive.
-8. A core registration failure aborts the whole extension load.
+8. A provider registration failure aborts the whole extension load.
 9. Publishing depends on a build that `--ignore-scripts` does not run.
 
 ## Design
@@ -159,18 +159,16 @@ of these can be the reason pi fails to exit.
 
 ### 8. The extension entry does not rethrow
 
-Core provider failure no longer propagates out of the default export: that runs
-inside pi's extension loader, where an exception can abort the load and take the
-2API providers and every registered command with it. It degrades to "core
-unavailable, recovery login present" and warns with the reason.
+Gateway registration failure no longer propagates out of the default export: that
+runs inside pi's extension loader, where an exception can abort the load and take
+every registered command — and any unrelated extension — with it. It warns with
+the reason and leaves pi otherwise intact.
 
-That covers construction as well as registration. `createLLMGatesProvider` is not
-just wiring — it reads `llmgates/pricing.json` and `llmgates/models.json` at
-construction, and both readers rethrow everything that is not `ENOENT`. A
-permission error, an `EISDIR`, or an I/O error on either file escapes the factory
-by exactly the path a failed `pi.registerProvider` would, so both go through one
-`degradeToRecoveryLogin` helper. The compat side already sat inside the
-`registerCompatGateways` try, despite making the same read.
+That covers construction as well as registration: `createCompatProvider` is not
+just wiring — it reads `llmgates/pricing.json` at construction, and that reader
+rethrows everything that is not `ENOENT`. A permission error, an `EISDIR`, or an
+I/O error escapes the factory by exactly the path a failed `pi.registerProvider`
+would, so both sit inside the one `registerCompatGateways` try.
 
 ### 9. Publish builds explicitly
 
@@ -219,5 +217,5 @@ flag would let a transient first one permanently silence a persistent second.
 - A scan whose entire read budget goes to cross-granularity duplicates still
   converges: the dropped keys join `ingested`, the next scan reaches the
   remainder, and the one after it is empty.
-- Core provider failure — construction *or* registration — does not throw out of
-  the extension factory, still registers the recovery provider, and warns.
+- Gateway registration failure — construction *or* registration — does not throw
+  out of the extension factory, and warns with the reason.

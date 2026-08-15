@@ -1,5 +1,3 @@
-import { DEFAULT_BASE_URL } from "./catalog.js";
-
 const URL_ERROR_ZH: Readonly<Record<string, string>> = {
 	"URL is empty": "URL 不能为空",
 	"URL is not valid": "URL 格式无效",
@@ -48,41 +46,14 @@ export function formatLoginValidationFailure(
 	return `验证失败（${attempt}/${maxAttempts}）：${translateLoginError(message)}`;
 }
 
-export const LLMGATES_LOGIN_UI = {
-	loginLabel: "配置网关地址与 API Key",
-	oauthAccountName: (providerName: string) => `${providerName} 账号`,
-	intro: {
-		message:
-			"正在配置 LLMGates 网关。请依次输入网关地址与 API Key；地址留空将使用默认网关。",
-		links: [{ url: "https://llmgates.com", label: "在 LLMGates 获取 API Key" }],
-	},
-	baseUrl: {
-		message: "LLMGates 网关地址（留空使用默认）",
-		placeholder: DEFAULT_BASE_URL,
-	},
-	apiKey: {
-		message: "LLMGates API Key",
-		placeholder: "sk-llmgates-...",
-	},
-	validating: "正在验证凭证…",
-	errors: {
-		apiKeyRequired: "API Key 不能为空",
-	},
-} as const;
-
-/**
- * Unified gateway picker shown as the first step of `/login LLMGates`. LLMGates
- * is first so the default selection stays the core gateway; the remaining ids
- * are the 2API compatibility schemes.
- */
+/** Gateway type picker shown as the first step of the add-instance login. */
 export const GATEWAY_KIND_LOGIN_UI = {
 	message: "网关类型",
 	options: [
-		{ id: "llmgates", label: "LLMGates", description: "LLMGates 官方网关" },
 		{
 			id: "newapi",
 			label: "NewAPI",
-			description: "NewAPI 中转网关",
+			description: "NewAPI 网关",
 		},
 		{
 			id: "cpa",
@@ -102,47 +73,28 @@ export const GATEWAY_KIND_LOGIN_UI = {
 	],
 } as const;
 
-/**
- * pi's interactive login dialog swallows exactly this error message instead of
- * rendering a failure banner. The 2API branch of the LLMGates login persists
- * its own auth.json entry and must NOT return a credential — returning one
- * would overwrite the core LLMGates credential — so it ends the flow with this
- * sentinel after reporting success through a session message.
- */
-export const LOGIN_CANCELLED_MESSAGE = "Login cancelled";
-
 export function compatInstanceAddedMessage(instance: {
 	id: string;
 	name: string;
 	scheme: string;
 }): string {
 	return (
-		`已添加兼容网关实例「${instance.name}」（id=${instance.id}，类型 ${instance.scheme}）。` +
+		`已添加网关实例「${instance.name}」（id=${instance.id}，类型 ${instance.scheme}）。` +
 		`使用 /llmgates list 查看，/login ${instance.id} 可重新配置。`
 	);
 }
 
-/** Intro for the merged `/login LLMGates` branch once the gateway type is chosen. */
-export const COMPAT_MERGED_LOGIN_INTRO =
-	"正在添加兼容网关实例。请依次填写实例 ID、显示名称（可留空）、网关地址与 API Key。";
-
-/** Intro for the merged flow when the generic `default` gateway type is chosen. */
-export const COMPAT_DEFAULT_MERGED_LOGIN_INTRO =
-	"正在添加通用兼容网关。请依次输入网关地址与 API Key；将自动探测 /v1/models 并注册实例。";
-
 export const COMPAT_BOOTSTRAP_LOGIN_UI = {
-	providerName: "LLMGates 兼容网关恢复",
+	providerName: "LLMGates 网关",
 	loginLabel: "添加 OpenAI 兼容网关实例",
 	oauthName: "添加 OpenAI 兼容网关",
 	intro: {
 		message:
-			"正在添加兼容网关实例。请依次选择网关类型、填写实例 ID、显示名称（可留空）、网关地址与 API Key。",
+			"正在添加网关实例。请依次选择网关类型、填写实例 ID、显示名称（可留空）、网关地址与 API Key。",
 	},
 	scheme: {
 		message: GATEWAY_KIND_LOGIN_UI.message,
-		options: GATEWAY_KIND_LOGIN_UI.options.filter(
-			(option) => option.id !== "llmgates",
-		),
+		options: GATEWAY_KIND_LOGIN_UI.options,
 	},
 	instanceId: {
 		message: "实例 Provider ID（用于 /login <id>，须手动指定）",
@@ -161,6 +113,10 @@ export const COMPAT_BOOTSTRAP_LOGIN_UI = {
 	},
 	validating: "正在验证凭证…",
 } as const;
+
+/** Intro shown once the generic `default` gateway type is chosen (id is derived). */
+export const COMPAT_DEFAULT_LOGIN_INTRO =
+	"正在添加通用网关。请依次输入网关地址与 API Key；将自动探测 /v1/models 并注册实例。";
 
 export function compatInstanceLoginUi(instanceName: string) {
 	return {

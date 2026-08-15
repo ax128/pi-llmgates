@@ -94,8 +94,8 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
  * bearing field here is `supportsDeveloperRole: false` — without it pi-ai sends
  * the developer role and Moonshot fails with "tokenization failed". That field
  * also exists on OpenAIResponsesCompat, so applying it to an openai-responses
- * model is still correct and the surplus fields are ignored; core relies on this,
- * since it maps Kimi ids to openai-responses by default.
+ * model is still correct and the surplus fields are ignored — which is what a
+ * `responses` endpoint override on a Kimi model relies on.
  *
  * AnthropicMessagesCompat shares none of those fields, so a Kimi model routed to
  * `messages` must not be stamped with this metadata at all.
@@ -162,9 +162,9 @@ export function mapCompatModelsPayload(
 			: undefined;
 
 		// 2API's own semantics are "wrap upstream as OpenAI Chat Completions", so the
-		// default is the constant chat_completions — deliberately NOT core's
-		// resolveInferenceEndpoint() heuristic, which would map Claude-ish ids to
-		// `messages` and change behavior for users who configured no override at all.
+		// default is the constant chat_completions — never an id-shape heuristic that
+		// would map Claude-ish ids to `messages` and change behavior for users who
+		// configured no override at all.
 		const endpoint = options.endpointOverride?.(id) ?? "chat_completions";
 		const api = toPiApiType(endpoint, vendor ?? "");
 		const thinking = resolveThinkingMetadata(id, api);

@@ -1,7 +1,7 @@
 /**
- * /llmgates-reload — force-refresh model catalogs for core LLMGates and all 2API
- * instances. Bypasses the background freshness window and rewrites cached
- * thinkingLevelMap / routing metadata from a live /v1/models fetch.
+ * /llmgates-reload — force-refresh the model catalog of every gateway instance.
+ * Bypasses the background freshness window and rewrites cached thinkingLevelMap /
+ * routing metadata from a live /v1/models fetch.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -12,8 +12,8 @@ import {
 	releaseEndpointInFlight,
 	waitForIdleBounded,
 } from "./endpoint.js";
+import type { EndpointRefreshResult } from "./catalog-store.js";
 import type { CompatGatewayRegistration } from "./compat/index.js";
-import type { EndpointRefreshResult, LLMGatesProvider } from "./provider.js";
 
 export const CATALOG_RELOAD_COMMAND = "llmgates-reload";
 export const CATALOG_RELOAD_USAGE = "Usage: /llmgates-reload";
@@ -64,7 +64,7 @@ export function mergeCatalogReloadOutcomes(
 } {
 	if (outcomes.length === 0) {
 		return {
-			message: "No LLMGates providers are available to refresh.",
+			message: "No gateway instances are available to refresh.",
 			level: "error",
 		};
 	}
@@ -128,7 +128,7 @@ export async function runCatalogReloadCommand(
 	try {
 		const list = targets();
 		if (list.length === 0) {
-			ctx.notify("No LLMGates providers are available to refresh.", "error");
+			ctx.notify("No gateway instances are available to refresh.", "error");
 			return;
 		}
 
@@ -139,9 +139,9 @@ export async function runCatalogReloadCommand(
 
 		// Targets are independent providers, each with its own connection and its own
 		// 15s models-request timeout. Refreshing them sequentially made the command's
-		// worst case the SUM of those timeouts (a core plus four unreachable gateways
-		// froze it for ~75s); concurrently it is the slowest single one. The shared
-		// in-flight guard still keeps other endpoint commands out for the duration.
+		// worst case the SUM of those timeouts (five unreachable gateways froze it for
+		// ~75s); concurrently it is the slowest single one. The shared in-flight guard
+		// still keeps other endpoint commands out for the duration.
 		const outcomes: CatalogReloadOutcome[] = await Promise.all(
 			list.map(async (target): Promise<CatalogReloadOutcome> => {
 				try {
@@ -210,43 +210,25 @@ export async function runCatalogReloadCommand(
 	}
 }
 
-export interface CatalogReloadRegistration {
-	setCore(core: { providerId: string; provider: LLMGatesProvider }): void;
-}
-
 export function registerCatalogReloadCommand(
 	pi: ExtensionAPI,
-	options: {
-		core?: { providerId: string; provider: LLMGatesProvider };
-		compat?: CompatGatewayRegistration;
-	},
-): CatalogReloadRegistration {
-	let core = options.core;
-	const compat = options.compat;
-
+	compat: CompatGatewayRegistration,
+): void {
 	function targets(): CatalogReloadTarget[] {
 		const list: CatalogReloadTarget[] = [];
-		if (core) {
-			const { providerId, provider } = core;
-			list.push({
-				providerId,
-				label: "core",
-				refreshEndpointForeground: () => provider.refreshEndpointForeground(),
-			});
-		}
-		for (const [instanceId, provider] of compat?.providers ?? []) {
+		for (const [instanceId, provider] of compat.providers) {
 			list.push({
 				providerId: instanceId,
 				label: `gateway/${provider.name}`,
 				refreshEndpointForeground: () =>
-					compat!.refreshEndpointForeground(instanceId),
+					compat.refreshEndpointForeground(instanceId),
 			});
 		}
 		return list;
 	}
 
 	pi.registerCommand(CATALOG_RELOAD_COMMAND, {
-		description: "Force-refresh LLMGates and compatible gateway model catalogs",
+		description: "Force-refresh every gateway instance's model catalog",
 		handler: async (args, ctx) => {
 			if (args.trim()) {
 				ctx.ui.notify(CATALOG_RELOAD_USAGE, "error");
@@ -262,10 +244,4 @@ export function registerCatalogReloadCommand(
 			});
 		},
 	});
-
-	return {
-		setCore(next) {
-			core = next;
-		},
-	};
 }

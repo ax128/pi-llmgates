@@ -59,9 +59,9 @@ function createPi() {
 				(handlers.get(event) ?? []).map((handler) => handler(payload)),
 			);
 		},
-		async runCommand(name: string) {
+		async runCommand(name: string, args = "") {
 			const notifications: Array<{ message: string; level: string }> = [];
-			await commands.get(name)!("", {
+			await commands.get(name)!(args, {
 				signal: new AbortController().signal,
 				ui: {
 					notify: (message, level) => notifications.push({ message, level }),
@@ -73,7 +73,7 @@ function createPi() {
 	};
 }
 
-function seedStoredCompat(agentDir: string): void {
+function seedStoredInstance(agentDir: string): void {
 	const instance = {
 		id: "gateway-a",
 		name: "Gateway A",
@@ -82,7 +82,6 @@ function seedStoredCompat(agentDir: string): void {
 	};
 	writeJson(join(agentDir, "llmgates/2api.json"), { instances: [instance] });
 	writeJson(join(agentDir, "auth.json"), {
-		llmgates: { type: "api_key", key: "legacy-secret" },
 		[instance.id]: {
 			type: "oauth",
 			access: "compat-secret",
@@ -95,68 +94,53 @@ function seedStoredCompat(agentDir: string): void {
 	});
 }
 
-const originalProviderId = process.env.LLMGATES_PROVIDER_ID;
-const originalProviderName = process.env.LLMGATES_PROVIDER_NAME;
 const originalPricingSetting = process.env.LLMGATES_PRICING_AUTO_UPDATE;
 
 afterEach(() => {
-	if (originalProviderId === undefined) delete process.env.LLMGATES_PROVIDER_ID;
-	else process.env.LLMGATES_PROVIDER_ID = originalProviderId;
-	if (originalProviderName === undefined)
-		delete process.env.LLMGATES_PROVIDER_NAME;
-	else process.env.LLMGATES_PROVIDER_NAME = originalProviderName;
 	if (originalPricingSetting === undefined)
 		delete process.env.LLMGATES_PRICING_AUTO_UPDATE;
 	else process.env.LLMGATES_PRICING_AUTO_UPDATE = originalPricingSetting;
 	vi.restoreAllMocks();
 });
 
-describe("extension compat/core isolation", () => {
-	it("keeps bootstrap, stored compat, and compat lifecycle active when legacy auth blocks only core", async () => {
+describe("extension registration and lifecycle", () => {
+	it("registers a stored instance and drives its session lifecycle", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		agentDirState.value = agentDir;
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		const runtime = createPi();
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			seedStoredCompat(agentDir);
+			seedStoredInstance(agentDir);
 			registerExtension(runtime.pi);
 
 			expect([...runtime.providers.keys()]).toEqual([
 				BOOTSTRAP_PROVIDER_ID,
 				"gateway-a",
 			]);
-			// /endpoint-setting spans 2API too, so a healthy instance keeps it available
-			// even though core is blocked; /endpoint stays core-only and is absent.
 			expect([...runtime.commands.keys()].sort()).toEqual([
 				"balance",
+				"endpoint",
 				"endpoint-setting",
 				"llmgates",
 				"llmgates-reload",
 			]);
-			expect(runtime.providers.has("llmgates")).toBe(false);
-			expect(warn.mock.calls.flat().join(" ")).toMatch(/legacy.*api_key/i);
 
-			const compat = runtime.providers.get("gateway-a") as Provider & {
+			const instance = runtime.providers.get("gateway-a") as Provider & {
 				getInternalState(): { generation: number };
 			};
-			const generation = compat.getInternalState().generation;
+			const generation = instance.getInternalState().generation;
 			await runtime.emit("session_start", { reason: "reload" });
-			expect(compat.getInternalState().generation).toBe(generation + 1);
+			expect(instance.getInternalState().generation).toBe(generation + 1);
 			await runtime.emit("session_shutdown");
-			expect(compat.getInternalState().generation).toBe(generation + 2);
-			expect(await runtime.runCommand("balance")).toEqual([
-				{ message: expect.stringMatching(/legacy.*api_key/i), level: "error" },
-			]);
+			expect(instance.getInternalState().generation).toBe(generation + 2);
 		} finally {
 			cleanup();
 		}
 	});
 
-	it("keeps healthy core and /balance when a malformed compat registry fails initialization", () => {
+	it("registers nothing and warns when the instance registry is malformed", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		agentDirState.value = agentDir;
-		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		const runtime = createPi();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
@@ -165,15 +149,8 @@ describe("extension compat/core isolation", () => {
 			});
 			registerExtension(runtime.pi);
 
-			expect([...runtime.providers.keys()]).toEqual(["llmgates"]);
-			// No 2API instance exists, so /endpoint-setting is registered in the late
-			// phase off the core provider alone.
-			expect([...runtime.commands.keys()].sort()).toEqual([
-				"balance",
-				"endpoint",
-				"endpoint-setting",
-				"llmgates-reload",
-			]);
+			expect([...runtime.providers.keys()]).toEqual([]);
+			expect([...runtime.commands.keys()]).toEqual([]);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(
 				/compat initialization/i,
 			);
@@ -182,112 +159,64 @@ describe("extension compat/core isolation", () => {
 		}
 	});
 
-	it("registers compat bootstrap before malformed llmgates identity stops core", () => {
+	it("reserves the llmgates id for instance logins before any network call", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		agentDirState.value = agentDir;
-		const runtime = createPi();
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			writeJson(join(agentDir, "llmgates/config.json"), { providerId: 42 });
-			registerExtension(runtime.pi);
-
-			expect([...runtime.providers.keys()]).toEqual([BOOTSTRAP_PROVIDER_ID]);
-			// Bootstrap alone is not an instance: it has no catalog and no models, so
-			// there is nothing for the selector to configure.
-			expect([...runtime.commands.keys()]).toEqual(["llmgates"]);
-			expect(warn.mock.calls.flat().join(" ")).toMatch(
-				/llmgates\/config\.json.*providerId/i,
-			);
-		} finally {
-			cleanup();
-		}
-	});
-
-	it("registers endpoint-setting when identity resolution fails but a 2api instance is healthy", () => {
-		const { agentDir, cleanup } = withTempAgentDir();
-		agentDirState.value = agentDir;
-		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
-		const runtime = createPi();
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			seedStoredCompat(agentDir);
-			// Malformed identity makes index.ts return before the core provider exists,
-			// so the selector must have been registered in the early phase or a
-			// 2API-only user could never reach it.
-			writeJson(join(agentDir, "llmgates/config.json"), { providerId: 42 });
-			registerExtension(runtime.pi);
-
-			expect([...runtime.providers.keys()]).toEqual([
-				BOOTSTRAP_PROVIDER_ID,
-				"gateway-a",
-			]);
-			expect(runtime.providers.has("llmgates")).toBe(false);
-			// /endpoint stays core-only and is absent; /balance needs core identity too.
-			expect([...runtime.commands.keys()].sort()).toEqual([
-				"endpoint-setting",
-				"llmgates",
-				"llmgates-reload",
-			]);
-			expect(warn.mock.calls.flat().join(" ")).toMatch(
-				/llmgates\/config\.json.*providerId/i,
-			);
-		} finally {
-			cleanup();
-		}
-	});
-
-	it("passes the custom live llmgates id to compat instance validation as reserved", async () => {
-		const { agentDir, cleanup } = withTempAgentDir();
-		agentDirState.value = agentDir;
-		process.env.LLMGATES_PROVIDER_ID = "custom-live";
-		process.env.LLMGATES_PROVIDER_NAME = "Custom Live";
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		const runtime = createPi();
 		const fetchSpy = vi.spyOn(globalThis, "fetch");
 		try {
 			registerExtension(runtime.pi);
-			const core = runtime.providers.get("custom-live")!;
-			const answers = [
+			const bootstrap = runtime.providers.get(BOOTSTRAP_PROVIDER_ID)!;
+			const answers = Array.from({ length: 5 }, () => [
 				"newapi",
-				...Array.from({ length: 5 }, () => [
-					"CUSTOM-LIVE",
-					"",
-					"https://compat.example/v1",
-					"key",
-				]).flat(),
-			];
+				"LLMGATES",
+				"",
+				"https://compat.example/v1",
+				"key",
+			]).flat();
 
 			await expect(
-				core.auth.oauth!.login(scriptedAuthInteraction(answers)),
+				bootstrap.auth.oauth!.login(scriptedAuthInteraction(answers)),
 			).rejects.toThrow(/reserved/i);
 			expect(fetchSpy).not.toHaveBeenCalled();
-			expect(runtime.providers.has(BOOTSTRAP_PROVIDER_ID)).toBe(false);
-			expect(runtime.providers.has("custom-live")).toBe(true);
 		} finally {
 			cleanup();
 		}
 	});
 
-	it("fails core closed with a safe malformed-auth warning without removing compat", () => {
+	it("/balance says there is nothing to query before the first login", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		agentDirState.value = agentDir;
 		const runtime = createPi();
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			writeJson(join(agentDir, "auth.json"), { llmgates: "not-a-credential" });
 			registerExtension(runtime.pi);
-
-			expect(runtime.providers.has("llmgates")).toBe(false);
-			expect(runtime.providers.has(BOOTSTRAP_PROVIDER_ID)).toBe(true);
-			// Malformed auth blocks core and there is no 2API instance, so neither
-			// endpoint command has anything to operate on.
-			expect([...runtime.commands.keys()].sort()).toEqual([
-				"balance",
-				"llmgates",
+			expect(await runtime.runCommand("balance")).toEqual([
+				{
+					message: expect.stringMatching(/no gateway instances/i),
+					level: "error",
+				},
 			]);
-			const warning = warn.mock.calls.flat().join(" ");
-			expect(warning).toMatch(/malformed.*auth\.json/i);
-			expect(warning).not.toContain("not-a-credential");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("/balance reports an instance whose credential pi cannot resolve", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		agentDirState.value = agentDir;
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const runtime = createPi();
+		try {
+			seedStoredInstance(agentDir);
+			registerExtension(runtime.pi);
+			// The fake registry answers `undefined` for every provider auth lookup.
+			expect(await runtime.runCommand("balance")).toEqual([
+				{
+					message: "gateway-a: not configured; run /login gateway-a",
+					level: "error",
+				},
+			]);
 		} finally {
 			cleanup();
 		}

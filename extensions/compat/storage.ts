@@ -404,50 +404,6 @@ export function readProviderOAuthCredential(
 	}
 }
 
-function isLegacyBootstrapMarker(value: unknown): boolean {
-	if (
-		!isPlainObject(value) ||
-		Object.keys(value).sort().join(",") !== "access,expires,refresh,type" ||
-		value.type !== "oauth" ||
-		value.access !== "managed" ||
-		typeof value.refresh !== "string" ||
-		typeof value.expires !== "number" ||
-		!Number.isFinite(value.expires)
-	) {
-		return false;
-	}
-	try {
-		const meta = JSON.parse(value.refresh) as unknown;
-		return (
-			isPlainObject(meta) &&
-			Object.keys(meta).sort().join(",") === "lastInstanceId,version" &&
-			meta.version === 1 &&
-			typeof meta.lastInstanceId === "string" &&
-			Boolean(meta.lastInstanceId.trim())
-		);
-	} catch {
-		return false;
-	}
-}
-
-export async function deleteLegacyBootstrapAuthEntry(
-	agentDir: string,
-): Promise<boolean> {
-	const path = authPath(agentDir);
-	return withLock(path, "{}\n", () => {
-		const auth = parseAuthFile(readFileSync(path, "utf8"));
-		const storedKey = findAuthKey(auth, "llmgates-2api");
-		if (storedKey === undefined || !isLegacyBootstrapMarker(auth[storedKey]))
-			return false;
-		delete auth[storedKey];
-		atomicWriteJson(path, auth, {
-			fileMode: SECRET_FILE_MODE,
-			dirMode: SECRET_DIR_MODE,
-		});
-		return true;
-	});
-}
-
 export async function deleteProviderAuthEntry(
 	agentDir: string,
 	providerId: string,

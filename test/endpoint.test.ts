@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
@@ -16,16 +16,14 @@ import {
 	type EndpointRuntime,
 } from "../extensions/endpoint.js";
 import { writeModelOverride, type ModelOverrideWrite } from "../extensions/model-overrides.js";
-import type { EndpointRefreshResult } from "../extensions/provider.js";
+import type { EndpointRefreshResult } from "../extensions/catalog-store.js";
 
-const CORE = "llmgates";
-const TWO_API = "llmgates-2api";
+/** Two registered gateway instances: the target and a second one to resolve against. */
+const GATEWAY = "work-newapi";
+const OTHER = "home-cpa";
+const GATEWAY_FILE = "llmgates/2api-models/work-newapi.json";
 
-afterEach(() => {
-	delete process.env.LLMGATES_PROVIDER_ID;
-});
-
-function model(id: string, api: Api, provider: string = CORE): Model<Api> {
+function model(id: string, api: Api, provider: string = GATEWAY): Model<Api> {
 	return {
 		id,
 		name: id,
@@ -70,36 +68,46 @@ function makeCtx(opts: CtxOpts = {}) {
 
 interface RuntimeOpts {
 	agentDir: string;
-	coreProviderId?: string;
+	managed?: string[];
 	refresh?: EndpointRefreshResult | (() => Promise<EndpointRefreshResult>);
 	refreshThrows?: Error;
 }
 
 function makeRuntime(opts: RuntimeOpts) {
-	const coreProviderId = opts.coreProviderId ?? CORE;
+	const managed = opts.managed ?? [GATEWAY, OTHER];
 	const refreshFn =
 		typeof opts.refresh === "function"
 			? (opts.refresh as () => Promise<EndpointRefreshResult>)
 			: async () =>
 					(opts.refresh as EndpointRefreshResult) ?? { status: "ok", models: [] };
-	const writeOverride = vi.fn((id: string, write: ModelOverrideWrite) =>
-		writeModelOverride(opts.agentDir, id, write),
+	const refreshed = vi.fn(async (providerId: string) => {
+		void providerId;
+		return refreshFn();
+	});
+	const writeOverride = vi.fn(
+		(providerId: string, id: string, write: ModelOverrideWrite) =>
+			writeModelOverride(
+				opts.agentDir,
+				{ kind: "2api", instanceId: providerId },
+				id,
+				write,
+			),
 	);
 	const runtime: EndpointRuntime = {
-		coreProviderId,
+		managedProviderIds: () => [...managed],
 		refreshEndpointForeground: opts.refreshThrows
 			? async () => {
 					throw opts.refreshThrows;
 				}
-			: refreshFn,
+			: refreshed,
 		writeOverride,
 	};
-	return { runtime, writeOverride };
+	return { runtime, writeOverride, refreshed };
 }
 
 function withDir() {
 	const agentDir = mkdtempSync(join(tmpdir(), "llmgates-cmd-"));
-	mkdirSync(join(agentDir, "llmgates"), { recursive: true });
+	mkdirSync(join(agentDir, "llmgates/2api-models"), { recursive: true });
 	return { agentDir, cleanup: () => rmSync(agentDir, { recursive: true, force: true }) };
 }
 
@@ -129,7 +137,7 @@ describe("parseEndpointArgs", () => {
 });
 
 describe("/endpoint command", () => {
-	it("defaults to the current core model and succeeds end-to-end", async () => {
+	it("defaults to the current gateway model and succeeds end-to-end", async () => {
 		const { agentDir, cleanup } = withDir();
 		try {
 			const target = model("gpt-5.6-sol", "openai-responses");
@@ -145,7 +153,7 @@ describe("/endpoint command", () => {
 			await runEndpointCommand("messages", runtime, ctx);
 			expect(notifications.some((n) => n.level === "info")).toBe(true);
 			expect(setModel).toHaveBeenCalledWith(refreshed);
-			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/models.json"), "utf8"))).toEqual({
+			expect(JSON.parse(readFileSync(join(agentDir, GATEWAY_FILE), "utf8"))).toEqual({
 				models: { "gpt-5.6-sol": { endpoint: "messages" } },
 			});
 		} finally {
@@ -153,10 +161,9 @@ describe("/endpoint command", () => {
 		}
 	});
 
-	it("uses an explicit core model id and does not rebind when it is not current", async () => {
+	it("uses an explicit model id and does not rebind when it is not current", async () => {
 		const { agentDir, cleanup } = withDir();
 		try {
-			const target = model("claude-sonnet-4-6", "openai-responses");
 			const refreshed = model("claude-sonnet-4-6", "anthropic-messages");
 			const current = model("gpt-5.6-sol", "openai-responses");
 			const { ctx, setModel } = makeCtx({ current, registry: [refreshed, current] });
@@ -181,49 +188,115 @@ describe("/endpoint command", () => {
 		}
 	});
 
-	it("rejects when the current model is not the core provider, without writing", async () => {
+	it("rejects when the current model belongs to an unmanaged provider, without writing", async () => {
 		const { agentDir, cleanup } = withDir();
 		try {
-			const twoApiCurrent = model("gpt-5.6-sol", "openai-completions", TWO_API);
-			const { ctx, notifications } = makeCtx({ current: twoApiCurrent, registry: [twoApiCurrent] });
+			const foreign = model("gpt-5.6-sol", "openai-completions", "anthropic");
+			const { ctx, notifications } = makeCtx({ current: foreign, registry: [foreign] });
 			const { runtime, writeOverride } = makeRuntime({ agentDir });
 			await runEndpointCommand("messages", runtime, ctx);
 			expect(notifications[0]?.level).toBe("error");
+			expect(notifications[0]?.message).toMatch(/does not manage/i);
 			expect(writeOverride).not.toHaveBeenCalled();
 		} finally {
 			cleanup();
 		}
 	});
 
-	it("rejects an explicit id not present in the core provider, without writing", async () => {
+	it("rejects an explicit id no instance publishes, without writing", async () => {
 		const { agentDir, cleanup } = withDir();
 		try {
-			const twoApiOnly = model("only-in-2api", "openai-completions", TWO_API);
-			const { ctx, notifications } = makeCtx({ current: twoApiOnly, registry: [twoApiOnly] });
+			const foreign = model("only-elsewhere", "openai-completions", "anthropic");
+			const { ctx, notifications } = makeCtx({ current: foreign, registry: [foreign] });
 			const { runtime, writeOverride } = makeRuntime({ agentDir });
-			await runEndpointCommand(`messages only-in-2api`, runtime, ctx);
+			await runEndpointCommand(`messages only-elsewhere`, runtime, ctx);
 			expect(notifications[0]?.level).toBe("error");
+			expect(notifications[0]?.message).toMatch(/was not found/i);
 			expect(writeOverride).not.toHaveBeenCalled();
 		} finally {
 			cleanup();
 		}
 	});
 
-	it("given the same id in core and 2api, targets only the core model", async () => {
+	it("rejects when no instance is configured at all", async () => {
 		const { agentDir, cleanup } = withDir();
 		try {
-			const coreShared = model("shared", "openai-responses", CORE);
-			const twoApiShared = model("shared", "openai-completions", TWO_API);
-			const refreshed = model("shared", "anthropic-messages", CORE);
-			const { ctx, setModel } = makeCtx({
-				current: coreShared,
-				registry: [refreshed, twoApiShared],
+			const { ctx, notifications } = makeCtx({ registry: [] });
+			const { runtime, writeOverride } = makeRuntime({ agentDir, managed: [] });
+			await runEndpointCommand("messages some-model", runtime, ctx);
+			expect(notifications[0]?.level).toBe("error");
+			expect(notifications[0]?.message).toMatch(/no gateway instances/i);
+			expect(writeOverride).not.toHaveBeenCalled();
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("resolves an explicit id that only one instance publishes", async () => {
+		const { agentDir, cleanup } = withDir();
+		try {
+			const refreshed = model("only-here", "anthropic-messages", OTHER);
+			const { ctx, setModel } = makeCtx({ registry: [refreshed] });
+			const { runtime, writeOverride, refreshed: refresh } = makeRuntime({
+				agentDir,
+				refresh: { status: "ok", models: [refreshed] },
 			});
-			const { runtime } = makeRuntime({ agentDir, refresh: { status: "ok", models: [refreshed] } });
+			await runEndpointCommand("messages only-here", runtime, ctx);
+			expect(writeOverride).toHaveBeenCalledWith(OTHER, "only-here", {
+				kind: "set",
+				endpoint: "messages",
+			});
+			expect(refresh).toHaveBeenCalledWith(OTHER);
+			// Not the current model, so nothing is rebound.
+			expect(setModel).not.toHaveBeenCalled();
+			expect(
+				JSON.parse(
+					readFileSync(join(agentDir, "llmgates/2api-models/home-cpa.json"), "utf8"),
+				),
+			).toEqual({ models: { "only-here": { endpoint: "messages" } } });
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("refuses an id two instances publish and points at the current-model path", async () => {
+		const { agentDir, cleanup } = withDir();
+		try {
+			const here = model("shared", "openai-responses", GATEWAY);
+			const there = model("shared", "openai-completions", OTHER);
+			const { ctx, notifications } = makeCtx({ registry: [here, there] });
+			const { runtime, writeOverride } = makeRuntime({ agentDir });
 			await runEndpointCommand("messages shared", runtime, ctx);
+			expect(notifications[0]?.level).toBe("error");
+			expect(notifications[0]?.message).toContain(GATEWAY);
+			expect(notifications[0]?.message).toContain(OTHER);
+			// Ambiguity must never be resolved by picking the first match.
+			expect(writeOverride).not.toHaveBeenCalled();
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("targets the current model's own instance when both publish the id", async () => {
+		const { agentDir, cleanup } = withDir();
+		try {
+			const here = model("shared", "openai-responses", GATEWAY);
+			const there = model("shared", "openai-completions", OTHER);
+			const refreshed = model("shared", "anthropic-messages", GATEWAY);
+			const { ctx, setModel } = makeCtx({
+				current: here,
+				registry: [refreshed, there],
+			});
+			const { runtime, writeOverride } = makeRuntime({
+				agentDir,
+				refresh: { status: "ok", models: [refreshed] },
+			});
+			await runEndpointCommand("messages", runtime, ctx);
+			expect(writeOverride).toHaveBeenCalledWith(GATEWAY, "shared", {
+				kind: "set",
+				endpoint: "messages",
+			});
 			expect(setModel).toHaveBeenCalledWith(refreshed);
-			// 2api object never selected: setModel received the core composed model
-			expect(refreshed.provider).toBe(CORE);
 		} finally {
 			cleanup();
 		}
@@ -279,27 +352,28 @@ describe("/endpoint command", () => {
 		}
 	});
 
-	it("keeps the provider id captured at registration when the environment changes", async () => {
+	it("looks the id up in every managed instance and nowhere else", async () => {
 		const { agentDir, cleanup } = withDir();
 		try {
-			const target = model("m1", "openai-responses", "registered-core");
-			const refreshed = model("m1", "anthropic-messages", "registered-core");
+			const refreshed = model("m1", "anthropic-messages");
 			const find = vi.fn((provider: string, id: string) =>
-				provider === "registered-core" && id === "m1" ? refreshed : undefined,
+				provider === GATEWAY && id === "m1" ? refreshed : undefined,
 			);
-			const { ctx } = makeCtx({ current: target, findImpl: find });
+			const { ctx } = makeCtx({ findImpl: find });
 			const { runtime, writeOverride } = makeRuntime({
 				agentDir,
-				coreProviderId: "registered-core",
 				refresh: { status: "ok", models: [refreshed] },
 			});
-			process.env.LLMGATES_PROVIDER_ID = "changed-after-registration";
 
 			await runEndpointCommand("messages m1", runtime, ctx);
 
-			expect(find).toHaveBeenCalledWith("registered-core", "m1");
-			expect(find).not.toHaveBeenCalledWith("changed-after-registration", "m1");
-			expect(writeOverride).toHaveBeenCalledWith("m1", { kind: "set", endpoint: "messages" });
+			expect(find).toHaveBeenCalledWith(GATEWAY, "m1");
+			expect(find).toHaveBeenCalledWith(OTHER, "m1");
+			expect(find).not.toHaveBeenCalledWith("anthropic", "m1");
+			expect(writeOverride).toHaveBeenCalledWith(GATEWAY, "m1", {
+				kind: "set",
+				endpoint: "messages",
+			});
 		} finally {
 			cleanup();
 		}
@@ -316,7 +390,7 @@ describe("/endpoint command", () => {
 			await expect(runEndpointCommand("messages", runtime, ctx)).resolves.toBeUndefined();
 			expect(notifications.some((n) => n.level === "warning")).toBe(true);
 			expect(setModel).not.toHaveBeenCalled();
-			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/models.json"), "utf8"))).toEqual({
+			expect(JSON.parse(readFileSync(join(agentDir, GATEWAY_FILE), "utf8"))).toEqual({
 				models: { m1: { endpoint: "messages" } },
 			});
 		} finally {
@@ -357,7 +431,7 @@ describe("/endpoint command", () => {
 			await runEndpointCommand("messages", runtime, ctx);
 
 			expect(notifications.some((n) => n.level === "warning")).toBe(true);
-			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/models.json"), "utf8"))).toEqual({
+			expect(JSON.parse(readFileSync(join(agentDir, GATEWAY_FILE), "utf8"))).toEqual({
 				models: { m1: { endpoint: "messages" } },
 			});
 		} finally {
@@ -371,7 +445,12 @@ describe("/endpoint command", () => {
 			const original = model("m1", "openai-responses");
 			const updated = model("m1", "anthropic-messages");
 			let published = false;
-			const find = vi.fn(() => (published ? updated : original));
+			const publishedAtCall: boolean[] = [];
+			const find = vi.fn((provider: string, id: string) => {
+				publishedAtCall.push(published);
+				if (provider !== GATEWAY || id !== "m1") return undefined;
+				return published ? updated : original;
+			});
 			const { ctx, notifications } = makeCtx({ current: original, findImpl: find });
 			const { runtime } = makeRuntime({
 				agentDir,
@@ -383,7 +462,11 @@ describe("/endpoint command", () => {
 
 			await runEndpointCommand("messages m1", runtime, ctx);
 
-			expect(find).toHaveBeenCalledTimes(3);
+			// Exactly the target resolution (one lookup per managed instance) runs
+			// before the refresh; every later lookup must see the published catalog.
+			expect(publishedAtCall.filter((seen) => !seen)).toHaveLength(2);
+			expect(publishedAtCall.slice(2).every(Boolean)).toBe(true);
+			expect(publishedAtCall.length).toBeGreaterThan(2);
 			expect(notifications.some((n) => n.level === "info")).toBe(true);
 		} finally {
 			cleanup();
@@ -483,7 +566,7 @@ describe("/endpoint command", () => {
 		try {
 			// pre-existing override + another model + defaults preserved
 			writeFileSync(
-				join(agentDir, "llmgates/models.json"),
+				join(agentDir, GATEWAY_FILE),
 				JSON.stringify({
 					defaults: { endpoint: "responses" },
 					models: { m1: { endpoint: "messages" }, other: { endpoint: "chat_completions" } },
@@ -495,7 +578,7 @@ describe("/endpoint command", () => {
 			const { runtime } = makeRuntime({ agentDir, refresh: { status: "ok", models: [refreshed] } });
 			await runEndpointCommand("auto", runtime, ctx);
 			expect(notifications.some((n) => n.level === "info")).toBe(true);
-			const after = JSON.parse(readFileSync(join(agentDir, "llmgates/models.json"), "utf8"));
+			const after = JSON.parse(readFileSync(join(agentDir, GATEWAY_FILE), "utf8"));
 			expect(after.defaults).toEqual({ endpoint: "responses" });
 			expect(after.models.m1).toBeUndefined();
 			expect(after.models.other).toEqual({ endpoint: "chat_completions" });
@@ -517,7 +600,7 @@ describe("/endpoint command", () => {
 			await runEndpointCommand("auto", runtime, ctx);
 
 			expect(notifications.some((n) => n.level === "info")).toBe(true);
-			expect(JSON.parse(readFileSync(join(agentDir, "llmgates/models.json"), "utf8"))).toEqual({
+			expect(JSON.parse(readFileSync(join(agentDir, GATEWAY_FILE), "utf8"))).toEqual({
 				models: {},
 			});
 		} finally {
@@ -530,7 +613,7 @@ describe("/endpoint command", () => {
 		try {
 			const piModelsPath = join(agentDir, "models.json");
 			const original = {
-				providers: { [CORE]: { modelOverrides: { m1: { reasoning: true } } } },
+				providers: { [GATEWAY]: { modelOverrides: { m1: { reasoning: true } } } },
 			};
 			writeFileSync(piModelsPath, JSON.stringify(original));
 			const before = {
@@ -554,7 +637,7 @@ describe("model_select reconciliation", () => {
 		const latest = model("m1", "anthropic-messages");
 		const stale = model("m1", "openai-responses");
 		const setModel = vi.fn(async () => true);
-		const reconciler = createModelSelectReconciler(CORE, setModel);
+		const reconciler = createModelSelectReconciler(() => [GATEWAY], setModel);
 		await reconciler({ model: stale }, { modelRegistry: { find: () => latest } });
 		expect(setModel).toHaveBeenCalledWith(latest);
 	});
@@ -562,7 +645,7 @@ describe("model_select reconciliation", () => {
 	it("does nothing when the api already matches", async () => {
 		const same = model("m1", "anthropic-messages");
 		const setModel = vi.fn(async () => true);
-		const reconciler = createModelSelectReconciler(CORE, setModel);
+		const reconciler = createModelSelectReconciler(() => [GATEWAY], setModel);
 		await reconciler({ model: same }, { modelRegistry: { find: () => same } });
 		expect(setModel).not.toHaveBeenCalled();
 	});
@@ -578,25 +661,25 @@ describe("model_select reconciliation", () => {
 			received.push(m);
 			return true;
 		});
-		const reconciler = createModelSelectReconciler(CORE, setModel);
+		const reconciler = createModelSelectReconciler(() => [GATEWAY], setModel);
 		await reconciler({ model: eventModel }, { modelRegistry: { find: () => composed } });
 		expect(setModel).toHaveBeenCalledWith(composed);
 		expect(received[0]?.thinkingLevelMap).toEqual({ medium: "high" });
 	});
 
-	it("ignores non-core providers", async () => {
+	it("ignores providers this extension does not manage", async () => {
 		const setModel = vi.fn(async () => true);
-		const reconciler = createModelSelectReconciler(CORE, setModel);
+		const reconciler = createModelSelectReconciler(() => [GATEWAY], setModel);
 		await reconciler(
-			{ model: model("m1", "openai-completions", TWO_API) },
-			{ modelRegistry: { find: () => model("m1", "anthropic-messages", CORE) } },
+			{ model: model("m1", "openai-completions", OTHER) },
+			{ modelRegistry: { find: () => model("m1", "anthropic-messages", GATEWAY) } },
 		);
 		expect(setModel).not.toHaveBeenCalled();
 	});
 
 	it("returns early when find() is undefined", async () => {
 		const setModel = vi.fn(async () => true);
-		const reconciler = createModelSelectReconciler(CORE, setModel);
+		const reconciler = createModelSelectReconciler(() => [GATEWAY], setModel);
 		await reconciler(
 			{ model: model("m1", "openai-responses") },
 			{ modelRegistry: { find: () => undefined } },
@@ -614,7 +697,7 @@ describe("model_select reconciliation", () => {
 			void reconciler({ model: stale }, { modelRegistry: registry });
 			return true;
 		});
-		reconciler = createModelSelectReconciler(CORE, setModel);
+		reconciler = createModelSelectReconciler(() => [GATEWAY], setModel);
 		await reconciler({ model: stale }, { modelRegistry: registry });
 		expect(setModel).toHaveBeenCalledTimes(1);
 	});
@@ -623,7 +706,7 @@ describe("model_select reconciliation", () => {
 		const latest = model("m1", "anthropic-messages");
 		const stale = model("m1", "openai-responses");
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const reconciler = createModelSelectReconciler(CORE, async () => false);
+		const reconciler = createModelSelectReconciler(() => [GATEWAY], async () => false);
 		try {
 			await reconciler({ model: stale }, { modelRegistry: { find: () => latest } });
 			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/no configured auth/i));
@@ -639,7 +722,7 @@ describe("model_select reconciliation", () => {
 		const setModel = vi.fn(async () => {
 			throw new Error("No API key for llmgates/m1");
 		});
-		const reconciler = createModelSelectReconciler(CORE, setModel);
+		const reconciler = createModelSelectReconciler(() => [GATEWAY], setModel);
 		try {
 			await expect(
 				reconciler({ model: stale }, { modelRegistry: { find: () => latest } }),
@@ -683,7 +766,7 @@ describe("/endpoint idle-wait guard release", () => {
 			await runEndpointCommand(
 				"messages m1",
 				{
-					coreProviderId: CORE,
+					managedProviderIds: () => [GATEWAY],
 					refreshEndpointForeground: async () => ({ status: "ok", models: [] }),
 					writeOverride,
 				},
@@ -697,7 +780,7 @@ describe("/endpoint idle-wait guard release", () => {
 			// Guard released → the next command can run.
 			expect(acquireEndpointInFlight()).toBe(true);
 			releaseEndpointInFlight();
-			expect(existsSync(join(agentDir, "llmgates/models.json"))).toBe(false);
+			expect(existsSync(join(agentDir, GATEWAY_FILE))).toBe(false);
 		} finally {
 			cleanup();
 		}

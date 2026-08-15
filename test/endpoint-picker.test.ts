@@ -56,8 +56,8 @@ function snapshot(): SelectorSnapshot {
 	return {
 		groups: [
 			{
-				providerId: "llmgates",
-				label: "core",
+				providerId: "work-newapi",
+				label: "gateway/work",
 				models: [
 					{
 						id: "gpt-5.6-sol",
@@ -117,7 +117,7 @@ describe("endpoint picker rendering", () => {
 	it("renders every managed model as a checkbox row under its provider header", () => {
 		const text = picker().text();
 
-		expect(text).toMatch(/── llmgates · core ──/);
+		expect(text).toMatch(/── work-newapi · gateway\/work ──/);
 		expect(text).toMatch(/── cpa · gateway\/cpa ──/);
 		expect(text).toMatch(/\[ ] gpt-5\.6-sol\s+GPT-5\.6 Sol\s+chat/);
 		// `*` marks a model that already has an override on disk.
@@ -136,8 +136,8 @@ describe("endpoint picker rendering", () => {
 		const snap: SelectorSnapshot = {
 			groups: [
 				{
-					providerId: "llmgates",
-					label: "core",
+					providerId: "work-newapi",
+					label: "gateway/work",
 					models: Array.from({ length: 12 }, (_, index) => ({
 						id: `model-${index}`,
 						name: `Model ${index}`,
@@ -192,8 +192,8 @@ describe("endpoint picker rendering", () => {
 		const snap: SelectorSnapshot = {
 			groups: [
 				{
-					providerId: "llmgates",
-					label: "core",
+					providerId: "work-newapi",
+					label: "gateway/work",
 					models: Array.from({ length: 10 }, (_, index) => ({
 						id: `m${index}`,
 						name: `M${index}`,
@@ -267,7 +267,7 @@ describe("endpoint picker selection", () => {
 		send(KEY.space, KEY.down, KEY.down, KEY.space, KEY.enter);
 
 		expect(done).toHaveBeenCalledWith([
-			{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
+			{ modelId: "gpt-5.6-sol", providerId: "work-newapi" },
 			{ modelId: "claude-sonnet-5", providerId: "cpa" },
 		]);
 	});
@@ -288,8 +288,8 @@ describe("endpoint picker selection", () => {
 		send(KEY.tab, KEY.enter);
 
 		expect(done).toHaveBeenCalledWith([
-			{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
-			{ modelId: "claude-opus-4-8", providerId: "llmgates" },
+			{ modelId: "gpt-5.6-sol", providerId: "work-newapi" },
+			{ modelId: "claude-opus-4-8", providerId: "work-newapi" },
 		]);
 	});
 
@@ -304,11 +304,11 @@ describe("endpoint picker selection", () => {
 	it("scopes tab to the group rows visible under the current filter", () => {
 		const { send, done } = picker();
 
-		send("s", "o", "l"); // only gpt-5.6-sol of the llmgates group stays visible
+		send("s", "o", "l"); // only gpt-5.6-sol of the work-newapi group stays visible
 		send(KEY.tab, KEY.enter);
 
 		expect(done).toHaveBeenCalledWith([
-			{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
+			{ modelId: "gpt-5.6-sol", providerId: "work-newapi" },
 		]);
 	});
 
@@ -319,8 +319,8 @@ describe("endpoint picker selection", () => {
 		send("c", "p", "a", KEY.ctrlD, KEY.enter); // clear only the cpa row
 
 		expect(done).toHaveBeenCalledWith([
-			{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
-			{ modelId: "claude-opus-4-8", providerId: "llmgates" },
+			{ modelId: "gpt-5.6-sol", providerId: "work-newapi" },
+			{ modelId: "claude-opus-4-8", providerId: "work-newapi" },
 		]);
 	});
 
@@ -362,7 +362,7 @@ describe("endpoint picker search", () => {
 		send(KEY.space, KEY.enter);
 
 		expect(done).toHaveBeenCalledWith([
-			{ modelId: "gpt-5.6-sol", providerId: "llmgates" },
+			{ modelId: "gpt-5.6-sol", providerId: "work-newapi" },
 			{ modelId: "claude-sonnet-5", providerId: "cpa" },
 		]);
 	});
@@ -432,8 +432,8 @@ describe("filterPickerRows", () => {
 		const rows = buildPickerRows({
 			groups: [
 				{
-					providerId: "llmgates",
-					label: "core",
+					providerId: "work-newapi",
+					label: "gateway/work",
 					models: [
 						{
 							id: "shared",

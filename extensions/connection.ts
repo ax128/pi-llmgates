@@ -1,48 +1,21 @@
 /**
- * Source-bound connection resolution and URL policy.
+ * URL transport policy and extension config file access.
  * No network I/O. Does not interpret API keys as config values.
  */
 
 import { readFileSync } from "node:fs";
 import { BlockList, isIP } from "node:net";
 import { join } from "node:path";
-import {
-	DEFAULT_BASE_URL,
-	DEFAULT_PROVIDER_ID,
-	DEFAULT_PROVIDER_NAME,
-	firstNonEmpty,
-	normalizeGatewayBaseUrl,
-	resolveCreditsUrl,
-	resolveEndpoints,
-} from "./catalog.js";
+import { normalizeInferenceBaseUrl } from "./catalog.js";
 import { envFlag, isPlainObject, LLMGATES_CONFIG_FILE } from "./util.js";
-
-export type ConnectionSource = "oauth" | "env" | "file";
-
-export interface CanonicalConnection {
-	source: ConnectionSource;
-	apiKey: string;
-	baseUrlInput: string;
-	inferenceBaseUrl: string;
-	modelsUrl: string;
-	balanceUrl: string;
-}
 
 export interface UrlValidationResult {
 	ok: boolean;
 	baseUrlInput?: string;
 	inferenceBaseUrl?: string;
-	modelsUrl?: string;
-	balanceUrl?: string;
 	error?: string;
 }
 
-export interface ProviderIdentity {
-	providerId: string;
-	providerName: string;
-}
-
-export const AUTH_FILE_NAME = "auth.json";
 export const CONFIG_FILE_NAME = LLMGATES_CONFIG_FILE;
 
 export const BUILTIN_PROVIDER_IDS = new Set<string>([
@@ -87,11 +60,6 @@ export const BUILTIN_PROVIDER_IDS = new Set<string>([
 	// Legacy Pi provider ID, intentionally reserved beyond the current builtin snapshot.
 	"google-gemini-cli",
 ]);
-
-export interface OAuthRefreshMetaV1 {
-	version: 1;
-	baseUrl: string;
-}
 
 // BlockList checks IPv4-mapped IPv6 (::ffff:127.0.0.1 and ::ffff:7f00:1) against the IPv4 rule.
 const LOOPBACK_RANGES = new BlockList();
@@ -218,14 +186,10 @@ export function normalizeAndValidateBaseUrl(
 	}
 
 	try {
-		const endpoints = resolveEndpoints(allowed.url.toString());
-		const balanceUrl = resolveCreditsUrl(endpoints.inferenceBaseUrl);
 		return {
 			ok: true,
 			baseUrlInput: allowed.url.toString(),
-			inferenceBaseUrl: endpoints.inferenceBaseUrl,
-			modelsUrl: endpoints.modelsUrl,
-			balanceUrl,
+			inferenceBaseUrl: normalizeInferenceBaseUrl(allowed.url.toString()),
 		};
 	} catch (error) {
 		return {
@@ -235,93 +199,13 @@ export function normalizeAndValidateBaseUrl(
 	}
 }
 
-export function encodeOAuthRefreshMeta(baseUrl: string): string {
-	const meta: OAuthRefreshMetaV1 = { version: 1, baseUrl };
-	return JSON.stringify(meta);
-}
-
-export function decodeOAuthRefreshMeta(
-	refresh: string | undefined,
-): { baseUrl: string } | null {
-	if (!refresh?.trim()) {
-		return null;
-	}
-	try {
-		const parsed: unknown = JSON.parse(refresh);
-		if (!isPlainObject(parsed)) {
-			return null;
-		}
-		const version = parsed.version;
-		const baseUrl = parsed.baseUrl;
-		if (version !== undefined && version !== 1) {
-			return null;
-		}
-		if (typeof baseUrl !== "string" || !baseUrl.trim()) {
-			return null;
-		}
-		return { baseUrl: baseUrl.trim() };
-	} catch {
-		return null;
-	}
-}
-
-export function readRawAuthFile(agentDir: string): unknown {
-	const authPath = join(agentDir, AUTH_FILE_NAME);
-	try {
-		const raw = readFileSync(authPath, "utf8");
-		return JSON.parse(raw) as unknown;
-	} catch (error) {
-		const err = error as NodeJS.ErrnoException;
-		if (err.code === "ENOENT") {
-			return undefined;
-		}
-		throw error;
-	}
-}
-
-export function readRawAuthEntry(
-	agentDir: string,
-	providerId: string,
-): unknown {
-	const parsed = readRawAuthFile(agentDir);
-	if (parsed === undefined) {
-		return undefined;
-	}
-	if (!isPlainObject(parsed)) {
-		throw new Error(`${AUTH_FILE_NAME} must contain a JSON object`);
-	}
-	return parsed[providerId];
-}
-
-export function detectLegacyApiKeyCredential(
-	agentDir: string,
-	providerId: string,
-):
-	| { blocked: true; reason: "legacy_api_key" | "malformed_auth" }
-	| { blocked: false } {
-	try {
-		const entry = readRawAuthEntry(agentDir, providerId);
-		if (entry === undefined) {
-			return { blocked: false };
-		}
-		if (!isPlainObject(entry)) {
-			return { blocked: true, reason: "malformed_auth" };
-		}
-		if (entry.type === "api_key") {
-			return { blocked: true, reason: "legacy_api_key" };
-		}
-		return { blocked: false };
-	} catch {
-		return { blocked: true, reason: "malformed_auth" };
-	}
-}
-
+/**
+ * `llmgates/config.json` — extension-level settings only. Gateway credentials
+ * never live here: every gateway instance keeps its key in pi-owned auth.json
+ * and its metadata in `llmgates/2api.json`.
+ */
 export interface LLMGatesConfigFile {
-	baseUrl?: string;
-	apiKey?: string;
-	providerId?: string;
-	providerName?: string;
-	/** When true (default), sync upstream retail prices for /models catalog entries. */
+	/** When true (default), sync upstream retail prices for catalog entries. */
 	pricingAutoUpdate?: boolean;
 	[key: string]: unknown;
 }
@@ -335,24 +219,6 @@ export function loadValidatedConfigFile(agentDir: string): LLMGatesConfigFile {
 			throw new Error(`${CONFIG_FILE_NAME} must contain a JSON object`);
 		}
 		const config: LLMGatesConfigFile = { ...parsed };
-		if (config.baseUrl !== undefined && typeof config.baseUrl !== "string") {
-			throw new Error(`${CONFIG_FILE_NAME}.baseUrl must be a string`);
-		}
-		if (config.apiKey !== undefined && typeof config.apiKey !== "string") {
-			throw new Error(`${CONFIG_FILE_NAME}.apiKey must be a string`);
-		}
-		if (
-			config.providerId !== undefined &&
-			typeof config.providerId !== "string"
-		) {
-			throw new Error(`${CONFIG_FILE_NAME}.providerId must be a string`);
-		}
-		if (
-			config.providerName !== undefined &&
-			typeof config.providerName !== "string"
-		) {
-			throw new Error(`${CONFIG_FILE_NAME}.providerName must be a string`);
-		}
 		if (
 			config.pricingAutoUpdate !== undefined &&
 			typeof config.pricingAutoUpdate !== "boolean"
@@ -371,47 +237,6 @@ export function loadValidatedConfigFile(agentDir: string): LLMGatesConfigFile {
 	}
 }
 
-export function resolveProviderIdentity(agentDir: string): ProviderIdentity {
-	let file: LLMGatesConfigFile = {};
-	try {
-		file = loadValidatedConfigFile(agentDir);
-	} catch (error) {
-		throw new Error(
-			`Unable to load ${CONFIG_FILE_NAME}: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
-
-	const providerId = firstNonEmpty(
-		process.env.LLMGATES_PROVIDER_ID,
-		file.providerId,
-		DEFAULT_PROVIDER_ID,
-	);
-	const providerName = firstNonEmpty(
-		process.env.LLMGATES_PROVIDER_NAME,
-		file.providerName,
-		DEFAULT_PROVIDER_NAME,
-	);
-
-	if (!providerId) {
-		throw new Error("providerId is empty");
-	}
-	if (providerId.toLowerCase() === "llmgates-2api") {
-		throw new Error(
-			`providerId "${providerId}" is reserved by the LLMGates compatibility recovery provider`,
-		);
-	}
-	if (BUILTIN_PROVIDER_IDS.has(providerId)) {
-		throw new Error(
-			`providerId "${providerId}" collides with a builtin provider; set LLMGATES_PROVIDER_ID or ${CONFIG_FILE_NAME} providerId to a unique id`,
-		);
-	}
-	if (!providerName) {
-		throw new Error("providerName is empty");
-	}
-
-	return { providerId, providerName };
-}
-
 /** Env LLMGATES_PRICING_AUTO_UPDATE overrides llmgates/config.json. Default: true. */
 export function resolvePricingAutoUpdate(agentDir: string): boolean {
 	const env = envFlag("LLMGATES_PRICING_AUTO_UPDATE");
@@ -427,191 +252,4 @@ export function resolvePricingAutoUpdate(agentDir: string): boolean {
 		// fall through to default
 	}
 	return true;
-}
-
-/**
- * A rejected baseUrl is resolved again on every refresh, so warn once per distinct
- * (source, url, reason) instead of turning one misconfiguration into log spam.
- */
-const reportedBaseUrlRejections = new Set<string>();
-
-/**
- * Never echo userinfo: "baseUrl must not include credentials" is itself one of the
- * rejection reasons, and that URL carries the secret the check exists to refuse.
- *
- * Redacting from a literal "//" is not enough. `normalizeAndValidateBaseUrl` defaults
- * a missing scheme to https before parsing, so `user:pass@host/v1` is a supported input
- * that reaches the credentials rejection with no "//" anywhere — the one form that most
- * needs redacting would be the one printed verbatim. Split the authority off the same
- * way the URL grammar does instead: scheme prefix (optional), then everything up to the
- * first "/", "?" or "#", then userinfo up to its last "@".
- *
- * Query and fragment are dropped rather than redacted: `resolveEndpoints` builds the
- * gateway endpoints from origin + path only, so they carry no diagnostic value here and
- * a `?api_key=…` on an otherwise rejected URL would be pure leak.
- */
-function redactUrlCredentials(raw: string): string {
-	const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.exec(raw)?.[0] ?? "";
-	const afterScheme = raw.slice(scheme.length);
-	const authorityEnd = afterScheme.search(/[/?#]/);
-	const authority =
-		authorityEnd === -1 ? afterScheme : afterScheme.slice(0, authorityEnd);
-	// Path is kept (it selects the gateway); query/fragment are not.
-	const rest =
-		authorityEnd === -1
-			? ""
-			: afterScheme.slice(authorityEnd).replace(/[?#].*$/s, "");
-
-	const userinfoEnd = authority.lastIndexOf("@");
-	if (userinfoEnd === -1) {
-		return `${scheme}${authority}${rest}`;
-	}
-	return `${scheme}<redacted>@${authority.slice(userinfoEnd + 1)}${rest}`;
-}
-
-/**
- * A dropped connection is indistinguishable from "no credential at all" by the time
- * callers report it — `/balance` and the provider both say "LLMGates is not configured.
- * Use /login or set LLMGATES_API_KEY", which is actively misleading when the key IS set
- * and only the URL failed policy. The validator already produced the precise reason
- * (e.g. "remote HTTP is not allowed; use HTTPS or loopback HTTP"); surface it here
- * rather than discarding it with the connection.
- */
-function reportRejectedBaseUrl(
-	source: ConnectionSource,
-	candidate: string,
-	error: string,
-): void {
-	const safeUrl = redactUrlCredentials(candidate);
-	// Only this source is dropped. Resolution continues oauth → env → file, so claiming
-	// the gateway is unconfigured would repeat the very error this warning exists to fix
-	// whenever a lower-priority source goes on to resolve successfully.
-	const message = `[pi-llmgates-provider] ignoring ${source} baseUrl "${safeUrl}": ${error}. The ${source} credential is skipped; LLMGates stays unconfigured unless a lower-priority source is configured.`;
-
-	// Debug logs every occurrence. Warn-once is what keeps a permanently misconfigured
-	// URL from becoming per-refresh noise, but it must not also be what hides the repeat
-	// from someone who enabled debug precisely because they are chasing this.
-	if (envFlag("LLMGATES_DEBUG")) {
-		console.warn(message);
-		return;
-	}
-
-	const key = `${source}\u0000${safeUrl}\u0000${error}`;
-	if (reportedBaseUrlRejections.has(key)) {
-		return;
-	}
-	reportedBaseUrlRejections.add(key);
-	console.warn(`${message} Set LLMGATES_DEBUG=1 to log every occurrence.`);
-}
-
-/** @internal test helper — reset the warn-once state between tests. */
-export function resetBaseUrlRejectionWarningsForTests(): void {
-	reportedBaseUrlRejections.clear();
-}
-
-function connectionFromParts(
-	source: ConnectionSource,
-	apiKey: string,
-	baseUrlCandidate: string | undefined,
-): CanonicalConnection | null {
-	const key = apiKey.trim();
-	if (!key) {
-		return null;
-	}
-
-	const candidate = normalizeGatewayBaseUrl(baseUrlCandidate) ?? DEFAULT_BASE_URL;
-	const validated = normalizeAndValidateBaseUrl(candidate);
-	if (
-		!validated.ok ||
-		!validated.inferenceBaseUrl ||
-		!validated.modelsUrl ||
-		!validated.balanceUrl
-	) {
-		reportRejectedBaseUrl(source, candidate, validated.error ?? "baseUrl is invalid");
-		return null;
-	}
-
-	return {
-		source,
-		apiKey: key,
-		baseUrlInput: validated.baseUrlInput ?? validated.inferenceBaseUrl,
-		inferenceBaseUrl: validated.inferenceBaseUrl,
-		modelsUrl: validated.modelsUrl,
-		balanceUrl: validated.balanceUrl,
-	};
-}
-
-export function connectionFromOAuthCredential(credential: {
-	access?: string;
-	refresh?: string;
-	validationNonce?: string;
-}): CanonicalConnection | null {
-	const access = typeof credential.access === "string" ? credential.access : "";
-	if (!access.trim()) {
-		return null;
-	}
-	const meta = decodeOAuthRefreshMeta(credential.refresh);
-	// Missing/invalid metadata falls back to official default only — never env/file.
-	return connectionFromParts(
-		"oauth",
-		access,
-		meta?.baseUrl ?? DEFAULT_BASE_URL,
-	);
-}
-
-export function connectionFromAmbientEnv(
-	env: NodeJS.ProcessEnv = process.env,
-): CanonicalConnection | null {
-	const apiKey = env.LLMGATES_API_KEY;
-	if (!apiKey?.trim()) {
-		return null;
-	}
-	return connectionFromParts("env", apiKey, env.LLMGATES_BASE_URL);
-}
-
-export function connectionFromConfigFile(
-	agentDir: string,
-): CanonicalConnection | null {
-	let file: LLMGatesConfigFile;
-	try {
-		file = loadValidatedConfigFile(agentDir);
-	} catch {
-		return null;
-	}
-	if (!file.apiKey?.trim()) {
-		return null;
-	}
-	return connectionFromParts("file", file.apiKey, file.baseUrl);
-}
-
-export function resolveCanonicalConnection(
-	agentDir: string,
-	providerId: string,
-): CanonicalConnection | null {
-	// OAuth from raw auth.json — never via config-value resolver.
-	try {
-		const entry = readRawAuthEntry(agentDir, providerId);
-		if (isPlainObject(entry) && entry.type === "oauth") {
-			const oauth = connectionFromOAuthCredential({
-				access: typeof entry.access === "string" ? entry.access : undefined,
-				refresh: typeof entry.refresh === "string" ? entry.refresh : undefined,
-				validationNonce:
-					typeof entry.validationNonce === "string"
-						? entry.validationNonce
-						: undefined,
-			});
-			if (oauth) {
-				return oauth;
-			}
-		}
-	} catch {
-		// Malformed auth is handled by detectLegacyApiKeyCredential at factory.
-	}
-
-	const envConn = connectionFromAmbientEnv(process.env);
-	if (envConn) {
-		return envConn;
-	}
-
-	return connectionFromConfigFile(agentDir);
 }

@@ -80,7 +80,8 @@ export function migrateLegacyConfigFiles(agentDir: string): void {
 	}
 }
 
-/** Provider login/catalog lifecycle tuning (shared by core + compat providers). */
+/** Provider login/catalog lifecycle tuning. */
+export const CREDENTIAL_TTL_MS = 100 * 365 * 24 * 60 * 60 * 1000;
 export const MAX_LOGIN_ATTEMPTS = 5;
 export const PENDING_TTL_MS = 5 * 60 * 1000;
 export const CATALOG_BACKGROUND_REFRESH_MS = 5 * 60 * 1000;
@@ -153,12 +154,12 @@ const fileLockQueues = new Map<string, Promise<void>>();
  * `/llmgates-reload` refreshes its targets concurrently and every 2API instance
  * persists into the same `2api.json`, and `/llmgates remove` and
  * `/endpoint-setting` are guarded by different mechanisms so they do not exclude
- * each other either. Queueing also restores the invariant the endpoint-interactive
- * spec (§8.7) states outright: this extension never holds two file locks at once.
+ * each other either. Queueing also restores the invariant this extension relies on:
+ * it never holds two file locks at once.
  *
  * `fn` MUST NOT call back into `withFileLock` for the same path — a self-wait
  * cannot be broken. Every current body is a self-contained read/modify/atomic
- * write, and §8.7 forbids nesting.
+ * write, and nesting is forbidden.
  */
 export async function withFileLock<T>(path: string, fn: () => Promise<T> | T): Promise<T> {
 	// Read the tail and publish the new one with no await in between, so concurrent

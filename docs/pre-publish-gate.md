@@ -140,15 +140,15 @@ pi
 
 ### 4.1 通用 Smoke（每次发版至少做）
 
-- [ ] `/login LLMGates` 或已有有效凭证时会话正常
+- [ ] `/login` 添加网关实例，或已有有效凭证时会话正常
 - [ ] 模型列表可见，能选中并发起一轮对话
 - [ ] `/reload` 或重启后扩展仍正常
 
 ### 4.2 按改动选测（勾选本次相关的）
 
-**Native Provider / 连接 / catalog**
+**Provider / 连接 / catalog**
 
-- [ ] `/login LLMGates` 刷新 catalog
+- [ ] `/login <实例 id>` 重新配置后 catalog 刷新
 - [ ] `/llmgates-reload` 强制刷新
 - [ ] 切换模型后推理正常
 
@@ -158,9 +158,9 @@ pi
 - [ ] `/endpoint-setting` 批量选择（若本次有改）
 - [ ] 并发或 superseded 场景（若本次有改）
 
-**2API 兼容层**
+**多网关兼容层**
 
-- [ ] `/login LLMGates` 选择 NewAPI / CLIProxyAPI / Sub2API 添加实例（合并登录：不覆盖 core 凭证，无错误横幅，会话内出现成功提示且实例立即可用）
+- [ ] `/login` 选择 NewAPI / CLIProxyAPI / Sub2API / 通用网关添加实例（无错误横幅，登录流程内出现成功提示且实例立即可用）
 - [ ] `/logout` 中选择实例显示名称（可用 ID 搜索）后，registry / provider / endpoint override 被清理；重启或 `/reload` 后不再出现（若涉及 logout 清理）
 - [ ] 同 ID 的 auth 条目仍存在时拒绝覆盖（若涉及登录恢复）
 - [ ] `/llmgates list` / `/llmgates remove <id>`
@@ -182,7 +182,7 @@ Agent **可以**在本机执行 §2 脚本、用 §3 命令安装 `.tgz`、根�
 
 1. 必须依据**实际 git diff / PR 说明**勾选 §4.2，不得空跑 smoke 就宣称通过  
 2. §4 完成后运行 `./scripts/gate-record-pass.sh --tests "login,smoke-reload,..."`（或 `npm run gate:record -- --tests "..."`），并在对话中贴 **§5 回执**  
-3. 若缺少 LLMGates 凭证或无法启动 pi，**不得**跳过门禁直接 publish；应请用户补测或代测
+3. 若缺少可用的网关凭证或无法启动 pi，**不得**跳过门禁直接 publish；应请用户补测或代测
 
 ### 4.4 rpc 驱动的隔离验证（Agent 推荐做法）
 
@@ -193,7 +193,7 @@ Agent **可以**在本机执行 §2 脚本、用 §3 命令安装 `.tgz`、根�
 ```bash
 ISO=/tmp/llg-iso-agent
 rm -rf "$ISO" && mkdir -p "$ISO/llmgates" && chmod 700 "$ISO"
-cp ~/.pi/agent/auth.json "$ISO/auth.json"              # LLMGates 凭证
+cp ~/.pi/agent/auth.json "$ISO/auth.json"              # 网关凭证
 cp ~/.pi/agent/models-store.json "$ISO/" 2>/dev/null   # 省一次联网 catalog
 printf '{"packages":["/tmp/llg-gate"]}\n' > "$ISO/settings.json"   # 只加载待验包
 # 按本次改动构造 override 前置状态，例如验 `*` 标记就要先有 defaults：

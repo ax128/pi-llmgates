@@ -8,12 +8,12 @@ import {
 } from "../extensions/llmgates-reload.js";
 import { acquireEndpointInFlight, releaseEndpointInFlight, runEndpointCommand } from "../extensions/endpoint.js";
 import { runEndpointSettingCommand } from "../extensions/endpoint-setting.js";
-import type { EndpointRefreshResult } from "../extensions/provider.js";
+import type { EndpointRefreshResult } from "../extensions/catalog-store.js";
 
-const CORE = "llmgates";
-const TWO_API = "work-cpa";
+const GATEWAY = "work-newapi";
+const OTHER = "work-cpa";
 
-function model(id: string, provider: string = CORE): Model<Api> {
+function model(id: string, provider: string = GATEWAY): Model<Api> {
 	return {
 		id,
 		name: id,
@@ -53,19 +53,19 @@ describe("mergeCatalogReloadOutcomes", () => {
 	it("reports success for all providers", () => {
 		expect(
 			mergeCatalogReloadOutcomes([
-				{ providerId: CORE, label: "core", status: "ok", modelCount: 3 },
-				{ providerId: TWO_API, label: "gateway/cpa", status: "ok", modelCount: 2 },
+				{ providerId: GATEWAY, label: `gateway/${GATEWAY}`, status: "ok", modelCount: 3 },
+				{ providerId: OTHER, label: "gateway/cpa", status: "ok", modelCount: 2 },
 			]),
 		).toEqual({
 			level: "info",
-			message: "Refreshed catalog for core (3 model(s)), gateway/cpa (2 model(s)).",
+			message: `Refreshed catalog for gateway/${GATEWAY} (3 model(s)), gateway/cpa (2 model(s)).`,
 		});
 	});
 
 	it("reports warning when some providers fail", () => {
 		const result = mergeCatalogReloadOutcomes([
-			{ providerId: CORE, label: "core", status: "ok", modelCount: 1 },
-			{ providerId: TWO_API, label: "gateway/cpa", status: "partial", detail: "offline mode" },
+			{ providerId: GATEWAY, label: `gateway/${GATEWAY}`, status: "ok", modelCount: 1 },
+			{ providerId: OTHER, label: "gateway/cpa", status: "partial", detail: "offline mode" },
 		]);
 		expect(result.level).toBe("warning");
 		expect(result.message).toContain("partial");
@@ -74,8 +74,8 @@ describe("mergeCatalogReloadOutcomes", () => {
 
 	it("does not call a zero-success run partial", () => {
 		const result = mergeCatalogReloadOutcomes([
-			{ providerId: CORE, label: "core", status: "partial", detail: "offline mode" },
-			{ providerId: TWO_API, label: "gateway/cpa", status: "failed", detail: "boom" },
+			{ providerId: GATEWAY, label: `gateway/${GATEWAY}`, status: "partial", detail: "offline mode" },
+			{ providerId: OTHER, label: "gateway/cpa", status: "failed", detail: "boom" },
 		]);
 		expect(result.level).toBe("warning");
 		expect(result.message).not.toContain("partial");
@@ -86,14 +86,14 @@ describe("mergeCatalogReloadOutcomes", () => {
 describe("runCatalogReloadCommand", () => {
 	it("refreshes all targets and rebinds the current model", async () => {
 		releaseEndpointInFlight();
-		const refreshed = model("claude-opus-4-7", CORE);
+		const refreshed = model("claude-opus-4-7", GATEWAY);
 		refreshed.thinkingLevelMap = { off: "none", xhigh: "xhigh", max: "max" };
 		const refresh = vi.fn(async (): Promise<EndpointRefreshResult> => okRefresh([refreshed]));
 		const targets = (): CatalogReloadTarget[] => [
-			{ providerId: CORE, label: "core", refreshEndpointForeground: refresh },
+			{ providerId: GATEWAY, label: `gateway/${GATEWAY}`, refreshEndpointForeground: refresh },
 		];
 		const { ctx, notifications, setModel } = makeCtx({
-			current: model("claude-opus-4-7", CORE),
+			current: model("claude-opus-4-7", GATEWAY),
 			findImpl: () => refreshed,
 		});
 
@@ -103,7 +103,7 @@ describe("runCatalogReloadCommand", () => {
 		expect(setModel).toHaveBeenCalledWith(refreshed);
 		expect(notifications.at(-1)).toEqual({
 			level: "info",
-			message: "Refreshed catalog for core (1 model(s)).",
+			message: `Refreshed catalog for gateway/${GATEWAY} (1 model(s)).`,
 		});
 	});
 
@@ -111,7 +111,7 @@ describe("runCatalogReloadCommand", () => {
 		expect(acquireEndpointInFlight()).toBe(true);
 		const { ctx, notifications } = makeCtx();
 		await runCatalogReloadCommand(
-			() => [{ providerId: CORE, label: "core", refreshEndpointForeground: async () => okRefresh([]) }],
+			() => [{ providerId: GATEWAY, label: `gateway/${GATEWAY}`, refreshEndpointForeground: async () => okRefresh([]) }],
 			ctx,
 		);
 		releaseEndpointInFlight();
@@ -125,8 +125,8 @@ describe("runCatalogReloadCommand", () => {
 		await runCatalogReloadCommand(
 			() => [
 				{
-					providerId: CORE,
-					label: "core",
+					providerId: GATEWAY,
+					label: `gateway/${GATEWAY}`,
 					refreshEndpointForeground: async () => ({ status: "offline" }),
 				},
 			],
@@ -134,14 +134,14 @@ describe("runCatalogReloadCommand", () => {
 		);
 		expect(notifications.at(-1)).toEqual({
 			level: "warning",
-			message: "Catalog refresh did not update any provider:\ncore: offline mode",
+			message: `Catalog refresh did not update any provider:\ngateway/${GATEWAY}: offline mode`,
 		});
 	});
 
 	it("warns when the current model is gone from the refreshed catalog", async () => {
 		releaseEndpointInFlight();
 		const { ctx, notifications, setModel } = makeCtx({
-			current: model("retired-model", CORE),
+			current: model("retired-model", GATEWAY),
 			// The refresh succeeded but dropped this id from the catalog.
 			findImpl: () => undefined,
 		});
@@ -149,9 +149,9 @@ describe("runCatalogReloadCommand", () => {
 		await runCatalogReloadCommand(
 			() => [
 				{
-					providerId: CORE,
-					label: "core",
-					refreshEndpointForeground: async () => okRefresh([model("other", CORE)]),
+					providerId: GATEWAY,
+					label: `gateway/${GATEWAY}`,
+					refreshEndpointForeground: async () => okRefresh([model("other", GATEWAY)]),
 				},
 			],
 			ctx,
@@ -169,7 +169,7 @@ describe("catalog reload in-flight guard", () => {
 		expect(acquireEndpointInFlight()).toBe(true);
 		const { ctx, notifications } = makeCtx();
 		await runCatalogReloadCommand(
-			() => [{ providerId: CORE, label: "core", refreshEndpointForeground: async () => okRefresh([]) }],
+			() => [{ providerId: GATEWAY, label: `gateway/${GATEWAY}`, refreshEndpointForeground: async () => okRefresh([]) }],
 			ctx,
 		);
 		releaseEndpointInFlight();
@@ -182,7 +182,7 @@ describe("catalog reload in-flight guard", () => {
 		expect(acquireEndpointInFlight()).toBe(true);
 		const { ctx, notifications } = makeCtx();
 		await runCatalogReloadCommand(
-			() => [{ providerId: CORE, label: "core", refreshEndpointForeground: async () => okRefresh([]) }],
+			() => [{ providerId: GATEWAY, label: `gateway/${GATEWAY}`, refreshEndpointForeground: async () => okRefresh([]) }],
 			ctx,
 		);
 		releaseEndpointInFlight();
@@ -198,7 +198,7 @@ describe("catalog reload in-flight guard", () => {
 			{
 				agentDir: "/tmp/unused",
 				targets: () => [
-					{ providerId: CORE, label: "core", scope: { kind: "core" }, refreshEndpointForeground: async () => okRefresh([]) },
+					{ providerId: GATEWAY, label: `gateway/${GATEWAY}`, scope: { kind: "2api", instanceId: GATEWAY }, refreshEndpointForeground: async () => okRefresh([]) },
 				],
 				writeOverrides: async () => {},
 			},
@@ -227,7 +227,7 @@ describe("catalog reload in-flight guard", () => {
 		await runEndpointCommand(
 			"messages m1",
 			{
-				coreProviderId: CORE,
+				managedProviderIds: () => [GATEWAY],
 				refreshEndpointForeground: async () => ({ status: "ok", models: [] }),
 				writeOverride: async () => {
 					throw new Error("must not write");
@@ -256,7 +256,7 @@ describe("catalog reload concurrency", () => {
 		// must be in flight before ANY of them is allowed to finish. Serial execution
 		// deadlocks this barrier instead of merely running slower, so the test cannot
 		// pass by accident on a loaded machine or fail by accident on a slow one.
-		const TARGETS = ["core", "gw-1", "gw-2", "gw-3"];
+		const TARGETS = ["gw-0", "gw-1", "gw-2", "gw-3"];
 		let inFlightNow = 0;
 		let peakConcurrency = 0;
 		let releaseAll!: () => void;
@@ -288,9 +288,9 @@ describe("catalog reload concurrency", () => {
 
 		await runCatalogReloadCommand(
 			() => [
-				{ providerId: CORE, label: "core", refreshEndpointForeground: async () => okRefresh([model("m1")]) },
+				{ providerId: GATEWAY, label: `gateway/${GATEWAY}`, refreshEndpointForeground: async () => okRefresh([model("m1")]) },
 				{
-					providerId: TWO_API,
+					providerId: OTHER,
 					label: "gateway/cpa",
 					refreshEndpointForeground: async () => {
 						throw new Error("gateway unreachable");
@@ -302,7 +302,7 @@ describe("catalog reload concurrency", () => {
 
 		const message = notifications.at(-1)?.message ?? "";
 		expect(notifications.at(-1)?.level).toBe("warning");
-		expect(message.indexOf("core")).toBeLessThan(message.indexOf("gateway/cpa"));
+		expect(message.indexOf(`gateway/${GATEWAY}`)).toBeLessThan(message.indexOf("gateway/cpa"));
 		expect(message).toMatch(/gateway unreachable/i);
 	});
 
@@ -314,7 +314,7 @@ describe("catalog reload concurrency", () => {
 		const refresh = vi.fn(async () => okRefresh([]));
 
 		await runCatalogReloadCommand(
-			() => [{ providerId: CORE, label: "core", refreshEndpointForeground: refresh }],
+			() => [{ providerId: GATEWAY, label: `gateway/${GATEWAY}`, refreshEndpointForeground: refresh }],
 			ctx,
 		);
 

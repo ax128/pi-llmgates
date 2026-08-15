@@ -1,5 +1,8 @@
 /**
- * LLMGates dynamic model provider for pi (native Provider, pi >= 0.81.0).
+ * OpenAI-compatible multi-gateway provider for pi (native Provider, pi >= 0.81.0).
+ *
+ * Every gateway (`newapi` / `sub2api` / `cpa` / `default`) is registered as its
+ * own pi provider; `/login` on the bootstrap entry adds them.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -9,24 +12,12 @@ import {
 	createModelSelectReconciler,
 	registerEndpointCommand,
 } from "./endpoint.js";
-import {
-	registerEndpointSettingCommand,
-	type EndpointSettingRegistration,
-} from "./endpoint-setting.js";
-import {
-	registerCatalogReloadCommand,
-	type CatalogReloadRegistration,
-} from "./llmgates-reload.js";
+import { registerEndpointSettingCommand } from "./endpoint-setting.js";
+import { registerCatalogReloadCommand } from "./llmgates-reload.js";
 import {
 	registerCompatGateways,
 	type CompatGatewayRegistration,
 } from "./compat/index.js";
-import {
-	detectLegacyApiKeyCredential,
-	resolveProviderIdentity,
-} from "./connection.js";
-import { compatInstanceAddedMessage } from "./login-ui.js";
-import { createLLMGatesProvider, type LLMGatesProvider } from "./provider.js";
 import { envFlag, migrateLegacyConfigFiles } from "./util.js";
 
 function logWarn(message: string): void {
@@ -50,172 +41,36 @@ export default function (pi: ExtensionAPI): void {
 		);
 	}
 
-	let identity: { providerId: string; providerName: string } | undefined;
-	let identityError: unknown;
-	try {
-		identity = resolveProviderIdentity(agentDir);
-	} catch (error) {
-		identityError = error;
-	}
-
-	const legacy = identity
-		? detectLegacyApiKeyCredential(agentDir, identity.providerId)
-		: undefined;
-
-	let compat: CompatGatewayRegistration | undefined;
-	try {
-		compat = registerCompatGateways(pi, agentDir, {
-			reservedProviderIds: [
-				"llmgates",
-				...(identity ? [identity.providerId] : []),
-			],
-			registerBootstrapProvider: !identity || legacy?.blocked === true,
-		});
-	} catch (error) {
-		logWarn(error instanceof Error ? error.message : String(error));
-	}
-
-	// /endpoint-setting spans core AND 2API, so it must not be tied to the core
-	// provider's lifecycle: a 2API-only user (or one whose core is fail-closed)
-	// still has models to configure. Register it here, ahead of the returns below,
-	// whenever at least one instance provider exists. The bootstrap provider does
-	// not count — it has no catalog and no models.
-	let endpointSetting: EndpointSettingRegistration | undefined;
-	let catalogReload: CatalogReloadRegistration | undefined;
-	if (compat && compat.providers.size > 0) {
-		endpointSetting = registerEndpointSettingCommand(pi, agentDir, { compat });
-		catalogReload = registerCatalogReloadCommand(pi, { compat });
-	}
-
-	if (!identity) {
-		logWarn(
-			identityError instanceof Error
-				? identityError.message
-				: String(identityError),
-		);
-		return;
-	}
-
-	if (legacy?.blocked) {
-		logWarn(
-			legacy.reason === "legacy_api_key"
-				? `Refusing to register ${identity.providerId}: legacy auth.json type "api_key" is blocked. Run /logout ${identity.providerName} or remove the entry, then /reload.`
-				: `Refusing to register ${identity.providerId}: auth.json is malformed or its ${identity.providerId} entry is invalid. Repair or remove auth.json, then /reload.`,
-		);
-		registerBalanceCommand(pi, identity.providerId, { legacyBlocked: true });
-		return;
-	}
-
-	function reregisterCoreProvider(changed: LLMGatesProvider): void {
-		try {
-			pi.registerProvider(changed);
-		} catch {
-			// ExtensionAPI may be invalidated after reload.
-		}
-	}
-
 	/**
 	 * Do NOT rethrow out of the extension entry point: this runs inside pi's
-	 * extension loader, where an exception can abort loading and take the 2API
-	 * providers and every command registered above down with it. Degrade to
-	 * "core unavailable, recovery login present" and report why.
+	 * extension loader, where an exception can abort loading and take every
+	 * command registered below down with it. A failed registration means no
+	 * gateway is usable, so report why and leave pi otherwise intact.
 	 */
-	function degradeToRecoveryLogin(reason: string, error: unknown): void {
-		// Keep the recovery login entry available when core is unusable (the
-		// bootstrap provider is not registered on the normal path anymore).
-		try {
-			compat?.registerBootstrapProvider();
-		} catch (bootstrapError) {
-			logWarn(
-				`Failed to register the recovery login entry: ${bootstrapError instanceof Error ? bootstrapError.message : String(bootstrapError)}`,
-			);
-		}
+	let compat: CompatGatewayRegistration;
+	try {
+		// Reserved ids (pi builtins, `llmgates`, the login entry) are owned by
+		// compat/types.ts; nothing here adds to them.
+		compat = registerCompatGateways(pi, agentDir);
+	} catch (error) {
 		logWarn(
-			`${reason} ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
-
-	let provider: LLMGatesProvider;
-	try {
-		// Construction is not just wiring: it reads llmgates/pricing.json and
-		// llmgates/models.json, and both readers rethrow everything that is not
-		// ENOENT — a permission error, an EISDIR, a bad sector. Unguarded, that
-		// escapes the factory exactly like the registration failure below does,
-		// which is the load-aborting path this whole branch exists to prevent.
-		provider = createLLMGatesProvider({
-			agentDir,
-			providerId: identity.providerId,
-			providerName: identity.providerName,
-			compatLogin: compat
-				? async (interaction, scheme) => {
-						const instance = await compat.loginInstance(interaction, scheme);
-						pi.sendMessage(
-							{
-								customType: "llmgates-login",
-								content: compatInstanceAddedMessage(instance),
-								display: true,
-							},
-							{ triggerTurn: false },
-						);
-					}
-				: undefined,
-			onModelsChanged: reregisterCoreProvider,
-		});
-	} catch (error) {
-		degradeToRecoveryLogin(
-			`Failed to initialize provider ${identity.providerId}; the 2API gateways and the recovery login stay available. ` +
-				"Run /reload after fixing it.",
-			error,
+			`${error instanceof Error ? error.message : String(error)} ` +
+				"No gateway was registered; fix the reported problem and run /reload.",
 		);
 		return;
 	}
 
-	// Native Provider overload (pi 0.81+)
-	try {
-		pi.registerProvider(provider);
-	} catch (error) {
-		degradeToRecoveryLogin(
-			`Failed to register provider ${identity.providerId}; the 2API gateways and the recovery login stay available. ` +
-				"Run /reload after fixing it.",
-			error,
-		);
-		return;
-	}
-	registerBalanceCommand(pi, identity.providerId);
-	// /endpoint is registered only after the core provider is live: it needs the
-	// foreground refresh path, which a legacy fail-closed branch cannot honor.
-	registerEndpointCommand(pi, agentDir, identity.providerId, provider);
-	// Core is only ready now. Attach it to an existing registration, or register
-	// for the first time when there were no 2API instances — otherwise a core-only
-	// user would never see the command.
-	const core = { providerId: identity.providerId, provider };
-	if (endpointSetting) endpointSetting.setCore(core);
-	else registerEndpointSettingCommand(pi, agentDir, { core, compat });
-	if (catalogReload) catalogReload.setCore(core);
-	else registerCatalogReloadCommand(pi, { core, compat });
+	registerEndpointCommand(pi, agentDir, compat);
+	registerEndpointSettingCommand(pi, agentDir, compat);
+	registerCatalogReloadCommand(pi, compat);
+	registerBalanceCommand(pi, compat);
+
 	// Reconcile stale scoped Model objects (old api) after a /endpoint change so
 	// Ctrl+P cycling rebinds to the registry's composed model. Self-guarded.
 	const reconcileModelSelect = createModelSelectReconciler(
-		identity.providerId,
+		() => compat.providers.keys(),
 		(model) => pi.setModel(model),
 	);
 	pi.on("model_select", (event, ctx) => reconcileModelSelect(event, ctx));
-	logDebug(`Registered native provider ${identity.providerId}`);
-
-	pi.on("session_start", async (event) => {
-		const reason =
-			typeof (event as { reason?: string })?.reason === "string"
-				? (event as { reason: string }).reason
-				: "start";
-		provider.beginSession(reason);
-		// Fire-and-forget background refresh; do not block session availability.
-		// Re-register (including empty catalogs) happens via onModelsChanged after a real commit.
-		void provider.startBackgroundRefresh().catch(() => {
-			// errors retained previous models
-		});
-	});
-
-	pi.on("session_shutdown", async () => {
-		await provider.shutdown();
-	});
+	logDebug(`Registered ${compat.providers.size} gateway provider(s)`);
 }

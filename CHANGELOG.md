@@ -8,6 +8,19 @@
 
 ## [Unreleased]
 
+### 移除
+
+- **不再内置 LLMGates 官方网关（core provider）。** 扩展现在只做一件事：并行接入你自己配置的 OpenAI 兼容网关（`newapi` / `sub2api` / `cpa` / `default` 四种）。随之移除的还有：默认网关地址与 `sk-llmgates-*` 约定、`LLMGATES_API_KEY` / `LLMGATES_BASE_URL` / `LLMGATES_PROVIDER_ID` / `LLMGATES_PROVIDER_NAME` 环境变量、`llmgates/config.json` 里的 `baseUrl` / `apiKey` / `providerId` / `providerName` 字段、core 的 `llmgates/models.json` 出口覆盖文件，以及 `auth.json` 中 legacy `api_key` 凭证的 fail-closed 分支。
+  - **升级须知**：原先通过 `/login LLMGates` 或环境变量连接官方网关的用户，其 core provider 不再注册；请用 `/login` → 「LLMGates 网关」→ **通用网关** 重新添加为一个实例（填入原 base URL 与 API Key）。`auth.json` 中遗留的 `llmgates` 条目不会被自动删除，可用 `/logout` 或手工清理。`llmgates/models.json` 中的 core 出口覆盖不会自动迁移，请按需在新实例的 `llmgates/2api-models/<id>.json` 中重建。
+  - 包名、命令名（`/llmgates`、`/llmgates-reload`）与配置目录 `~/.pi/agent/llmgates/` 保持不变。
+
+### 变更
+
+- `/login` 中的入口改名为「LLMGates 网关」，且**始终**出现（此前仅在 core 不可用时作为「恢复入口」显示）；进入后第一步直接选网关类型（NewAPI / CLIProxyAPI / Sub2API / 通用网关）。登录成功后会在流程内回显实例 ID，便于随后 `/login <id>` 重新配置——尤其是 ID 由 hostname 自动派生的通用网关。
+- `/endpoint <chat|messages|responses|auto> [model-id]` 现在作用于**网关实例**的模型（此前只作用于 core）。不带 model-id 时改当前模型；带 model-id 时在全部实例中精确匹配，多个实例存在同名模型时拒绝并列出候选，避免把 override 写进用户没有指定的实例。
+- `/balance` 改为按实例通用探测：先试 `dashboard/billing/subscription` + `dashboard/billing/usage`（NewAPI / one-api 的 OpenAI 兼容计费接口），再回落到 `user/balance`；两者都不可用时明确显示「该网关不提供余额查询」而不是 0。不带参数查询全部实例，也可 `/balance <instance-id>` 只查一个。
+- `/endpoint-setting` 与 `/llmgates-reload` 的目标集合不再包含 core，只覆盖网关实例。
+
 ### 修复
 
 - 修复 async / background 子代理用量在真实环境全部漏计的问题。pi-subagents 用 `getSessionFile() ?? getSessionId()` 标识会话，发出的 `subagent:async-complete` / `subagent:foreground-complete` 事件里 `sessionId` 实际是**会话文件完整路径**，而本扩展此前用 `sessionManager.getSessionId()`（裸 UUID）做严格相等比对，事件全部被静默丢弃——async 子代理的调用次数 / token / 费用一次都计不进 `/calls` 与状态行（同步前台子代理不受影响）。现在同时接受裸 ID、会话文件路径及其 basename（`<timestamp>_<sessionId>.jsonl`）三种身份形式。
