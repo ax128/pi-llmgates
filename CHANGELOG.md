@@ -19,6 +19,7 @@
 
 - **破坏性**：`/login` 入口的 provider id 由 `llmgates-2api` 改为 **`llmgates`**。`-2api` 后缀当初只是为了避开内置 core 占用的 `llmgates`，core 移除后它已无意义，登录列表里也就不再出现带后缀的条目。显示名仍是「LLMGates 网关」。按 provider id 或 `auth.json` 键名做过脚本化处理的用户需相应调整；旧 id `llmgates-2api` 仍留在实例 ID 保留名单中，不能被新实例占用。
 - `/login` 中的入口改名为「LLMGates 网关」，且**始终**出现（此前仅在 core 不可用时作为「恢复入口」显示）；进入后第一步直接选网关类型（NewAPI / CLIProxyAPI / Sub2API / 通用网关）。登录成功后会在**会话里**留下一条含实例 ID 的消息（登录对话框内那条会随对话框一起销毁），便于随后 `/login <id>`、`/balance <id>` 使用——尤其是 ID 由 hostname 自动派生的通用网关。
+- **通用网关（`default`）改用与其他类型相同的登录流程**：实例 Provider ID → 显示名称 → Base URL → API Key。此前它跳过前两步、ID 强制由 hostname 派生、显示名等于 ID，是四种类型里唯一的例外——而 `default` 并不是某个特定网关，只是「种类未知、能探测到 `/v1/models` 就行」，没有理由不能自己命名。ID 留空时仍按 hostname 派生（同 hostname 重复添加照旧追加 `-2`、`-3`），所以原有用法不受影响。
 - `/endpoint <chat|messages|responses|auto> [model-id]` 现在作用于**网关实例**的模型（此前只作用于 core）。不带 model-id 时改当前模型；带 model-id 时在全部实例中精确匹配，多个实例存在同名模型时拒绝并列出候选，避免把 override 写进用户没有指定的实例。
 - `/balance` 改为按实例通用探测：先试 `dashboard/billing/subscription` + `dashboard/billing/usage`（NewAPI / one-api 的 OpenAI 兼容计费接口），再回落到 `user/balance`；两者都不可用时明确显示「该网关不提供余额查询」而不是 0。不带参数查询全部实例，也可 `/balance <instance-id>` 只查一个。网关把未匹配路由回落到前端页面（200 + HTML，one-api 系的默认行为）时视同「不提供该接口」继续探测下一种，不会中断在解析错误上；超时、中断、网络错误仍照常报错。读数只认货币字段，不把 one-api 的内部配额单位（`quota` / `remain_quota`，默认 500000 = 1 USD）当金额显示。
 - `/endpoint-setting` 与 `/llmgates-reload` 的目标集合不再包含 core，只覆盖网关实例。

@@ -544,9 +544,11 @@ describe("runCompatInstanceLogin", () => {
 		expect(onValidated).toHaveBeenCalledOnce();
 	});
 
-	it("adds a default gateway with only baseUrl and apiKey and derives the instance id", async () => {
+	it("derives the default gateway instance id from the hostname when the id is left blank", async () => {
 		const interaction = scriptedAuthInteraction([
 			"default",
+			"",
+			"",
 			"https://api.foo.com/v1",
 			"default-key",
 		]);
@@ -559,10 +561,12 @@ describe("runCompatInstanceLogin", () => {
 			now: () => NOW,
 			onValidated,
 		});
-		// The generic flow skips the id/name prompts, so its intro must say so.
+		// The generic gateway walks the same four steps as every other scheme.
 		expect(interaction.messages[0]).toBe(COMPAT_DEFAULT_LOGIN_INTRO);
 		expect(interaction.prompts.map((prompt) => prompt.type)).toEqual([
 			"select",
+			"text",
+			"text",
 			"text",
 			"secret",
 		]);
@@ -580,8 +584,66 @@ describe("runCompatInstanceLogin", () => {
 		expect(interaction.messages.at(-1)).toContain("api.foo.com");
 	});
 
+	it("keeps the id and display name a default gateway login supplies", async () => {
+		const interaction = scriptedAuthInteraction([
+			"default",
+			"home-gateway",
+			"家里的网关",
+			"https://api.foo.com/v1",
+			"default-key",
+		]);
+		const onValidated = vi.fn(async () => {});
+		await runCompatInstanceLogin(interaction, {
+			fetchImpl: vi.fn(
+				async () => new Response(JSON.stringify([{ id: "gpt-4o" }])),
+			),
+			now: () => NOW,
+			onValidated,
+		});
+		expect(onValidated).toHaveBeenCalledWith(
+			expect.objectContaining({
+				instance: {
+					id: "home-gateway",
+					name: "家里的网关",
+					scheme: "default",
+					baseUrl: "https://api.foo.com/v1",
+				},
+			}),
+		);
+	});
+
+	it("adds a second default gateway on the same host under its own id", async () => {
+		const interaction = scriptedAuthInteraction([
+			"default",
+			"",
+			"",
+			"https://api.foo.com/v1",
+			"second-key",
+		]);
+		const onValidated = vi.fn(async () => {});
+		await runCompatInstanceLogin(interaction, {
+			fetchImpl: vi.fn(
+				async () => new Response(JSON.stringify([{ id: "gpt-4o" }])),
+			),
+			now: () => NOW,
+			resolveExistingInstanceIds: () => ["api.foo.com"],
+			onValidated,
+		});
+		expect(onValidated).toHaveBeenCalledWith(
+			expect.objectContaining({
+				instance: expect.objectContaining({ id: "api.foo.com-2" }),
+			}),
+		);
+	});
+
 	it("reports model probe failures for default gateways", async () => {
-		const attemptAnswers = ["default", "https://api.foo.com/v1", "bad-key"];
+		const attemptAnswers = [
+			"default",
+			"",
+			"",
+			"https://api.foo.com/v1",
+			"bad-key",
+		];
 		const interaction = scriptedAuthInteraction(
 			Array.from({ length: 5 }, () => attemptAnswers).flat(),
 		);

@@ -235,20 +235,23 @@ export async function runCompatInstanceLogin(
 			});
 		}
 
-		let rawId = "";
-		let rawName = "";
-		if (!isDefaultScheme) {
-			rawId = await interaction.prompt({
-				type: "text",
-				message: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.message,
-				placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId.placeholder,
-			});
-			rawName = await interaction.prompt({
-				type: "text",
-				message: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.message,
-				placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.placeholder,
-			});
-		}
+		// Every scheme walks the same four steps. `default` is not a gateway of its
+		// own — it is "whichever gateway answers /v1/models" — so it names and
+		// registers instances exactly like the rest; the only concession is that a
+		// blank id falls back to the hostname-derived one.
+		const idPrompt = isDefaultScheme
+			? COMPAT_BOOTSTRAP_LOGIN_UI.instanceIdDerivable
+			: COMPAT_BOOTSTRAP_LOGIN_UI.instanceId;
+		const rawId = await interaction.prompt({
+			type: "text",
+			message: idPrompt.message,
+			placeholder: idPrompt.placeholder,
+		});
+		const rawName = await interaction.prompt({
+			type: "text",
+			message: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.message,
+			placeholder: COMPAT_BOOTSTRAP_LOGIN_UI.displayName.placeholder,
+		});
 		const rawBaseUrl = await interaction.prompt({
 			type: "text",
 			message: COMPAT_BOOTSTRAP_LOGIN_UI.baseUrl.message,
@@ -266,16 +269,17 @@ export async function runCompatInstanceLogin(
 			if (!rawBaseUrl.trim()) throw new Error("Base URL is required");
 			if (!apiKey.trim()) throw new Error("API key is required");
 			const baseUrl = normalizeCompatBaseUrl(rawBaseUrl);
-			const id = isDefaultScheme
-				? deriveDefaultInstanceId(
-						baseUrl,
-						existingInstanceIds,
-						reservedProviderIds,
-					)
-				: normalizeInstanceId(rawId, reservedProviderIds);
+			const id =
+				isDefaultScheme && !rawId.trim()
+					? deriveDefaultInstanceId(
+							baseUrl,
+							existingInstanceIds,
+							reservedProviderIds,
+						)
+					: normalizeInstanceId(rawId, reservedProviderIds);
 			instance = {
 				id,
-				name: isDefaultScheme ? id : normalizeInstanceName(rawName, id),
+				name: normalizeInstanceName(rawName, id),
 				scheme,
 				baseUrl,
 			};

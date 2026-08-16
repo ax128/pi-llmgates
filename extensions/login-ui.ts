@@ -100,6 +100,11 @@ export const COMPAT_BOOTSTRAP_LOGIN_UI = {
 		message: "实例 Provider ID（用于 /login <id>，须手动指定）",
 		placeholder: "work-newapi",
 	},
+	/** Same step for the generic gateway, where a blank id is derived from hostname. */
+	instanceIdDerivable: {
+		message: "实例 Provider ID（用于 /login <id>；留空则按网关 hostname 自动生成）",
+		placeholder: "home-gateway",
+	},
 	displayName: {
 		message: "实例显示名称（留空则使用 ID）",
 		placeholder: "工作 NewAPI",
@@ -114,9 +119,10 @@ export const COMPAT_BOOTSTRAP_LOGIN_UI = {
 	validating: "正在验证凭证…",
 } as const;
 
-/** Intro shown once the generic `default` gateway type is chosen (id is derived). */
+/** Intro shown once the generic `default` gateway type is chosen. */
 export const COMPAT_DEFAULT_LOGIN_INTRO =
-	"正在添加通用网关。请依次输入网关地址与 API Key；将自动探测 /v1/models 并注册实例。";
+	"正在添加通用网关：不限定网关种类，只要能探测到 /v1/models 即可注册，且可添加多个。" +
+	"请依次填写实例 ID（留空则按 hostname 自动生成）、显示名称（可留空）、网关地址与 API Key。";
 
 export function compatInstanceLoginUi(instanceName: string) {
 	return {
