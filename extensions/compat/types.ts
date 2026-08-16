@@ -11,7 +11,16 @@ export interface CompatInstance {
 	baseUrl: string;
 }
 
-export const BOOTSTRAP_PROVIDER_ID = "llmgates-2api";
+/**
+ * The `/login` entry that registers gateway instances. It owned the `-2api`
+ * suffix only to stay clear of the built-in core provider, which used `llmgates`;
+ * with core gone there is one LLMGates entry and it takes the plain id.
+ *
+ * pi persists an inert marker credential (`access: "managed"`) under this id, so
+ * the first successful login also overwrites whatever the removed core left in
+ * `auth.json` under `llmgates` — including its plaintext key.
+ */
+export const BOOTSTRAP_PROVIDER_ID = "llmgates";
 export const COMPAT_CONFIG_FILE = LLMGATES_COMPAT_CONFIG_FILE;
 
 export const BASE_URL_PLACEHOLDER_FOR_SCHEME = {
@@ -33,6 +42,8 @@ export function normalizeInstanceId(raw: string, extraReserved: Iterable<string>
 	const reserved = new Set([
 		...Array.from(BUILTIN_PROVIDER_IDS, (providerId) => providerId.toLowerCase()),
 		"llmgates",
+		// Keep the pre-0.3.0 bootstrap id reserved so an instance cannot claim it.
+		"llmgates-2api",
 		BOOTSTRAP_PROVIDER_ID,
 		...Array.from(extraReserved, (providerId) => providerId.toLowerCase()),
 	]);

@@ -19,7 +19,7 @@ describe("compat constants", () => {
 			cpa: "http://127.0.0.1:8317/v1",
 			default: "https://your-gateway-host/v1",
 		});
-		expect(BOOTSTRAP_PROVIDER_ID).toBe("llmgates-2api");
+		expect(BOOTSTRAP_PROVIDER_ID).toBe("llmgates");
 		expect(COMPAT_CONFIG_FILE).toBe("llmgates/2api.json");
 	});
 });
@@ -33,8 +33,8 @@ describe("normalizeInstanceId", () => {
 
 	it.each([
 		["builtin", "OpEnAi", []],
-		["default llmgates", "LLMGATES", []],
-		["bootstrap", "LLMGates-2API", []],
+		["bootstrap", "LLMGATES", []],
+		["pre-0.3.0 bootstrap", "LLMGates-2API", []],
 		["live llmgates provider", "My-Live-Gate", ["my-live-gate"]],
 	])("rejects the reserved %s ID case-insensitively", (_category, raw, extraReserved) => {
 		expect(() => normalizeInstanceId(raw, extraReserved)).toThrow(/reserved|builtin/i);
