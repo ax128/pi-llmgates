@@ -139,7 +139,7 @@ describe("compat lifecycle", () => {
 			expect(() => registerCompatGateways(pi.pi, agentDir, { createProvider: fakes.createProvider })).toThrow(
 				/compat initialization/i,
 			);
-			expect(pi.registered.map((provider) => provider.id)).toEqual(["llmgates-2api"]);
+			expect(pi.registered.map((provider) => provider.id)).toEqual(["llmgates"]);
 			expect(pi.unregistered).toEqual(["gateway-a"]);
 			expect(fakes.providers.get("gateway-a")!.shutdown).toHaveBeenCalledOnce();
 		} finally {
@@ -158,7 +158,7 @@ describe("compat lifecycle", () => {
 			});
 			const registration = registerCompatGateways(pi.pi, agentDir);
 			expect(registration.providers.size).toBe(0);
-			expect(pi.registered.map((provider) => provider.id)).toEqual(["llmgates-2api"]);
+			expect(pi.registered.map((provider) => provider.id)).toEqual(["llmgates"]);
 			expect(warn).toHaveBeenCalledOnce();
 			expect(warn.mock.calls.flat().join(" ")).toMatch(/Skipping gateway-a.*OAuth/i);
 		} finally {
@@ -296,7 +296,7 @@ describe("compat lifecycle", () => {
 			const registration = registerCompatGateways(pi.pi, agentDir);
 
 			expect(registration.providers.size).toBe(0);
-			expect(pi.registered.map((provider) => provider.id)).toEqual(["llmgates-2api"]);
+			expect(pi.registered.map((provider) => provider.id)).toEqual(["llmgates"]);
 			expect(warn).toHaveBeenCalledOnce();
 			expect(warn.mock.calls[0]?.join(" ")).toMatch(/Skipping gateway-a.*OAuth/i);
 		} finally {
@@ -324,7 +324,7 @@ describe("compat lifecycle", () => {
 			const registration = registerCompatGateways(pi.pi, agentDir);
 			const provider = registration.providers.get(instance.id)!;
 			expect(provider).toBeDefined();
-			expect(pi.registered.map((item) => item.id)).toEqual(["llmgates-2api", instance.id]);
+			expect(pi.registered.map((item) => item.id)).toEqual(["llmgates", instance.id]);
 
 			writeJson(join(agentDir, "llmgates/2api.json"), { broken: true });
 			await provider.refreshModels!({ credential: auth, store: createMemoryStore(), allowNetwork: false });
