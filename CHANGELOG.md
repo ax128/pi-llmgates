@@ -6,7 +6,7 @@
 
 > 0.2.11 及更早的条目是在 0.2.11 发布后，依据 git 历史与各版本 tag 回补的；只收录对使用者可见的变更，纯内部重构与测试补强不单列。
 
-## [Unreleased]
+## [0.3.0] — 2026-08-17
 
 ### 移除
 
@@ -153,7 +153,7 @@
 
 0.1.x 的历史未回补，请查阅 git log 与各 `v0.1.*` tag。
 
-[Unreleased]: https://github.com/ax128/pi-llmgates/compare/v0.2.13...HEAD
+[0.3.0]: https://github.com/ax128/pi-llmgates/compare/v0.2.13...v0.3.0
 [0.2.13]: https://github.com/ax128/pi-llmgates/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/ax128/pi-llmgates/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/ax128/pi-llmgates/compare/v0.2.10...v0.2.11
