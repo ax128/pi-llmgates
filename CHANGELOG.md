@@ -28,6 +28,7 @@
 
 - 登录时实例 ID 与已有实例冲突的报错改为中文（此前直出英文原文）。该报错发生在写盘阶段、在重试循环之外，会直接结束整个登录，是用户看到的最后一句话；通用网关改为可自行输入 ID 后也会走到这条路径，不再只有 NewAPI / CLIProxyAPI / Sub2API 才可能遇到。
 - 修复 async / background 子代理用量在真实环境全部漏计的问题。pi-subagents 用 `getSessionFile() ?? getSessionId()` 标识会话，发出的 `subagent:async-complete` / `subagent:foreground-complete` 事件里 `sessionId` 实际是**会话文件完整路径**，而本扩展此前用 `sessionManager.getSessionId()`（裸 UUID）做严格相等比对，事件全部被静默丢弃——async 子代理的调用次数 / token / 费用一次都计不进 `/calls` 与状态行（同步前台子代理不受影响）。现在同时接受裸 ID、会话文件路径及其 basename（`<timestamp>_<sessionId>.jsonl`）三种身份形式。
+- 修复上一条修完后 async 子代理用量**仍然**一分不计的问题。run 级 id 与 child 级 id 是两个不同的 id 空间：启动时报的是 `Async workflow [<uuid>]`，而每个 child 写出的产物叫 `<childRunId>_<agent>_<index>_meta.json`（如 `4bc153b8_scout_0_meta.json`）。文件型产物的归属校验比对的是**产物里的 id**，而 bridge 只从完成事件顶层取 run 级 id，于是每个 async child 的 `_meta.json` 都被归属门永久挡掉——偏偏该事件的 payload 不带 usage，那份文件是 child token 的唯一来源，两条路同时断。现在 run 级与 `results[i]` 里的 child 级 id 都会登记为本会话所有；并且归属确立后会立刻补扫一次 meta（child 的 `_meta.json` 通常在完成事件到达前就已落盘，此前那次扫描发生在归属未知时、被丢弃且不再重试）。
 - 修复 `_meta.json` 兑底扫描目录过时：pi-subagents 0.49 起项目级产物从 `.pi-subagents/` 迁到 `.pi/subagents/`，且默认 `artifactDir: "session"` 写到会话文件旁的 `subagent-artifacts/`。现在三类目录都监听/扫描（旧目录保留兼容），中途新建的目录也会在后续扫描时补建 watcher。
 
 ## [0.2.13] — 2026-08-06

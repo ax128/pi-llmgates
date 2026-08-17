@@ -59,25 +59,50 @@ export function registerSubagentUsageBridge(
 	const matchingSession = (data: unknown): data is Record<string, unknown> =>
 		isPlainObject(data) && subagentEventMatchesSession(data.sessionId, sessionIdentity);
 
-	const matchingRunId = (data: Record<string, unknown>): string | null => {
-		const candidate =
-			typeof data.runId === "string"
-				? data.runId
-				: typeof data.id === "string"
-					? data.id
-					: null;
-		if (!candidate || !subagentRunAggregateSourceKey(candidate)) {
+	const normalizeCandidate = (candidate: unknown): string | null => {
+		if (typeof candidate !== "string" || !subagentRunAggregateSourceKey(candidate)) {
 			return null;
 		}
 		return normalizeRunIdForSourceKey(candidate);
+	};
+
+	const matchingRunId = (data: Record<string, unknown>): string | null =>
+		normalizeCandidate(data.runId) ?? normalizeCandidate(data.id);
+
+	/**
+	 * The run-level id and the per-child ids live in different id spaces: a launch
+	 * reports `Async workflow [<uuid>]` while the artifacts each child writes are
+	 * named `<childRunId>_<agent>_<index>_meta.json` with a shorter, unrelated id.
+	 * Ownership is checked against the artifact's id, so harvesting only the
+	 * run-level one leaves every async `_meta.json` permanently gated out — and the
+	 * completion payload carries no usage of its own, so that file is the only
+	 * place the child's tokens exist. Collect both.
+	 */
+	const observedRunIds = (data: Record<string, unknown>): string[] => {
+		const ids = new Set<string>();
+		const runLevel = matchingRunId(data);
+		if (runLevel) {
+			ids.add(runLevel);
+		}
+		if (Array.isArray(data.results)) {
+			for (const item of data.results) {
+				if (!isPlainObject(item)) {
+					continue;
+				}
+				const child = normalizeCandidate(item.runId) ?? normalizeCandidate(item.id);
+				if (child) {
+					ids.add(child);
+				}
+			}
+		}
+		return [...ids];
 	};
 
 	const onAsyncComplete = (data: unknown): void => {
 		if (!matchingSession(data)) {
 			return;
 		}
-		const runId = matchingRunId(data);
-		if (runId) {
+		for (const runId of observedRunIds(data)) {
 			options.onRunObserved?.(runId);
 		}
 		const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity, options.workspaceRoot);

@@ -466,6 +466,11 @@ export default function (pi: ExtensionAPI) {
 				onRunObserved: (runId) => {
 					ensureSubagentWatcher();
 					sessionRunIds.add(runId);
+					// A child's `_meta.json` is usually already on disk by the time its
+					// completion event arrives, so the watcher scan that saw it ran while
+					// ownership was still unknown and dropped it. Rescan now that this run
+					// is owned, or the async child's tokens are lost for the session.
+					scheduleSubagentMetaScan();
 				},
 				onForegroundComplete: scheduleSubagentMetaScan,
 			});
