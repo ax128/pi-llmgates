@@ -102,7 +102,7 @@ pi
 | [NewAPI](https://github.com/QuantumNous/new-api) | `newapi` | 自托管 AI 模型聚合与渠道管理 | [QuantumNous/new-api](https://github.com/QuantumNous/new-api) |
 | [Sub2API](https://github.com/Wei-Shaw/sub2api) | `sub2api` | 订阅配额分发与多账号分流 | [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) |
 | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA） | `cpa` | 本地 CLI 订阅代理，默认端口 `8317` | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) |
-| 通用 OpenAI 兼容网关 | `default` | 任意实现 `GET /v1/models` 的网关；仅需 URL + API Key，实例 ID 由 hostname 自动生成 | — |
+| 通用 OpenAI 兼容网关 | `default` | 任意实现 `GET /v1/models` 的网关，不限定种类、可添加多个；登录步骤与其他类型相同，实例 ID 留空则按 hostname 自动生成 | — |
 
 > **从 0.2.13 及更早版本升级**：本扩展曾内置一个 LLMGates 官方网关（core provider，通过 `/login LLMGates` 或 `LLMGATES_API_KEY` / `LLMGATES_BASE_URL` 环境变量连接）。该内置网关**已移除**，升级后它不再注册，其模型会从 `/model` 列表消失。请用 `/login` →「LLMGates 网关」→ **通用网关**，填入原 base URL 与 API Key，把它重新添加为一个普通实例；原 `llmgates/models.json` 里的出口覆盖不会自动迁移，按需在 `llmgates/2api-models/<新实例 id>.json` 中重建。`auth.json` 里遗留的 `llmgates` 条目会在你**第一次登录成功时**被登录入口自身的惰性标记覆盖（该入口现在就用 `llmgates` 这个 provider id），明文密钥随之消失；`llmgates/config.json` 里的 `apiKey` / `baseUrl` / `providerId` / `providerName` 则不再被读取、也不会自动删除，建议自行删掉，只留 `pricingAutoUpdate`。详见 [CHANGELOG](./CHANGELOG.md)。
 
@@ -119,19 +119,18 @@ pi
 
 选择 **LLMGates 网关**后先选网关类型：**NewAPI** → **CLIProxyAPI** → **Sub2API** → **通用网关**（`default`）。
 
-后续提示顺序：
+后续提示顺序对**四种网关类型一致**：实例 Provider ID → 显示名称（留空则使用 ID）→ Base URL → API Key。
 
-- **NewAPI / CLIProxyAPI / Sub2API**：实例 Provider ID → 显示名称（留空则使用 ID）→ Base URL → API Key
-- **通用网关（default）**：Base URL → API Key（实例 ID 由 URL hostname 自动生成，冲突时追加 `-2` 等后缀）
+唯一区别：**通用网关（default）** 的实例 ID 可以留空，此时按 URL hostname 自动生成（冲突时追加 `-2` 等后缀）；其余三种必须手动指定。
 
 | 字段 | 说明 |
 | --- | --- |
 | scheme | 仅用于标签与 URL 占位提示，占位符**不是**默认值 |
-| 实例 ID | 须手动指定，用于 `/login <id>`、`/model` 与 `/llmgates remove`；1–64 字符，字母/数字开头，可含 `.` `_` `-` |
+| 实例 ID | 用于 `/login <id>`、`/model` 与 `/llmgates remove`；1–64 字符，字母/数字开头，可含 `.` `_` `-`。`default` 类型留空则自动派生，其余须手动指定 |
 | Base URL | 须完整填写，通常以 `/v1` 结尾 |
 | API Key | 须显式输入；以 literal string 存入 `auth.json`，不展开 `!cmd`、`$ENV` 或 `${...}` |
 
-添加成功后会在会话里留下一条含实例 ID 的消息（`default` 类型的 ID 是自动派生的，只能从这里或 `/llmgates list` 读到），随后执行 `/model` 选择该实例下的模型。
+添加成功后会在会话里留下一条含实例 ID 的消息（`default` 类型若留空 ID，派生出的 ID 只能从这里或 `/llmgates list` 读到），随后执行 `/model` 选择该实例下的模型。
 
 运行 `/logout`，在选择器中选择实例的显示名称（可输入实例 ID 搜索），Pi 会删除 `auth.json` 凭证；本扩展监听该文件变更并异步删除对应的 registry 记录、停止 provider 和 endpoint override。该实例不会保留为可恢复配置；若当前进程无法监听文件，执行 `/reload` 或重启会完成清理。
 

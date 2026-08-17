@@ -29,6 +29,19 @@ export function translateLoginError(message: string): string {
 	if (trimmed.startsWith("Instance ID must be")) {
 		return "实例 ID 须为 1–64 位 ASCII 字母、数字、点、下划线或连字符，且以字母或数字开头";
 	}
+	// Reachable for every scheme now that the generic gateway also takes a typed id.
+	if (/^Instance ID ".+" already exists/.test(trimmed)) {
+		return trimmed.replace(
+			/^Instance ID "(.+?)" already exists[\s\S]*$/,
+			"实例 ID「$1」已存在，请换一个；若刚 /logout 过它，等清理完成或执行 /reload 后重试",
+		);
+	}
+	if (/^Auth entry for instance ID ".+" already exists$/.test(trimmed)) {
+		return trimmed.replace(
+			/^Auth entry for instance ID "(.+)" already exists$/,
+			"auth.json 中已存在实例 ID「$1」的凭证，请换一个 ID，或先清理该条目",
+		);
+	}
 	if (trimmed === "Invalid compatibility scheme") return "请选择有效的网关类型";
 	if (trimmed === "Base URL is required") return "网关地址不能为空";
 	if (trimmed === "API key is required") return "API Key 不能为空";
@@ -100,6 +113,11 @@ export const COMPAT_BOOTSTRAP_LOGIN_UI = {
 		message: "实例 Provider ID（用于 /login <id>，须手动指定）",
 		placeholder: "work-newapi",
 	},
+	/** Same step for the generic gateway, where a blank id is derived from hostname. */
+	instanceIdDerivable: {
+		message: "实例 Provider ID（用于 /login <id>；留空则按网关 hostname 自动生成）",
+		placeholder: "home-gateway",
+	},
 	displayName: {
 		message: "实例显示名称（留空则使用 ID）",
 		placeholder: "工作 NewAPI",
@@ -114,9 +132,10 @@ export const COMPAT_BOOTSTRAP_LOGIN_UI = {
 	validating: "正在验证凭证…",
 } as const;
 
-/** Intro shown once the generic `default` gateway type is chosen (id is derived). */
+/** Intro shown once the generic `default` gateway type is chosen. */
 export const COMPAT_DEFAULT_LOGIN_INTRO =
-	"正在添加通用网关。请依次输入网关地址与 API Key；将自动探测 /v1/models 并注册实例。";
+	"正在添加通用网关：不限定网关种类，只要能探测到 /v1/models 即可注册，且可添加多个。" +
+	"请依次填写实例 ID（留空则按 hostname 自动生成）、显示名称（可留空）、网关地址与 API Key。";
 
 export function compatInstanceLoginUi(instanceName: string) {
 	return {

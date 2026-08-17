@@ -185,6 +185,8 @@ describe("compat bootstrap transaction", () => {
 				fetchImpl: successfulFetch(),
 			});
 			const bootstrap = harness.registered.get(BOOTSTRAP_PROVIDER_ID)!;
+			// The collision ends the login instead of re-prompting, so this message is
+			// the last thing the user sees — it is localized like the rest of the flow.
 			await expect(
 				bootstrapLogin(bootstrap, [
 					"newapi",
@@ -193,11 +195,47 @@ describe("compat bootstrap transaction", () => {
 					BASE_URL,
 					"new-key",
 				]),
-			).rejects.toThrow(/registry|already/i);
+			).rejects.toThrow(/实例 ID「orphan」已存在/);
 			expect(listInstances(agentDir)).toEqual([retained]);
 			expect(
 				JSON.parse(readFileSync(join(agentDir, "auth.json"), "utf8")),
 			).toEqual({});
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("rejects a typed default-gateway id that an instance already holds", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const harness = createPi();
+		harness.bindAgentDir(agentDir);
+		try {
+			const retained = {
+				id: "home-gateway",
+				name: "Keep",
+				scheme: "default" as const,
+				baseUrl: BASE_URL,
+			};
+			writeJson(join(agentDir, "llmgates/2api.json"), {
+				instances: [retained],
+			});
+			writeJson(join(agentDir, "auth.json"), {});
+			registerCompatGateways(harness.pi, agentDir, {
+				fetchImpl: successfulFetch(),
+			});
+			const bootstrap = harness.registered.get(BOOTSTRAP_PROVIDER_ID)!;
+			// Typing the id is new for `default`, so this collision is newly reachable:
+			// a blank id still derives a free one instead.
+			await expect(
+				bootstrapLogin(bootstrap, [
+					"default",
+					"Home-Gateway",
+					"",
+					BASE_URL,
+					"new-key",
+				]),
+			).rejects.toThrow(/实例 ID「Home-Gateway」已存在/);
+			expect(listInstances(agentDir)).toEqual([retained]);
 		} finally {
 			cleanup();
 		}
@@ -544,9 +582,11 @@ describe("runCompatInstanceLogin", () => {
 		expect(onValidated).toHaveBeenCalledOnce();
 	});
 
-	it("adds a default gateway with only baseUrl and apiKey and derives the instance id", async () => {
+	it("derives the default gateway instance id from the hostname when the id is left blank", async () => {
 		const interaction = scriptedAuthInteraction([
 			"default",
+			"",
+			"",
 			"https://api.foo.com/v1",
 			"default-key",
 		]);
@@ -559,10 +599,12 @@ describe("runCompatInstanceLogin", () => {
 			now: () => NOW,
 			onValidated,
 		});
-		// The generic flow skips the id/name prompts, so its intro must say so.
+		// The generic gateway walks the same four steps as every other scheme.
 		expect(interaction.messages[0]).toBe(COMPAT_DEFAULT_LOGIN_INTRO);
 		expect(interaction.prompts.map((prompt) => prompt.type)).toEqual([
 			"select",
+			"text",
+			"text",
 			"text",
 			"secret",
 		]);
@@ -580,8 +622,66 @@ describe("runCompatInstanceLogin", () => {
 		expect(interaction.messages.at(-1)).toContain("api.foo.com");
 	});
 
+	it("keeps the id and display name a default gateway login supplies", async () => {
+		const interaction = scriptedAuthInteraction([
+			"default",
+			"home-gateway",
+			"家里的网关",
+			"https://api.foo.com/v1",
+			"default-key",
+		]);
+		const onValidated = vi.fn(async () => {});
+		await runCompatInstanceLogin(interaction, {
+			fetchImpl: vi.fn(
+				async () => new Response(JSON.stringify([{ id: "gpt-4o" }])),
+			),
+			now: () => NOW,
+			onValidated,
+		});
+		expect(onValidated).toHaveBeenCalledWith(
+			expect.objectContaining({
+				instance: {
+					id: "home-gateway",
+					name: "家里的网关",
+					scheme: "default",
+					baseUrl: "https://api.foo.com/v1",
+				},
+			}),
+		);
+	});
+
+	it("adds a second default gateway on the same host under its own id", async () => {
+		const interaction = scriptedAuthInteraction([
+			"default",
+			"",
+			"",
+			"https://api.foo.com/v1",
+			"second-key",
+		]);
+		const onValidated = vi.fn(async () => {});
+		await runCompatInstanceLogin(interaction, {
+			fetchImpl: vi.fn(
+				async () => new Response(JSON.stringify([{ id: "gpt-4o" }])),
+			),
+			now: () => NOW,
+			resolveExistingInstanceIds: () => ["api.foo.com"],
+			onValidated,
+		});
+		expect(onValidated).toHaveBeenCalledWith(
+			expect.objectContaining({
+				instance: expect.objectContaining({ id: "api.foo.com-2" }),
+			}),
+		);
+	});
+
 	it("reports model probe failures for default gateways", async () => {
-		const attemptAnswers = ["default", "https://api.foo.com/v1", "bad-key"];
+		const attemptAnswers = [
+			"default",
+			"",
+			"",
+			"https://api.foo.com/v1",
+			"bad-key",
+		];
 		const interaction = scriptedAuthInteraction(
 			Array.from({ length: 5 }, () => attemptAnswers).flat(),
 		);
