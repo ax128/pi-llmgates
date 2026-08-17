@@ -26,6 +26,7 @@
 
 ### 修复
 
+- 登录时实例 ID 与已有实例冲突的报错改为中文（此前直出英文原文）。该报错发生在写盘阶段、在重试循环之外，会直接结束整个登录，是用户看到的最后一句话；通用网关改为可自行输入 ID 后也会走到这条路径，不再只有 NewAPI / CLIProxyAPI / Sub2API 才可能遇到。
 - 修复 async / background 子代理用量在真实环境全部漏计的问题。pi-subagents 用 `getSessionFile() ?? getSessionId()` 标识会话，发出的 `subagent:async-complete` / `subagent:foreground-complete` 事件里 `sessionId` 实际是**会话文件完整路径**，而本扩展此前用 `sessionManager.getSessionId()`（裸 UUID）做严格相等比对，事件全部被静默丢弃——async 子代理的调用次数 / token / 费用一次都计不进 `/calls` 与状态行（同步前台子代理不受影响）。现在同时接受裸 ID、会话文件路径及其 basename（`<timestamp>_<sessionId>.jsonl`）三种身份形式。
 - 修复 `_meta.json` 兑底扫描目录过时：pi-subagents 0.49 起项目级产物从 `.pi-subagents/` 迁到 `.pi/subagents/`，且默认 `artifactDir: "session"` 写到会话文件旁的 `subagent-artifacts/`。现在三类目录都监听/扫描（旧目录保留兼容），中途新建的目录也会在后续扫描时补建 watcher。
 

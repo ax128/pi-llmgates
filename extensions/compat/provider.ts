@@ -345,7 +345,17 @@ export async function runCompatInstanceLogin(
 			expires: now() + CREDENTIAL_TTL_MS,
 			validationNonce: randomBytes(16).toString("hex"),
 		};
-		await options.onValidated({ instance, credential, initialCatalog });
+		// Persistence runs outside the retry loop: a duplicate id ends the login
+		// rather than re-prompting. That verdict is the last thing the user sees, so
+		// translate it — the rest of this flow is localized, and a typed id can now
+		// collide under every scheme, not just the three that always asked for one.
+		try {
+			await options.onValidated({ instance, credential, initialCatalog });
+		} catch (error) {
+			if (error instanceof DOMException && error.name === "AbortError") throw error;
+			const failure = error instanceof Error ? error : new Error(String(error));
+			throw new Error(translateLoginError(failure.message), { cause: failure });
+		}
 		// The `default` scheme derives the instance id from the host, so the user
 		// cannot know it otherwise — and every scheme needs the id for `/login <id>`.
 		interaction.notify({

@@ -29,6 +29,19 @@ export function translateLoginError(message: string): string {
 	if (trimmed.startsWith("Instance ID must be")) {
 		return "实例 ID 须为 1–64 位 ASCII 字母、数字、点、下划线或连字符，且以字母或数字开头";
 	}
+	// Reachable for every scheme now that the generic gateway also takes a typed id.
+	if (/^Instance ID ".+" already exists/.test(trimmed)) {
+		return trimmed.replace(
+			/^Instance ID "(.+?)" already exists[\s\S]*$/,
+			"实例 ID「$1」已存在，请换一个；若刚 /logout 过它，等清理完成或执行 /reload 后重试",
+		);
+	}
+	if (/^Auth entry for instance ID ".+" already exists$/.test(trimmed)) {
+		return trimmed.replace(
+			/^Auth entry for instance ID "(.+)" already exists$/,
+			"auth.json 中已存在实例 ID「$1」的凭证，请换一个 ID，或先清理该条目",
+		);
+	}
 	if (trimmed === "Invalid compatibility scheme") return "请选择有效的网关类型";
 	if (trimmed === "Base URL is required") return "网关地址不能为空";
 	if (trimmed === "API key is required") return "API Key 不能为空";

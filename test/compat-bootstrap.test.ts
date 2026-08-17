@@ -185,6 +185,8 @@ describe("compat bootstrap transaction", () => {
 				fetchImpl: successfulFetch(),
 			});
 			const bootstrap = harness.registered.get(BOOTSTRAP_PROVIDER_ID)!;
+			// The collision ends the login instead of re-prompting, so this message is
+			// the last thing the user sees — it is localized like the rest of the flow.
 			await expect(
 				bootstrapLogin(bootstrap, [
 					"newapi",
@@ -193,11 +195,47 @@ describe("compat bootstrap transaction", () => {
 					BASE_URL,
 					"new-key",
 				]),
-			).rejects.toThrow(/registry|already/i);
+			).rejects.toThrow(/实例 ID「orphan」已存在/);
 			expect(listInstances(agentDir)).toEqual([retained]);
 			expect(
 				JSON.parse(readFileSync(join(agentDir, "auth.json"), "utf8")),
 			).toEqual({});
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("rejects a typed default-gateway id that an instance already holds", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const harness = createPi();
+		harness.bindAgentDir(agentDir);
+		try {
+			const retained = {
+				id: "home-gateway",
+				name: "Keep",
+				scheme: "default" as const,
+				baseUrl: BASE_URL,
+			};
+			writeJson(join(agentDir, "llmgates/2api.json"), {
+				instances: [retained],
+			});
+			writeJson(join(agentDir, "auth.json"), {});
+			registerCompatGateways(harness.pi, agentDir, {
+				fetchImpl: successfulFetch(),
+			});
+			const bootstrap = harness.registered.get(BOOTSTRAP_PROVIDER_ID)!;
+			// Typing the id is new for `default`, so this collision is newly reachable:
+			// a blank id still derives a free one instead.
+			await expect(
+				bootstrapLogin(bootstrap, [
+					"default",
+					"Home-Gateway",
+					"",
+					BASE_URL,
+					"new-key",
+				]),
+			).rejects.toThrow(/实例 ID「Home-Gateway」已存在/);
+			expect(listInstances(agentDir)).toEqual([retained]);
 		} finally {
 			cleanup();
 		}
