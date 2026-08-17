@@ -67,7 +67,7 @@ git push origin "v$VERSION"                          # 若尚未推送 tag
 
 ### D. 发布成功后（Agent → 用户）
 
-**必须**回复安装示例（把 `VERSION` 换成真实版本，如 `0.3.0`）：
+**必须**回复安装示例（把 `VERSION` 换成真实版本，如 `0.3.1`）：
 
 ```bash
 # 最新版
@@ -117,7 +117,7 @@ test -n "$NPM_TOKEN" || { echo "missing NPM_TOKEN in .env"; exit 1; }
 pi install npm:@llmgates_api/pi-llmgates-provider
 
 # 固定版本（发布后）
-pi install npm:@llmgates_api/pi-llmgates-provider@0.3.0
+pi install npm:@llmgates_api/pi-llmgates-provider@0.3.1
 
 # 仅当前项目
 pi install -l npm:@llmgates_api/pi-llmgates-provider
@@ -136,7 +136,7 @@ npm view @llmgates_api/pi-llmgates-provider versions --json
 
 ```bash
 pi install npm:@llmgates_api/pi-llmgates-provider
-pi install npm:@llmgates_api/pi-llmgates-provider@0.3.0
+pi install npm:@llmgates_api/pi-llmgates-provider@0.3.1
 ```
 
 然后 `/reload`。peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <0.85.0`。

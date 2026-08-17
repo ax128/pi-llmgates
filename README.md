@@ -44,7 +44,7 @@ pi
 
 ```bash
 pi install npm:@llmgates_api/pi-llmgates-provider          # 最新版
-pi install npm:@llmgates_api/pi-llmgates-provider@0.3.0   # 指定版本
+pi install npm:@llmgates_api/pi-llmgates-provider@0.3.1   # 指定版本
 pi install -l npm:@llmgates_api/pi-llmgates-provider      # 仅当前项目（否则装到 ~/.pi/agent/）
 ```
 
