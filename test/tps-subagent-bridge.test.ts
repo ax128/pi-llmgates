@@ -122,6 +122,53 @@ describe("tps-subagent-bridge", () => {
 		unregister();
 	});
 
+	// Observed against pi-subagents 1.5.1: the launch reports
+	// `Async workflow [0b82240e-f5fe-4ade-9458-8d08018d02e5]` while the child writes
+	// `4bc153b8_scout_0_meta.json`. Ownership is checked against the artifact's id, so
+	// harvesting only the run-level one gated every async child's tokens out — and the
+	// payload below carries no usage, making that file the sole source.
+	it("observes per-child run ids from async-complete, not just the run-level one", () => {
+		const bus = createMemoryEventBus();
+		const observed: string[] = [];
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1",
+			workspaceRoot: BRIDGE_WORKSPACE,
+			onRecords: () => {},
+			onRunObserved: (runId) => observed.push(runId),
+		});
+
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			sessionId: "sess-1",
+			runId: "0b82240e-f5fe-4ade-9458-8d08018d02e5",
+			results: [
+				{ key: "main", ok: true, agent: "scout", runId: "4bc153b8", output: "2+2 equals 4." },
+			],
+		});
+
+		expect(observed).toEqual(["0b82240ef5fe4ade94588d08018d02e5", "4bc153b8"]);
+		unregister();
+	});
+
+	it("does not repeat a per-child run id that equals the run-level one", () => {
+		const bus = createMemoryEventBus();
+		const observed: string[] = [];
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1",
+			workspaceRoot: BRIDGE_WORKSPACE,
+			onRecords: () => {},
+			onRunObserved: (runId) => observed.push(runId),
+		});
+
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			sessionId: "sess-1",
+			runId: UUID_RUN,
+			results: [{ agent: "scout", runId: UUID_RUN }, { agent: "scout", id: "4bc153b8" }],
+		});
+
+		expect(observed).toEqual(["1d706627aada48289207bbab8fad3864", "4bc153b8"]);
+		unregister();
+	});
+
 	it("delivers async-complete usage when session matches but runId is missing or invalid", () => {
 		const bus = createMemoryEventBus();
 		const batches: SubagentUsageRecord[][] = [];
