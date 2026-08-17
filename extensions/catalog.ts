@@ -50,6 +50,9 @@ export interface GatewayModel {
 	max_output_tokens?: number | null;
 	capability_tags?: string[];
 	provider_id?: string;
+	/** Endpoint the gateway itself declares for this model; `inference_endpoint` wins. */
+	inference_endpoint?: string;
+	web_chat_endpoint?: string;
 	input_modalities?: string[];
 	// Deliberately never read: thinking levels are the fixed UNIVERSAL_THINKING_LEVEL_MAP
 	// for every model (README「思考等级」; asserted by test/compat-catalog.test.ts).

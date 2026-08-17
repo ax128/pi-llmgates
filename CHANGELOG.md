@@ -6,6 +6,13 @@
 
 > 0.2.11 及更早的条目是在 0.2.11 发布后，依据 git 历史与各版本 tag 回补的；只收录对使用者可见的变更，纯内部重构与测试补强不单列。
 
+## [未发布]
+
+### 修复
+
+- **网关实例重新按网关自报的出口路由模型。** 映射优先级改为 per-model override > `defaults` > 网关的 `inference_endpoint` / `web_chat_endpoint` > `chat_completions`（只认 `chat_completions` / `messages` / `responses` 及其别名，其余值忽略并回落，绝不进 `toPiApiType` 的 responses 默认分支；仍然不按模型 id 猜协议）。0.3.0 之前读这个字段的是 core provider，它随 core 一起被删掉，而升级指引让这些用户把同一个网关改为 `default` 实例重新添加——于是网关明说走 `messages` 的模型（例如 `kiro/claude-*`）被一律按 `chat_completions` 注册，且因为原先是自动路由、用户手上并没有对应的 override 可迁移。
+- **网关实例不再注册图像 / 视频生成模型。** `image_generation` / `image_edit` / `video_*` 能力标签的模型 coding agent 驱动不了，core 一直用 `isPiSelectableModel` 挡掉，兼容实例的 mapper 漏了这一步，于是 `/model` 里多出若干选了也用不了的条目。
+
 ## [0.3.0] — 2026-08-17
 
 ### 移除
