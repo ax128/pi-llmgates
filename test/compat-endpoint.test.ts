@@ -103,17 +103,19 @@ async function refreshOnce(
 }
 
 describe("2api per-model endpoint override", () => {
-	it("keeps openai-completions for every model when no override file exists", async () => {
+	it("keeps openai-completions for undeclared models and honours a declared endpoint", async () => {
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
-			// Includes a Claude-ish id and an explicit upstream inference_endpoint:
-			// An id-shape heuristic would map both away from chat_completions, and using
-			// it here would change behavior for users who configured nothing at all.
+			// A Claude-ish id the gateway says nothing about stays on chat_completions:
+			// an id-shape heuristic would change behavior for users who configured
+			// nothing at all. An endpoint the gateway states for itself is not a
+			// heuristic, so it routes even with no override file.
 			const provider = makeProvider(agentDir, {
 				payload: [
 					{ id: "claude-sonnet-5" },
 					{ id: "gpt-5.6-sol", inference_endpoint: "responses" },
+					{ id: "kiro/claude-opus-5", web_chat_endpoint: "messages" },
 					{ id: "plain-model" },
 				],
 			});
@@ -122,7 +124,8 @@ describe("2api per-model endpoint override", () => {
 
 			expect(provider.getModels().map((model) => [model.id, model.api])).toEqual([
 				["claude-sonnet-5", "openai-completions"],
-				["gpt-5.6-sol", "openai-completions"],
+				["gpt-5.6-sol", "openai-responses"],
+				["kiro/claude-opus-5", "anthropic-messages"],
 				["plain-model", "openai-completions"],
 			]);
 		} finally {

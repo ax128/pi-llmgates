@@ -91,6 +91,86 @@ describe("mapCompatModelsPayload", () => {
 		expect(models[0]?.compat).toBeUndefined();
 	});
 
+	it("routes by the endpoint the gateway declares for the model", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{ id: "kiro/claude-opus-5", web_chat_endpoint: "messages" },
+				{ id: "gpt-image-mini", web_chat_endpoint: "responses" },
+				{ id: "glm-5.3", web_chat_endpoint: "chat_completions" },
+				{ id: "declared-by-inference", inference_endpoint: "messages" },
+				// inference_endpoint is the more specific field: it wins outright.
+				{ id: "both-declared", inference_endpoint: "responses", web_chat_endpoint: "messages" },
+			],
+			OPTIONS,
+		);
+
+		expect(models.map(({ id, api, baseUrl }) => ({ id, api, baseUrl }))).toEqual([
+			{ id: "kiro/claude-opus-5", api: "anthropic-messages", baseUrl: "https://gateway.example" },
+			{ id: "gpt-image-mini", api: "openai-responses", baseUrl: OPTIONS.inferenceBaseUrl },
+			{ id: "glm-5.3", api: "openai-completions", baseUrl: OPTIONS.inferenceBaseUrl },
+			{ id: "declared-by-inference", api: "anthropic-messages", baseUrl: "https://gateway.example" },
+			{ id: "both-declared", api: "openai-responses", baseUrl: OPTIONS.inferenceBaseUrl },
+		]);
+		// Claude routed to messages by the gateway's own declaration still gets the
+		// adaptive-thinking metadata that only applies on that transport.
+		expect(models[0]?.compat).toEqual({ forceAdaptiveThinking: true, supportsTemperature: false });
+	});
+
+	it("keeps chat_completions when the declared endpoint is missing or unroutable", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{ id: "no-declaration" },
+				// An unknown string must not reach toPiApiType, whose default branch
+				// would silently route it to openai-responses.
+				{ id: "unknown-endpoint", web_chat_endpoint: "web_ui" },
+				{ id: "blank-endpoint", inference_endpoint: "   " },
+				{ id: "non-string-endpoint", web_chat_endpoint: 7 as unknown as string },
+			],
+			OPTIONS,
+		);
+
+		expect(models.every((model) => model.api === "openai-completions")).toBe(true);
+		expect(models.map((model) => model.id)).toEqual([
+			"no-declaration",
+			"unknown-endpoint",
+			"blank-endpoint",
+			"non-string-endpoint",
+		]);
+	});
+
+	it("lets a per-model override beat the gateway declaration", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{ id: "gpt-5.6-sol", web_chat_endpoint: "chat_completions" },
+				{ id: "kiro/claude-opus-5", web_chat_endpoint: "messages" },
+			],
+			{
+				...OPTIONS,
+				endpointOverride: (id) => (id === "gpt-5.6-sol" ? "responses" : undefined),
+			},
+		);
+
+		expect(models.map(({ id, api }) => ({ id, api }))).toEqual([
+			{ id: "gpt-5.6-sol", api: "openai-responses" },
+			{ id: "kiro/claude-opus-5", api: "anthropic-messages" },
+		]);
+	});
+
+	it("drops image and video generation models the agent cannot drive", () => {
+		const { models, catalogRefs } = mapCompatModelsPayload(
+			[
+				{ id: "gpt-image-2", capability_tags: ["image_generation", "image_edit"] },
+				{ id: "grok-imagine-video-1.5", capability_tags: ["video_generation", "video_t2v"] },
+				{ id: "glm-5.3", capability_tags: ["chat"] },
+				{ id: "untagged" },
+			],
+			OPTIONS,
+		);
+
+		expect(models.map((model) => model.id)).toEqual(["glm-5.3", "untagged"]);
+		expect(catalogRefs.map((ref) => ref.id)).toEqual(["glm-5.3", "untagged"]);
+	});
+
 	it.each([
 		["array", [{ id: "array-model" }]],
 		["data", { data: [{ id: "data-model" }] }],

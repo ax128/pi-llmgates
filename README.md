@@ -104,9 +104,9 @@ pi
 | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA） | `cpa` | 本地 CLI 订阅代理，默认端口 `8317` | [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) |
 | 通用 OpenAI 兼容网关 | `default` | 任意实现 `GET /v1/models` 的网关，不限定种类、可添加多个；登录步骤与其他类型相同，实例 ID 留空则按 hostname 自动生成 | — |
 
-> **从 0.2.13 及更早版本升级**：本扩展曾内置一个 LLMGates 官方网关（core provider，通过 `/login LLMGates` 或 `LLMGATES_API_KEY` / `LLMGATES_BASE_URL` 环境变量连接）。该内置网关**已移除**，升级后它不再注册，其模型会从 `/model` 列表消失。请用 `/login` →「LLMGates 网关」→ **通用网关**，填入原 base URL 与 API Key，把它重新添加为一个普通实例；原 `llmgates/models.json` 里的出口覆盖不会自动迁移，按需在 `llmgates/2api-models/<新实例 id>.json` 中重建。`auth.json` 里遗留的 `llmgates` 条目会在你**第一次登录成功时**被登录入口自身的惰性标记覆盖（该入口现在就用 `llmgates` 这个 provider id），明文密钥随之消失；`llmgates/config.json` 里的 `apiKey` / `baseUrl` / `providerId` / `providerName` 则不再被读取、也不会自动删除，建议自行删掉，只留 `pricingAutoUpdate`。详见 [CHANGELOG](./CHANGELOG.md)。
+> **从 0.2.13 及更早版本升级**：本扩展曾内置一个 LLMGates 官方网关（core provider，通过 `/login LLMGates` 或 `LLMGATES_API_KEY` / `LLMGATES_BASE_URL` 环境变量连接）。该内置网关**已移除**，升级后它不再注册，其模型会从 `/model` 列表消失。请用 `/login` →「LLMGates 网关」→ **通用网关**，填入原 base URL 与 API Key，把它重新添加为一个普通实例；原 `llmgates/models.json` 里的出口覆盖不会自动迁移，按需在 `llmgates/2api-models/<新实例 id>.json` 中重建（网关自报出口的模型仍会自动路由，只有你当初手工改判过的模型才需要重建）。`auth.json` 里遗留的 `llmgates` 条目会在你**第一次登录成功时**被登录入口自身的惰性标记覆盖（该入口现在就用 `llmgates` 这个 provider id），明文密钥随之消失；`llmgates/config.json` 里的 `apiKey` / `baseUrl` / `providerId` / `providerName` 则不再被读取、也不会自动删除，建议自行删掉，只留 `pricingAutoUpdate`。详见 [CHANGELOG](./CHANGELOG.md)。
 
-同一 scheme 可添加多个实例（例如 `work-newapi` 与 `home-newapi`，或两个不同 hostname 的 `default` 实例），不同 scheme 也可并存。`default` 同一 hostname 重复添加时会自动分配 `-2`、`-3` 后缀。Base URL 可不写 `/v1`，扩展会自动规范到 `/v1/models` 探测。默认所有 scheme 共用 OpenAI Chat Completions 兼容 adapter，不会按 scheme 或模型名自动切换协议；如需改用 `messages` / `responses`，用 `/endpoint` 或 `/endpoint-setting` 显式配置（见 [模型出口](#模型出口endpoint--api)）。
+同一 scheme 可添加多个实例（例如 `work-newapi` 与 `home-newapi`，或两个不同 hostname 的 `default` 实例），不同 scheme 也可并存。`default` 同一 hostname 重复添加时会自动分配 `-2`、`-3` 后缀。Base URL 可不写 `/v1`，扩展会自动规范到 `/v1/models` 探测。所有 scheme 共用同一套映射：网关在 `/v1/models` 里逐模型自报 `inference_endpoint` / `web_chat_endpoint` 时按它路由（`messages` → Anthropic Messages，`responses` → OpenAI Responses），没自报的一律走 OpenAI Chat Completions；不按 scheme 或模型名猜协议。需要改判时用 `/endpoint` 或 `/endpoint-setting` 显式覆盖（见 [模型出口](#模型出口endpoint--api)）。
 
 ## 添加与管理实例
 
@@ -201,7 +201,7 @@ pi
 
 1. 在 `/login` 中提供统一入口「LLMGates 网关」，用于添加 NewAPI / CLIProxyAPI / Sub2API / 通用网关实例
 2. 每个实例注册为独立 provider，通过 `GET /v1/models` 校验凭证并拉取目录
-3. 将网关 catalog 映射为 pi 模型，按模型设置 `api`（`chat_completions` 默认，可覆盖为 `messages` / `responses`）
+3. 将网关 catalog 映射为 pi 模型，按模型设置 `api`（优先用网关自报的出口，未自报时为 `chat_completions`，可按模型覆盖为 `messages` / `responses`）；图像 / 视频生成模型不注册
 4. `/balance` — 按实例探测网关额度
 5. TUI 扩展状态行：agent **运行中**仅 `Turn 17m.19c.$1.78`；**跑完或取消 settle 后**同时展示 `All 1h1m.100c, Turn 30m.20c.$10.10`（All 为 session 累计，Turn 为本轮；下一轮开始时恢复仅 Turn）。session 费用可通过 `/calls` → This session 查看。父会话 assistant 用量在 `message_end` 时统计；同步 pi `subagent` / Cursor `Task` 工具结果与 `_meta.json` 汇总（扫描 `.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧版 `.pi-subagents/artifacts` 及会话文件旁的 `subagent-artifacts/`）计入同一计数器；async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。事件里的 `sessionId` 可能是裸 ID，也可能是会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与 Cursor `Task` 仍统计）。用量聚合在后台任务链中执行，不阻塞 agent 循环。计数只在交互式父会话（TUI）进行，因此 rpc 会话里 `/calls` 会回「无记录」并附一句说明而非静默；`-p` / json 模式没有 UI 通道（pi 不为其绑定 `uiContext`，`ctx.hasUI === false`），`/calls` 不输出，以免污染脚本 stdout。
 
@@ -238,7 +238,9 @@ pi
 | `capability_tags`（vision）或 `input_modalities` | `input`：text + image |
 | `provider_id` | 定价与 transport compat 的 vendor 提示 |
 
-推理出口默认为 `chat_completions`（→ pi `api` = `openai-completions`），可按模型覆盖：
+带 `image_generation` / `image_edit` / `video_*` 能力标签的模型不注册（coding agent 驱动不了），不会出现在 `/model` 列表里。
+
+推理出口取网关自报的 `inference_endpoint` / `web_chat_endpoint`，网关没给（或给的值无法识别）时为 `chat_completions`（→ pi `api` = `openai-completions`），并可按模型覆盖：
 
 | endpoint 值 | pi `api` |
 | --- | --- |
@@ -345,7 +347,7 @@ pi
 ```
 
 - 值接受别名：`responses`·`response` / `chat`·`chat_completions`·`chat-completions`·`completions` / `messages`·`message`·`anthropic`。
-- 优先级：**per-model > `defaults` > `chat_completions`**。不使用网关 `inference_endpoint` 或按 id 的启发式——未配置 override 时行为与 0.1.12 完全一致。
+- 优先级：**per-model > `defaults` > 网关自报的 `inference_endpoint` / `web_chat_endpoint` > `chat_completions`**（`inference_endpoint` 优先于 `web_chat_endpoint`；只认上表三个值及其别名，其余一律忽略、回落 `chat_completions`）。不使用按 id 的启发式：网关什么都不说的模型仍然走 `chat_completions`。
 - 实例之间互相隔离：一个实例的 override 不影响另一个实例的同名模型。
 - 文件不存在（`ENOENT`）表示清空 override；有效 object 替换当前配置；JSON/根结构畸形时 warning 并继续使用该实例的 last-known-good（首次加载则无 override，不与其他实例共享）。其他文件系统错误（如 `EACCES` / `EISDIR`）不会静默改路由：显式刷新在请求 catalog 前失败，后台刷新只 warning，并保留旧模型与缓存。warning 不输出 API key、文件原文或任意底层错误正文。
 - 手工编辑后下一次成功的 catalog refresh 即生效，无需重启；cache-only、`PI_OFFLINE`、freshness-window skip 都不会重映射缓存模型。优先使用 `/endpoint` 或 `/endpoint-setting` 触发已验证的前台刷新。

@@ -5,11 +5,13 @@ import {
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_MAX_TOKENS,
 	inferenceBaseUrlForApi,
+	isPiSelectableModel,
 	parseGatewayModelsPayload,
 	resolveThinkingMetadata,
 	toPiApiType,
 	type GatewayModel,
 } from "../catalog.js";
+import { normalizeEndpointOverride } from "../model-overrides.js";
 import {
 	KNOWN_UPSTREAM_VENDOR_IDS,
 	lookupMemoryContextWindow,
@@ -121,6 +123,20 @@ function positiveNumber(value: unknown): number | undefined {
 		: undefined;
 }
 
+/**
+ * Endpoint the gateway declares for a model, if it declares one this extension
+ * can route: `inference_endpoint` first, then `web_chat_endpoint`. Anything
+ * unrecognized returns undefined so the caller keeps the `chat_completions`
+ * default rather than falling into `toPiApiType`'s responses branch — an
+ * unknown string must never silently change a model's transport.
+ */
+function gatewayDeclaredEndpoint(model: CompatGatewayModel): string | undefined {
+	return (
+		normalizeEndpointOverride(model.inference_endpoint) ??
+		normalizeEndpointOverride(model.web_chat_endpoint)
+	);
+}
+
 export function compatModelsUrl(inferenceBaseUrl: string): string {
 	return `${inferenceBaseUrl.trim().replace(/\/+$/, "")}/models`;
 }
@@ -149,6 +165,11 @@ export function mapCompatModelsPayload(
 		if (!id.trim() || seen.has(id)) {
 			continue;
 		}
+		// Image/video generation models cannot be driven by the coding agent; a
+		// gateway that tags them would otherwise fill /model with dead entries.
+		if (!isPiSelectableModel(upstream)) {
+			continue;
+		}
 		seen.add(id);
 
 		const explicitContext = positiveNumber(upstream.context_window) ?? positiveNumber(upstream.max_model_len);
@@ -161,11 +182,15 @@ export function mapCompatModelsPayload(
 			? upstream.provider_id.trim().toLowerCase()
 			: undefined;
 
-		// 2API's own semantics are "wrap upstream as OpenAI Chat Completions", so the
-		// default is the constant chat_completions — never an id-shape heuristic that
-		// would map Claude-ish ids to `messages` and change behavior for users who
-		// configured no override at all.
-		const endpoint = options.endpointOverride?.(id) ?? "chat_completions";
+		// per-model override > the gateway's own declaration > chat_completions.
+		// The gateway declaring `messages`/`responses` for a model is a statement of
+		// fact about its transport, not a guess — but a gateway that says nothing
+		// still means "wrap upstream as OpenAI Chat Completions", and no id-shape
+		// heuristic is used to fill that silence.
+		const endpoint =
+			options.endpointOverride?.(id) ??
+			gatewayDeclaredEndpoint(upstream) ??
+			"chat_completions";
 		const api = toPiApiType(endpoint, vendor ?? "");
 		const thinking = resolveThinkingMetadata(id, api);
 
