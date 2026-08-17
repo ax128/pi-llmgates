@@ -11,13 +11,14 @@
 ### 移除
 
 - **不再内置 LLMGates 官方网关（core provider）。** 扩展现在只做一件事：并行接入你自己配置的 OpenAI 兼容网关（`newapi` / `sub2api` / `cpa` / `default` 四种）。随之移除的还有：默认网关地址与 `sk-llmgates-*` 约定、`LLMGATES_API_KEY` / `LLMGATES_BASE_URL` / `LLMGATES_PROVIDER_ID` / `LLMGATES_PROVIDER_NAME` 环境变量、`llmgates/config.json` 里的 `baseUrl` / `apiKey` / `providerId` / `providerName` 字段、core 的 `llmgates/models.json` 出口覆盖文件，以及 `auth.json` 中 legacy `api_key` 凭证的 fail-closed 分支。
-  - **升级须知**：原先通过 `/login LLMGates` 或环境变量连接官方网关的用户，其 core provider 不再注册；请用 `/login` → 「LLMGates 网关」→ **通用网关** 重新添加为一个实例（填入原 base URL 与 API Key）。`auth.json` 中遗留的 `llmgates` 条目会在**第一次登录成功时**被入口自身的惰性标记（`access: "managed"`）覆盖掉——其中的明文密钥随之消失；在此之前它只是一条没人读的孤儿记录，也可以 `/logout` 或手工清理。`llmgates/models.json` 中的 core 出口覆盖不会自动迁移，请按需在新实例的 `llmgates/2api-models/<id>.json` 中重建。
+  - **升级须知**：原先通过 `/login LLMGates` 或环境变量连接官方网关的用户，其 core provider 不再注册；请用 `/login` → 「LLMGates 网关」→ **通用网关** 重新添加为一个实例（填入原 base URL 与 API Key）。`auth.json` 中遗留的 `llmgates` 条目会被登录入口接管：pi 把登录返回的凭证按 provider id 写回 `auth.json`，所以**第一次成功添加实例后**该键的内容变成入口自身的惰性标记（`access: "managed"`，内容从不被读回），旧的明文密钥随之消失；在此之前它只是一条没人读的孤儿记录，也可以 `/logout` 或手工清理。`llmgates/models.json` 中的 core 出口覆盖不会自动迁移，请按需在新实例的 `llmgates/2api-models/<id>.json` 中重建。
   - **升级后建议手工清理**：`llmgates/config.json` 里遗留的 `apiKey` / `baseUrl` / `providerId` / `providerName` 不会再被读取（实例凭证一律来自 `auth.json`，已有测试固化这一点），但也**不会被自动删除**——其中的 `apiKey` 是一份没人再用的明文密钥，建议自行删掉这几个字段，只留 `pricingAutoUpdate`。
   - 包名、命令名（`/llmgates`、`/llmgates-reload`）与配置目录 `~/.pi/agent/llmgates/` 保持不变。
 
 ### 变更
 
-- `/login` 中的入口改名为「LLMGates 网关」，provider id 也由 `llmgates-2api` 改回 **`llmgates`**——`-2api` 后缀当初只是为了避开内置 core 占用的 `llmgates`，core 移除后该 id 空出，列表里不再出现两个 LLMGates 条目。旧 id `llmgates-2api` 仍保留在实例 ID 保留名单中，不能被新实例占用。该入口且**始终**出现（此前仅在 core 不可用时作为「恢复入口」显示）；进入后第一步直接选网关类型（NewAPI / CLIProxyAPI / Sub2API / 通用网关）。登录成功后会在**会话里**留下一条含实例 ID 的消息（登录对话框内那条会随对话框一起销毁），便于随后 `/login <id>`、`/balance <id>` 使用——尤其是 ID 由 hostname 自动派生的通用网关。
+- **破坏性**：`/login` 入口的 provider id 由 `llmgates-2api` 改为 **`llmgates`**。`-2api` 后缀当初只是为了避开内置 core 占用的 `llmgates`，core 移除后它已无意义，登录列表里也就不再出现带后缀的条目。显示名仍是「LLMGates 网关」。按 provider id 或 `auth.json` 键名做过脚本化处理的用户需相应调整；旧 id `llmgates-2api` 仍留在实例 ID 保留名单中，不能被新实例占用。
+- `/login` 中的入口改名为「LLMGates 网关」，且**始终**出现（此前仅在 core 不可用时作为「恢复入口」显示）；进入后第一步直接选网关类型（NewAPI / CLIProxyAPI / Sub2API / 通用网关）。登录成功后会在**会话里**留下一条含实例 ID 的消息（登录对话框内那条会随对话框一起销毁），便于随后 `/login <id>`、`/balance <id>` 使用——尤其是 ID 由 hostname 自动派生的通用网关。
 - `/endpoint <chat|messages|responses|auto> [model-id]` 现在作用于**网关实例**的模型（此前只作用于 core）。不带 model-id 时改当前模型；带 model-id 时在全部实例中精确匹配，多个实例存在同名模型时拒绝并列出候选，避免把 override 写进用户没有指定的实例。
 - `/balance` 改为按实例通用探测：先试 `dashboard/billing/subscription` + `dashboard/billing/usage`（NewAPI / one-api 的 OpenAI 兼容计费接口），再回落到 `user/balance`；两者都不可用时明确显示「该网关不提供余额查询」而不是 0。不带参数查询全部实例，也可 `/balance <instance-id>` 只查一个。网关把未匹配路由回落到前端页面（200 + HTML，one-api 系的默认行为）时视同「不提供该接口」继续探测下一种，不会中断在解析错误上；超时、中断、网络错误仍照常报错。读数只认货币字段，不把 one-api 的内部配额单位（`quota` / `remain_quota`，默认 500000 = 1 USD）当金额显示。
 - `/endpoint-setting` 与 `/llmgates-reload` 的目标集合不再包含 core，只覆盖网关实例。
