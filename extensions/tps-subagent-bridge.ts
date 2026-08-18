@@ -20,6 +20,13 @@ export interface SubagentUsageBridgeOptions {
 	/** pi session cwd — required; filesystem fallbacks are denied without a workspace root. */
 	workspaceRoot: string;
 	onRecords: (records: readonly SubagentUsageRecord[]) => void;
+	/**
+	 * When set, the async-complete handler hands off the payload and returns
+	 * without reading session.jsonl / status.json on the EventBus emit stack.
+	 * The caller should extract via `extractSubagentUsageFromAsyncComplete` on
+	 * a background task chain.
+	 */
+	onAsyncCompleteData?: (data: unknown) => void;
 	onRunObserved?: (normalizedRunId: string) => void;
 	onForegroundComplete?: (normalizedRunId: string) => void;
 	enabled?: boolean;
@@ -104,6 +111,10 @@ export function registerSubagentUsageBridge(
 		}
 		for (const runId of observedRunIds(data)) {
 			options.onRunObserved?.(runId);
+		}
+		if (options.onAsyncCompleteData) {
+			options.onAsyncCompleteData(data);
+			return;
 		}
 		const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity, options.workspaceRoot);
 		if (records.length > 0) {

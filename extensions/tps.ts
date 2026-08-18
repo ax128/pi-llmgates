@@ -18,7 +18,9 @@ import {
 	collectPiSubagentsMetaUsage,
 	createSubagentIngestState,
 	extractSubagentRunIdsFromToolExecution,
+	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromToolExecution,
+	normalizeSubagentSessionIdentity,
 	recordSubagentUsageRecords,
 	resolveSubagentArtifactDirs,
 	selectFreshSubagentRecords,
@@ -463,6 +465,28 @@ export default function (pi: ExtensionAPI) {
 				sessionFile,
 				workspaceRoot: ctx.cwd,
 				onRecords: ingestSubagentRecords,
+				onAsyncCompleteData: (data) => {
+					const sessionIdentity = normalizeSubagentSessionIdentity(
+						ctx.sessionManager.getSessionId()
+							? {
+									sessionId: ctx.sessionManager.getSessionId(),
+									sessionFile,
+								}
+							: null,
+					);
+					const workspaceRoot = ctx.cwd;
+					const targetStats = requestStartMs !== null ? turnStats : sessionStats;
+					runUsageTask(() => {
+						const records = extractSubagentUsageFromAsyncComplete(
+							data,
+							sessionIdentity,
+							workspaceRoot,
+						);
+						if (records.length > 0) {
+							applySubagentRecords(records, targetStats);
+						}
+					});
+				},
 				onRunObserved: (runId) => {
 					ensureSubagentWatcher();
 					sessionRunIds.add(runId);

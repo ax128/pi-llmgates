@@ -19,4 +19,43 @@ describe("terminal-width", () => {
 		const text = "已选 0 个 · 共 3 个可配置模型";
 		expect(truncateToWidth(text, 125)).toBe(text);
 	});
+
+	it("counts East Asian Wide / Fullwidth punctuation and symbols as two columns", () => {
+		const samples = [
+			["、", "3001"],
+			["。", "3002"],
+			["「", "300c"],
+			["」", "300d"],
+			["〰", "3030"],
+			["　", "3000"],
+			["︐", "fe10"],
+			["︙", "fe19"],
+			["︰", "fe30"],
+			["﹫", "fe6b"],
+			["⌚", "231a"],
+			["〈", "2329"],
+		] as const;
+		for (const [ch, name] of samples) {
+			expect(visibleWidth(ch), `U+${name} ${ch}`).toBe(2);
+		}
+	});
+
+	it("keeps already-correct wide characters at two columns", () => {
+		expect(visibleWidth("中")).toBe(2);
+		expect(visibleWidth("\u2E80")).toBe(2);
+		expect(visibleWidth("\u2F00")).toBe(2);
+		expect(visibleWidth("，")).toBe(2);
+		expect(visibleWidth("\u1100")).toBe(2);
+	});
+
+	it("does not treat EAW Ambiguous characters as wide", () => {
+		expect(visibleWidth("·")).toBe(1);
+		expect(visibleWidth("─")).toBe(1);
+		expect(visibleWidth("→")).toBe(1);
+		expect(visibleWidth("…")).toBe(1);
+	});
+
+	it("counts a VS16 emoji sequence as two columns", () => {
+		expect(visibleWidth("☺️")).toBe(2);
+	});
 });

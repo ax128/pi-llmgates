@@ -213,7 +213,7 @@ export function createEndpointPicker(options: PickerOptions): PickerComponent {
 			lines.push(
 				theme.fg(
 					"accent",
-					theme.bold("/endpoint-setting · 选择要修改出口的模型"),
+					theme.bold(clip("/endpoint-setting · 选择要修改出口的模型", width)),
 				),
 			);
 			lines.push(
@@ -234,7 +234,7 @@ export function createEndpointPicker(options: PickerOptions): PickerComponent {
 			lines.push("");
 
 			if (visible.length === 0) {
-				lines.push(theme.fg("dim", "  没有匹配的模型"));
+				lines.push(theme.fg("dim", clip("  没有匹配的模型", width)));
 			} else {
 				const start = Math.max(
 					0,
@@ -259,7 +259,9 @@ export function createEndpointPicker(options: PickerOptions): PickerComponent {
 					lines.push(renderRow(row, index === cursor, width));
 				}
 				if (start > 0 || end < visible.length) {
-					lines.push(theme.fg("dim", `  (${cursor + 1}/${visible.length})`));
+					lines.push(
+						theme.fg("dim", clip(`  (${cursor + 1}/${visible.length})`, width)),
+					);
 				}
 			}
 

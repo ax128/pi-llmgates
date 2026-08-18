@@ -170,6 +170,44 @@ describe("endpoint picker rendering", () => {
 		}
 	});
 
+	it("clips title, empty-state, and counter lines on a 20-column terminal", () => {
+		const snap: SelectorSnapshot = {
+			groups: [
+				{
+					providerId: "work-newapi",
+					label: "gateway/work",
+					models: Array.from({ length: 6 }, (_, index) => ({
+						id: `model-${index}`,
+						name: index === 0 ? "GPT-4「高速」" : `Model ${index}`,
+						endpoint: "chat",
+						hasOverride: false,
+					})),
+				},
+			],
+			unmanaged: { total: 0, byProvider: [] },
+		};
+		const component = createEndpointPicker({
+			snapshot: snap,
+			theme,
+			keys,
+			done: () => {},
+			maxVisible: 2,
+		});
+
+		const assertFits = (lines: string[]) => {
+			for (const [index, line] of lines.entries()) {
+				expect(visibleWidth(line), `line ${index}: ${line}`).toBeLessThanOrEqual(20);
+			}
+		};
+
+		assertFits(component.render(20));
+		component.handleInput(KEY.down);
+		component.handleInput(KEY.down);
+		assertFits(component.render(20));
+		component.handleInput("zzz-no-such-model");
+		assertFits(component.render(20));
+	});
+
 	it("marks the cursor row and scrolls it into the visible window", () => {
 		const { send, text } = picker({ maxVisible: 2 });
 
