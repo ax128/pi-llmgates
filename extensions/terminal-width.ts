@@ -16,12 +16,19 @@ const wideScriptRegex =
 
 /**
  * Inclusive [start, end] ranges of Unicode East Asian Width Wide or Fullwidth.
- * Ambiguous is omitted (pi-tui uses ambiguousAsWide: false). Unassigned code
- * points inside a coalesced range are treated as width 2 — overestimate is the
- * safe direction for pi-tui's hard max-width check.
+ * Ambiguous is omitted (pi-tui uses ambiguousAsWide: false).
  *
- * Source: Unicode EAW (W + F). This is an inline copy so this package does not
- * take a runtime dependency on get-east-asian-width.
+ * This is the COMPLETE W + F set, not a hand-picked subset: pi-tui measures via
+ * get-east-asian-width and throws on any line it measures wider than the
+ * terminal, so a missing range is a crash, while a superfluous one only clips
+ * early. Ranges are exact (adjacent code points coalesced, no gap merging) and
+ * sorted — isWideOrFullwidth() binary-searches them.
+ *
+ * Inlined rather than depended on: get-east-asian-width is not a direct
+ * dependency of this package and is not re-exported by pi-coding-agent.
+ * To re-verify against a newer Unicode, diff this table against
+ * `eastAsianWidth(cp) === 2` over 0..0x10FFFF from that package inside
+ * node_modules; adding ranges is always safe, removing them is not.
  */
 const WIDE_OR_FULLWIDTH_RANGES: readonly [number, number][] = [
 	[0x1100, 0x115f],
@@ -32,8 +39,10 @@ const WIDE_OR_FULLWIDTH_RANGES: readonly [number, number][] = [
 	[0x23f3, 0x23f3],
 	[0x25fd, 0x25fe],
 	[0x2614, 0x2615],
+	[0x2630, 0x2637],
 	[0x2648, 0x2653],
 	[0x267f, 0x267f],
+	[0x268a, 0x268f],
 	[0x2693, 0x2693],
 	[0x26a1, 0x26a1],
 	[0x26aa, 0x26ab],
@@ -62,17 +71,15 @@ const WIDE_OR_FULLWIDTH_RANGES: readonly [number, number][] = [
 	[0x2e80, 0x2e99],
 	[0x2e9b, 0x2ef3],
 	[0x2f00, 0x2fd5],
-	[0x2ff0, 0x2fff],
-	[0x3000, 0x303e],
+	[0x2ff0, 0x303e],
 	[0x3041, 0x3096],
 	[0x3099, 0x30ff],
 	[0x3105, 0x312f],
 	[0x3131, 0x318e],
-	[0x3190, 0x31e3],
+	[0x3190, 0x31e5],
 	[0x31ef, 0x321e],
 	[0x3220, 0x3247],
-	[0x3250, 0x4dbf],
-	[0x4e00, 0xa48c],
+	[0x3250, 0xa48c],
 	[0xa490, 0xa4c6],
 	[0xa960, 0xa97c],
 	[0xac00, 0xd7a3],
@@ -84,7 +91,10 @@ const WIDE_OR_FULLWIDTH_RANGES: readonly [number, number][] = [
 	[0xff01, 0xff60],
 	[0xffe0, 0xffe6],
 	[0x16fe0, 0x16fe4],
-	[0x16ff0, 0x16ff1],
+	[0x16ff0, 0x16ff6],
+	[0x17000, 0x18cd5],
+	[0x18cff, 0x18d1e],
+	[0x18d80, 0x18df2],
 	[0x1aff0, 0x1aff3],
 	[0x1aff5, 0x1affb],
 	[0x1affd, 0x1affe],
@@ -94,6 +104,8 @@ const WIDE_OR_FULLWIDTH_RANGES: readonly [number, number][] = [
 	[0x1b155, 0x1b155],
 	[0x1b164, 0x1b167],
 	[0x1b170, 0x1b2fb],
+	[0x1d300, 0x1d356],
+	[0x1d360, 0x1d376],
 	[0x1f004, 0x1f004],
 	[0x1f0cf, 0x1f0cf],
 	[0x1f18e, 0x1f18e],
@@ -124,7 +136,7 @@ const WIDE_OR_FULLWIDTH_RANGES: readonly [number, number][] = [
 	[0x1f680, 0x1f6c5],
 	[0x1f6cc, 0x1f6cc],
 	[0x1f6d0, 0x1f6d2],
-	[0x1f6d5, 0x1f6d7],
+	[0x1f6d5, 0x1f6d8],
 	[0x1f6dc, 0x1f6df],
 	[0x1f6eb, 0x1f6ec],
 	[0x1f6f4, 0x1f6fc],
@@ -134,12 +146,12 @@ const WIDE_OR_FULLWIDTH_RANGES: readonly [number, number][] = [
 	[0x1f93c, 0x1f945],
 	[0x1f947, 0x1f9ff],
 	[0x1fa70, 0x1fa7c],
-	[0x1fa80, 0x1fa89],
-	[0x1fa90, 0x1fabd],
-	[0x1fabf, 0x1fac5],
-	[0x1face, 0x1fadb],
-	[0x1fae0, 0x1fae8],
-	[0x1faf0, 0x1faf8],
+	[0x1fa80, 0x1fa8a],
+	[0x1fa8e, 0x1fac6],
+	[0x1fac8, 0x1fac8],
+	[0x1facd, 0x1fadc],
+	[0x1fadf, 0x1faea],
+	[0x1faef, 0x1faf8],
 	[0x20000, 0x2fffd],
 	[0x30000, 0x3fffd],
 ];
