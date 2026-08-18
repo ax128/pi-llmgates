@@ -180,10 +180,19 @@ describe("compat lifecycle", () => {
 			await pi.emit("session_start", { reason: "start" });
 			await deleteProviderAuthEntry(agentDir, instance.id);
 
-			await vi.waitFor(() => expect(listInstances(agentDir)).toEqual([]));
+			// The purge removes the registry entry first and the overrides after, so
+			// waiting only on listInstances() can observe the gap between the two.
+			await vi.waitFor(
+				() => {
+					expect(listInstances(agentDir)).toEqual([]);
+					expect(
+						existsSync(join(agentDir, "llmgates/2api-models", `${instance.id}.json`)),
+					).toBe(false);
+				},
+				{ timeout: 5_000 },
+			);
 			expect(registration.providers.has(instance.id)).toBe(false);
 			expect(pi.unregistered).toEqual([instance.id]);
-			expect(existsSync(join(agentDir, "llmgates/2api-models", `${instance.id}.json`))).toBe(false);
 		} finally {
 			cleanup();
 		}
