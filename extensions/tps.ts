@@ -456,6 +456,11 @@ export default function (pi: ExtensionAPI) {
 		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
 		stopSubagentWatcher();
 		sessionArtifactDirs = [];
+		// LLMGATES_TPS_SUBAGENT=0 only skips the IO-costly bridge, watcher, and
+		// meta scan. Synchronous `subagent` / Cursor `Task` results on
+		// tool_execution_end are still counted — they are already in the event
+		// payload (zero extra IO). Intentional: turning those off would not
+		// save IO and would leave usage incomplete.
 		if (
 			isPrimaryUiSession(ctx) &&
 			isSubagentBridgeEnabled() &&

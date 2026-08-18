@@ -28,12 +28,11 @@ Pi coding agent 扩展包：`@llmgates_api/pi-llmgates-provider`。
 6. `./scripts/publish-npm.sh --otp=<回复>`（内部校验 gate；bump 后自动 re-pack）  
 7. **发布成功后立刻给出安装示例命令**（latest / 钉版本 / `-l` / git tag）
 
-密钥：只在本地 `.env` 的 `NPM_TOKEN`；禁止提交或粘贴 token。
+密钥：只在本地 `.env` 的 `NPM_TOKEN`；禁止提交或粘贴 token。**不要**预先 `set -a && source .env`——探测脚本自带 `loadDotEnv()`，`publish-npm.sh` 只在 `npm publish` / `npm view` 时读取 token，check / build / pack 阶段不应看见它。
 
 ```bash
-set -a && source .env && set +a
-node ./scripts/npm-publish-auth-link.mjs          # → 把链接给用户
-./scripts/publish-npm.sh --otp="<用户验证码>"    # 用户回复后
+node ./scripts/npm-publish-auth-link.mjs # → 把链接给用户
+./scripts/publish-npm.sh --otp="<用户验证码>" # 用户回复后
 ```
 
 ## 常用命令

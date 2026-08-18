@@ -26,38 +26,29 @@ COMMIT="$(git rev-parse HEAD)"
 VERSION="$(node -p "require('./package.json').version")"
 
 echo "==> verify tarball contents"
-REQUIRED_PATHS=(
-	package/package.json
-	package/dist/index.js
-	package/dist/tps.js
-	package/README.md
-	package/LICENSE
-)
-TAR_LIST="$(mktemp)"
-tar -tzf "$TGZ" >"$TAR_LIST"
-for path in "${REQUIRED_PATHS[@]}"; do
-	if ! grep -qx "$path" "$TAR_LIST"; then
-		echo "error: $TGZ missing required path: $path" >&2
-		rm -f "$TAR_LIST"
-		exit 1
-	fi
-done
-rm -f "$TAR_LIST"
+# shellcheck source=lib/assert-tarball.sh
+source "$ROOT/scripts/lib/assert-tarball.sh"
+assert_publish_tarball "$TGZ"
 
 SHA256="$(sha256sum "$TGZ" | awk '{print $1}')"
 BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p .gate
 
-node <<EOF
+export GATE_COMMIT="$COMMIT"
+export GATE_VERSION="$VERSION"
+export GATE_TGZ="$TGZ"
+export GATE_SHA256="$SHA256"
+export GATE_BUILT_AT="$BUILT_AT"
+node <<'EOF'
 const fs = require("node:fs");
 const payload = {
 	schema: "pre-publish-gate/v1",
 	phase: "build",
-	commit: "$COMMIT",
-	version: "$VERSION",
-	tgz: "$TGZ",
-	sha256: "$SHA256",
-	built_at: "$BUILT_AT",
+	commit: process.env.GATE_COMMIT,
+	version: process.env.GATE_VERSION,
+	tgz: process.env.GATE_TGZ,
+	sha256: process.env.GATE_SHA256,
+	built_at: process.env.GATE_BUILT_AT,
 };
 fs.writeFileSync(".gate/pre-publish-build.json", JSON.stringify(payload, null, 2) + "\n");
 EOF
