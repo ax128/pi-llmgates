@@ -472,8 +472,9 @@ The full npm flow for agents / maintainers (**get the auth link → wait for the
 - [docs/npm-package.md](docs/npm-package.md) (starts with the standard agent publish dialogue)
 - [AGENTS.md](AGENTS.md)
 
+> Do not `set -a && source .env` up front: the probe script has its own `loadDotEnv()`, and `publish-npm.sh` reads the token only for `npm publish` / `npm view` — the check / build / pack steps must not see it.
+
 ```bash
-set -a && source .env && set +a
 node ./scripts/npm-publish-auth-link.mjs   # send the link to the operator
 ./scripts/publish-npm.sh --otp=<code>      # run only after they reply
 ```

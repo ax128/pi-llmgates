@@ -470,8 +470,9 @@ Agent / 维护者完整 npm 流程（**要认证链接 → 等用户回复 → �
 - [docs/npm-package.md](docs/npm-package.md)（开头「Agent 标准发布对话」）
 - [AGENTS.md](AGENTS.md)
 
+> 不要预先 `set -a && source .env`：探测脚本自带 `loadDotEnv()`，`publish-npm.sh` 只在 `npm publish` / `npm view` 时读取 token，check / build / pack 阶段不应看见它。
+
 ```bash
-set -a && source .env && set +a
 node ./scripts/npm-publish-auth-link.mjs   # 把链接发给操作者
 ./scripts/publish-npm.sh --otp=<验证码>    # 对方回复后再执行
 ```

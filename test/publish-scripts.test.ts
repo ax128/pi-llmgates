@@ -1,6 +1,7 @@
 import { execFileSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -11,12 +12,14 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const assertScript = join(repoRoot, "scripts/lib/assert-tarball.sh");
 const recordScript = join(repoRoot, "scripts/gate-record-pass.sh");
+// Snapshotted before any test runs: nothing here may create or destroy a real receipt.
+const gateReceiptExisted = existsSync(join(repoRoot, ".gate/pre-publish-pass.json"));
 
 function requiredPackageTree(root: string): void {
 	const pkg = join(root, "package");
@@ -80,61 +83,68 @@ describe("publish-npm.sh bump whitelist", () => {
 });
 
 describe("gate-record-pass.sh injection", () => {
-	const gateDir = join(repoRoot, ".gate");
-	const buildFile = join(gateDir, "pre-publish-build.json");
-	const passFile = join(gateDir, "pre-publish-pass.json");
-	let previousBuild: string | undefined;
-	let previousPass: string | undefined;
-
-	afterEach(() => {
-		if (previousBuild === undefined) {
-			if (existsSync(buildFile)) rmSync(buildFile);
-		} else {
-			writeFileSync(buildFile, previousBuild);
-		}
-		if (previousPass === undefined) {
-			if (existsSync(passFile)) rmSync(passFile);
-		} else {
-			writeFileSync(passFile, previousPass);
-		}
-		previousBuild = undefined;
-		previousPass = undefined;
-	});
+	/**
+	 * The script is hard-wired to `cd $ROOT` + `.gate/`, so it is copied into a
+	 * throwaway git repo. Running it against this checkout would rewrite the real
+	 * `.gate/pre-publish-pass.json`, and an interrupted run would leave a PASS
+	 * receipt behind that `publish-npm.sh` would accept.
+	 */
+	function gateSandbox(): { root: string; commit: string } {
+		const root = mkdtempSync(join(tmpdir(), "llg-gate-"));
+		mkdirSync(join(root, "scripts"), { recursive: true });
+		copyFileSync(recordScript, join(root, "scripts/gate-record-pass.sh"));
+		const git = (...args: string[]) =>
+			execFileSync(
+				"git",
+				["-c", "user.name=test", "-c", "user.email=test@example.com", ...args],
+				{ cwd: root, encoding: "utf8" },
+			);
+		git("init", "-q");
+		git("commit", "-q", "--allow-empty", "-m", "fixture");
+		return { root, commit: git("rev-parse", "HEAD").trim() };
+	}
 
 	it("records a tests value containing quotes as structured JSON", async () => {
-		previousBuild = existsSync(buildFile) ? readFileSync(buildFile, "utf8") : undefined;
-		previousPass = existsSync(passFile) ? readFileSync(passFile, "utf8") : undefined;
-		mkdirSync(gateDir, { recursive: true });
-		const commit = execFileSync("git", ["rev-parse", "HEAD"], {
-			cwd: repoRoot,
-			encoding: "utf8",
-		}).trim();
-		writeFileSync(
-			buildFile,
-			`${JSON.stringify(
-				{
-					schema: "pre-publish-gate/v1",
-					phase: "build",
-					commit,
-					version: "0.0.0-test",
-					tgz: "fixture.tgz",
-					sha256: "abc",
-					built_at: "2026-01-01T00:00:00Z",
-				},
-				null,
-				2,
-			)}\n`,
-		);
+		const { root, commit } = gateSandbox();
+		try {
+			mkdirSync(join(root, ".gate"), { recursive: true });
+			writeFileSync(
+				join(root, ".gate/pre-publish-build.json"),
+				`${JSON.stringify(
+					{
+						schema: "pre-publish-gate/v1",
+						phase: "build",
+						commit,
+						version: "0.0.0-test",
+						tgz: "fixture.tgz",
+						sha256: "abc",
+						built_at: "2026-01-01T00:00:00Z",
+					},
+					null,
+					2,
+				)}\n`,
+			);
 
-		await execFileAsync("bash", [recordScript, "--tests", 'login","x', "--by", "test"], {
-			cwd: repoRoot,
-		});
+			await execFileAsync(
+				"bash",
+				[join(root, "scripts/gate-record-pass.sh"), "--tests", 'login","x', "--by", "test"],
+				{ cwd: root },
+			);
 
-		const pass = JSON.parse(readFileSync(passFile, "utf8")) as {
-			tests: string[];
-			verified_by: string;
-		};
-		expect(pass.tests).toEqual(['login"', '"x']);
-		expect(pass.verified_by).toBe("test");
+			const pass = JSON.parse(readFileSync(join(root, ".gate/pre-publish-pass.json"), "utf8")) as {
+				tests: string[];
+				verified_by: string;
+				commit: string;
+			};
+			expect(pass.tests).toEqual(['login"', '"x']);
+			expect(pass.verified_by).toBe("test");
+			expect(pass.commit).toBe(commit);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves this repository's .gate receipts untouched", () => {
+		expect(existsSync(join(repoRoot, ".gate/pre-publish-pass.json"))).toBe(gateReceiptExisted);
 	});
 });
