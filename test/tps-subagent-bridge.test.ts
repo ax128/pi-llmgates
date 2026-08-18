@@ -413,4 +413,39 @@ describe("tps-subagent-bridge", () => {
 		expect(foregroundRuns).toEqual(["1d706627aada48289207bbab8fad3864"]);
 		unregister();
 	});
+
+	it("hands async-complete payload off without extracting on the emit stack when asked", () => {
+		const bus = createMemoryEventBus();
+		const seen: unknown[] = [];
+		const records: SubagentUsageRecord[][] = [];
+		let handlerReturned = false;
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1",
+			workspaceRoot: BRIDGE_WORKSPACE,
+			onRecords: (batch) => {
+				records.push([...batch]);
+			},
+			onAsyncCompleteData: (data) => {
+				expect(handlerReturned).toBe(false);
+				seen.push(data);
+			},
+		});
+
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			sessionId: "sess-1",
+			runId: UUID_RUN,
+			results: [
+				{
+					agent: "reviewer",
+					sessionFile: "/tmp/does-not-need-to-exist.jsonl",
+					usage: { turns: 1, input: 10, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+				},
+			],
+		});
+		handlerReturned = true;
+
+		expect(seen).toHaveLength(1);
+		expect(records).toHaveLength(0);
+		unregister();
+	});
 });

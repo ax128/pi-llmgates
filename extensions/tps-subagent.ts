@@ -5,7 +5,7 @@ import {
 	normalizeTokenCount,
 	type ModelUsageStats,
 } from "./tps-stats.js";
-import { isPlainObject } from "./util.js";
+import { isPlainObject, envFlag } from "./util.js";
 
 export const PI_SUBAGENTS_DIR = ".pi-subagents";
 export const PI_SUBAGENTS_ARTIFACTS_DIR = join(PI_SUBAGENTS_DIR, "artifacts");
@@ -684,6 +684,8 @@ export function parsePiSubagentsMetaJson(raw: unknown, sourceKey: string): Subag
  * stall a turn for as long as it takes to parse it.
  */
 export const MAX_SUBAGENT_META_BYTES = 2 * 1024 * 1024;
+/** Last-resort child session.jsonl reads. Over this, skip the whole file. */
+export const MAX_SUBAGENT_SESSION_BYTES = 8 * 1024 * 1024;
 
 /**
  * Per-scan ceiling on files actually read. The cap applies AFTER the ingested /
@@ -826,11 +828,24 @@ export function collectPiSubagentsMetaUsage(
 	return out;
 }
 
+function logSubagentSkip(message: string): void {
+	if (envFlag("LLMGATES_DEBUG")) {
+		console.warn(`[pi-llmgates-provider] ${message}`);
+	}
+}
+
 function readJsonFile(path: string, workspaceRoot: string | undefined): unknown | null {
 	if (workspaceRoot === undefined || !isSubagentPathWithinWorkspace(path, workspaceRoot)) {
 		return null;
 	}
 	try {
+		const sizeBytes = statSync(path).size;
+		if (sizeBytes > MAX_SUBAGENT_META_BYTES) {
+			logSubagentSkip(
+				`Skipping ${path}: ${sizeBytes} bytes exceeds ${MAX_SUBAGENT_META_BYTES} status.json cap`,
+			);
+			return null;
+		}
 		return JSON.parse(readFileSync(path, "utf8"));
 	} catch {
 		return null;
@@ -963,12 +978,20 @@ export function selectFreshSubagentRecords(
 export function extractSubagentUsageFromSessionFile(
 	sessionFile: string,
 	workspaceRoot?: string,
+	onSkipped?: (reason: string) => void,
 ): SubagentUsageRecord | null {
 	if (workspaceRoot === undefined || !isSubagentPathWithinWorkspace(sessionFile, workspaceRoot)) {
 		return null;
 	}
 	let text: string;
 	try {
+		const sizeBytes = statSync(sessionFile).size;
+		if (sizeBytes > MAX_SUBAGENT_SESSION_BYTES) {
+			const reason = `session.jsonl exceeds ${MAX_SUBAGENT_SESSION_BYTES} bytes (${sizeBytes}); skipping ${sessionFile}`;
+			logSubagentSkip(reason);
+			onSkipped?.(reason);
+			return null;
+		}
 		text = readFileSync(sessionFile, "utf8");
 	} catch {
 		return null;
@@ -1045,6 +1068,7 @@ export function extractSubagentUsageFromAsyncComplete(
 	data: unknown,
 	currentSessionId: string | SubagentSessionIdentity | null | undefined,
 	workspaceRoot?: string,
+	onSkipped?: (reason: string) => void,
 ): SubagentUsageRecord[] {
 	if (!isPlainObject(data)) {
 		return [];
@@ -1065,7 +1089,13 @@ export function extractSubagentUsageFromAsyncComplete(
 		}
 		// §13.3: always use loop index for parallel same-agent children.
 		const agent = typeof item.agent === "string" ? item.agent : "unknown";
-		const sourceKey = resolveChildSourceKey(runId, agent, i, asyncDir);
+		const childRunId =
+			typeof item.runId === "string"
+				? item.runId
+				: typeof item.id === "string"
+					? item.id
+					: undefined;
+		const sourceKey = resolveChildSourceKey(childRunId ?? runId, agent, i, asyncDir);
 
 		let record = recordFromPartial(item, sourceKey, agent);
 
@@ -1085,7 +1115,11 @@ export function extractSubagentUsageFromAsyncComplete(
 						? item.artifactPaths.outputPath
 						: undefined;
 			if (sessionFile) {
-				const fromSession = extractSubagentUsageFromSessionFile(sessionFile, workspaceRoot);
+				const fromSession = extractSubagentUsageFromSessionFile(
+					sessionFile,
+					workspaceRoot,
+					onSkipped,
+				);
 				if (fromSession) {
 					record = {
 						...fromSession,
