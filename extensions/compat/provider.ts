@@ -857,8 +857,16 @@ export function createCompatProvider(
 		if (!lifecycleMatches(refreshGeneration)) return;
 		const connection = connectionFromCredential(context.credential);
 		if (!connection) return;
-		const requestId = nextRequestId++;
-		latestRequestId = requestId;
+		// Cache-only refreshes must not take the "latest request" identity: pi
+		// fires allowNetwork:false after every registerNativeProvider, and that
+		// would otherwise supersede an in-flight /llmgates-reload foreground
+		// fetch that actually has new data. Reuse latestRequestId so restore
+		// guards still pass. A newer allowNetwork:true refresh still increments
+		// and can preempt.
+		const requestId = context.allowNetwork ? nextRequestId++ : latestRequestId;
+		if (context.allowNetwork) {
+			latestRequestId = requestId;
+		}
 		const store = catalogStoreFromRefreshContext(context, (message) =>
 			logWarn(providerId, message),
 		);

@@ -456,6 +456,76 @@ describe("2api foreground endpoint refresh", () => {
 		}
 	});
 
+	it("does not let a cache-only refresh supersede an in-flight foreground fetch", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let gated = false;
+			const { provider } = await readyProvider(agentDir, {
+				fetchImpl: async () => {
+					if (gated) await gate;
+					return new Response(JSON.stringify([{ id: "m1" }]));
+				},
+			});
+
+			gated = true;
+			const foreground = provider.refreshEndpointForeground();
+			await provider.refreshModels!({
+				credential: credential("key", INSTANCE.baseUrl),
+				store: createMemoryStore({
+					models: [storedModel("from-cache", "openai-completions")],
+					checkedAt: 1,
+				}),
+				allowNetwork: false,
+			});
+			// Restore still ran (cache-only reused the in-flight request id).
+			expect(provider.getModels().map((model) => model.id)).toEqual(["from-cache"]);
+
+			release();
+			expect(await foreground).toEqual(expect.objectContaining({ status: "ok" }));
+			expect(provider.getModels().map((model) => model.id)).toEqual(["m1"]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("still supersedes a foreground refresh when a newer networked refresh starts", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let gated = false;
+			const { provider, store } = await readyProvider(agentDir, {
+				fetchImpl: async () => {
+					if (gated) await gate;
+					return new Response(JSON.stringify([{ id: "m1" }]));
+				},
+			});
+
+			gated = true;
+			const first = provider.refreshEndpointForeground();
+			gated = false;
+			await provider.refreshModels!({
+				credential: credential("key", INSTANCE.baseUrl),
+				store,
+				allowNetwork: true,
+				force: true,
+			});
+			release();
+
+			expect((await first).status).toBe("superseded");
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("throws on a network failure so the caller can report partial", async () => {
 		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
 		const { agentDir, cleanup } = withTempAgentDir();
