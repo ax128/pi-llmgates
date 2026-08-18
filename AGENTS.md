@@ -51,7 +51,7 @@ npm pack --dry-run
 ## 代码约定（摘要）
 
 - 扩展入口（源码）：`extensions/index.ts`、`extensions/tps.ts`；发布产物为编译 JS（`dist/`，`npm run build` 生成，`prepack` 自动执行；见 `package.json` → `pi.extensions`）
-- 改命令 / 用户可见行为时同步改 README
+- 改命令 / 用户可见行为时同步改 README（`README.md` 中文 + `README.en.md` 英文，两份都要改）
 - 改 session / adapter / 发布流程时补或更新 focused tests
 - 不把真实 API key、npm token、OTP 写入文档、示例或生成文件
 

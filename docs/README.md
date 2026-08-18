@@ -6,7 +6,8 @@
 
 | 文档 | 说明 |
 | --- | --- |
-| [README](../README.md) | 安装、登录、配置、命令、安全与故障排查 |
+| [README](../README.md) | 安装、登录、配置、命令、安全与故障排查（简体中文） |
+| [README.en](../README.en.md) | 同上，英文版；改动用户可见行为时两份需同步 |
 | [pre-publish-gate.md](./pre-publish-gate.md) | **发布前门禁**：`npm run gate` → 从 `.tgz` 安装 → pi 功能验证 → `gate-record-pass.sh`；`publish-npm.sh` 硬校验 |
 | [npm-package.md](./npm-package.md) | **Agent / 维护者**：npm 安装、更新、升版本、发布与 `.env` 密钥 |
 | [AGENTS.md](../AGENTS.md) | 项目级 Agent 入口（指向门禁、npm 手册与约定） |
