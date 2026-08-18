@@ -1,5 +1,20 @@
 # Blocking and liveness hardening
 
+**Status:** implemented (design snapshot — some details below were superseded by later work; where this conflicts with the code, the code wins).
+
+> **2026-08-17 revision (checked against the code):**
+>
+> - §1 and §4 both enumerate the lock sites as "`compat/storage.ts`, `lib.ts`, and
+>   both in `model-overrides.ts`". `extensions/lib.ts` went away with the built-in
+>   LLMGates gateway (4794d11); the three surviving `withFileLock()` sites are
+>   `compat/storage.ts` and the two in `model-overrides.ts`.
+> - §1 also describes the release as happening at each call site. It no longer
+>   does: `withFileLock()` releases in its own `finally`, so `releaseLockQuietly()`
+>   has exactly one call site (`extensions/util.ts`) and covers every lock body by
+>   construction rather than by each caller remembering to use it.
+> - The rest of §1–§9 still matches the code, including the bounds, the guard
+>   order, and the `ingested.size` re-queue condition.
+
 ## Goal
 
 Remove every path found in the 2026-08-04 structural review on which the extension
