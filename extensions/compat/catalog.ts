@@ -165,8 +165,10 @@ export function mapCompatModelsPayload(
 	const seen = new Set<string>();
 
 	for (const upstream of parseGatewayModelsPayload(payload) as CompatGatewayModel[]) {
-		const id = stripControlChars(typeof upstream.id === "string" ? upstream.id : "").trim();
-		if (!id || seen.has(id)) {
+		// Control chars only: trimming would rewrite the id pi sends upstream and
+		// would orphan any override keyed on the original.
+		const id = stripControlChars(typeof upstream.id === "string" ? upstream.id : "");
+		if (!id.trim() || seen.has(id)) {
 			continue;
 		}
 		// Image/video generation models cannot be driven by the coding agent; a
