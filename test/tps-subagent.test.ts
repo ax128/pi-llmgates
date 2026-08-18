@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, ftruncateSync, mkdtempSync, mkdirSync, openSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ import {
 	isSubagentPathWithinWorkspace,
 	MAX_SUBAGENT_META_BYTES,
 	MAX_SUBAGENT_META_READS_PER_SCAN,
+	MAX_SUBAGENT_SESSION_BYTES,
 	metaFileSourceKey,
 	normalizeRunIdForSourceKey,
 	normalizeUsageFromPartial,
@@ -1076,6 +1077,131 @@ describe("tps subagent usage", () => {
 			}),
 		);
 		expect(extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0)).toBeNull();
+	});
+});
+
+describe("tps subagent session.jsonl size cap", () => {
+	it("returns null and reports a skip when session.jsonl exceeds the byte cap", () => {
+		const root = mkdtempSync(join(tmpdir(), "session-cap-"));
+		const sessionFile = join(root, "child.jsonl");
+		const fd = openSync(sessionFile, "w");
+		ftruncateSync(fd, MAX_SUBAGENT_SESSION_BYTES + 1);
+		closeSync(fd);
+
+		const skipped: string[] = [];
+		process.env.LLMGATES_DEBUG = "1";
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(extractSubagentUsageFromSessionFile(sessionFile, root, (reason) => skipped.push(reason))).toBeNull();
+			expect(skipped.length).toBe(1);
+			expect(skipped[0]).toMatch(/exceeds/);
+			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/exceeds/));
+		} finally {
+			warn.mockRestore();
+			delete process.env.LLMGATES_DEBUG;
+		}
+	});
+
+	it("still sums assistant usage from the head and middle of a file under the cap", () => {
+		const root = mkdtempSync(join(tmpdir(), "session-spread-"));
+		const sessionFile = join(root, "child.jsonl");
+		const lines = [
+			JSON.stringify({
+				role: "assistant",
+				usage: { input: 5, output: 1, cacheRead: 0, cacheWrite: 0 },
+			}),
+			...Array.from({ length: 20 }, () => JSON.stringify({ role: "user", text: "pad" })),
+			JSON.stringify({
+				message: { role: "assistant", usage: { input: 7, output: 3 } },
+			}),
+		];
+		writeFileSync(sessionFile, lines.join("\n"));
+
+		const record = extractSubagentUsageFromSessionFile(sessionFile, root);
+		expect(record?.calls).toBe(2);
+		expect(record?.input).toBe(12);
+		expect(record?.output).toBe(4);
+	});
+});
+
+describe("tps subagent async child runId keys", () => {
+	const childRunId = "4bc153b8";
+
+	it("keys per-child async usage by the child runId so meta files do not double-count", () => {
+		const root = mkdtempSync(join(tmpdir(), "async-child-key-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		writeFileSync(
+			join(artifactsDir, `${childRunId}_worker_0_meta.json`),
+			JSON.stringify({
+				agent: "worker",
+				model: "llmgates/gpt-5.6-sol",
+				usage: { turns: 1, input: 11, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
+			}),
+		);
+
+		const fromEvent = extractSubagentUsageFromAsyncComplete(
+			{
+				sessionId: "s",
+				runId: UUID_RUN,
+				results: [
+					{
+						runId: childRunId,
+						agent: "worker",
+						index: 0,
+						usage: { turns: 1, input: 11, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
+					},
+				],
+			},
+			"s",
+			root,
+		);
+		expect(fromEvent).toHaveLength(1);
+		expect(fromEvent[0]?.sourceKey).toBe(`meta:${childRunId}:worker:0`);
+		expect(fromEvent[0]?.sourceKey).not.toBe(`meta:${UUID_NORM}:worker:0`);
+
+		const fromMeta = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			Date.now() - 60_000,
+			createSubagentIngestState().keys,
+		);
+		expect(fromMeta[0]?.sourceKey).toBe(`meta:${childRunId}:worker:0`);
+
+		const state = createSubagentIngestState();
+		expect(selectFreshSubagentRecords(state, fromEvent)).toHaveLength(1);
+		expect(selectFreshSubagentRecords(state, fromMeta)).toHaveLength(0);
+	});
+
+	it("keeps status.json fallback keyed by the child runId when the event has no usage", () => {
+		const root = mkdtempSync(join(tmpdir(), "async-status-child-"));
+		const asyncDir = join(root, "async-run");
+		mkdirSync(asyncDir, { recursive: true });
+		writeFileSync(
+			join(asyncDir, "status.json"),
+			JSON.stringify({
+				steps: [
+					{
+						agent: "worker",
+						model: "llmgates/gpt-5.6-sol",
+						tokens: { input: 15, output: 5 },
+					},
+				],
+			}),
+		);
+
+		const records = extractSubagentUsageFromAsyncComplete(
+			{
+				sessionId: "s",
+				runId: UUID_RUN,
+				asyncDir,
+				results: [{ runId: childRunId, agent: "worker", index: 0 }],
+			},
+			"s",
+			root,
+		);
+		expect(records).toHaveLength(1);
+		expect(records[0]?.input).toBe(15);
+		expect(records[0]?.sourceKey).toBe(`meta:${childRunId}:worker:0`);
 	});
 });
 
