@@ -852,6 +852,64 @@ export function createCompatProvider(
 		}
 	}
 
+	function catalogIsFresh(): boolean {
+		return (
+			typeof lastCheckedAt === "number" &&
+			now() - lastCheckedAt < CATALOG_BACKGROUND_REFRESH_MS &&
+			models.length > 0
+		);
+	}
+
+	async function commitAndPublish(
+		fetched: CatalogResult,
+		options: {
+			store: CatalogStore;
+			requestId: number;
+			signal: AbortSignal | undefined;
+			connection: CompatConnection;
+			refreshGeneration: number;
+			abort: "throw" | "skip";
+			assignLastConnection: boolean;
+		},
+	): Promise<boolean> {
+		let published = false;
+		await withCommit(async () => {
+			if (!lifecycleMatches(options.refreshGeneration)) return;
+			if (options.signal?.aborted) {
+				if (options.abort === "throw") throw abortError();
+				return;
+			}
+			if (
+				options.requestId !== latestRequestId ||
+				!connectionStillMatches(options.connection)
+			)
+				return;
+			fetched.store = options.store;
+			fetched.requestId = options.requestId;
+			fetched.checkedAt = now();
+			const publishFetched = (persisted: boolean): void => {
+				if (
+					!lifecycleMatches(options.refreshGeneration) ||
+					options.signal?.aborted ||
+					options.requestId !== latestRequestId ||
+					!connectionStillMatches(options.connection)
+				)
+					return;
+				modelsAheadOfStore = !persisted;
+				setModels(fetched.models, fetched);
+				if (options.assignLastConnection) lastConnection = options.connection;
+				if (persisted) lastCheckedAt = now();
+				published = true;
+			};
+			const applied = await options.store.commit(
+				{ models: fetched.models, checkedAt: fetched.checkedAt },
+				() => publishFetched(true),
+			);
+			if (!applied) publishFetched(false);
+		});
+		return published;
+	}
+
 	async function refreshModels(context: RefreshModelsContext): Promise<void> {
 		const refreshGeneration = generation;
 		if (!lifecycleMatches(refreshGeneration)) return;
@@ -983,14 +1041,7 @@ export function createCompatProvider(
 
 		if (!context.allowNetwork || isOfflineMode()) return;
 		if (context.signal?.aborted) throw abortError();
-		if (
-			!context.force &&
-			typeof lastCheckedAt === "number" &&
-			now() - lastCheckedAt < CATALOG_BACKGROUND_REFRESH_MS &&
-			models.length > 0
-		) {
-			return;
-		}
+		if (!context.force && catalogIsFresh()) return;
 
 		let fetched: CatalogResult;
 		try {
@@ -1010,33 +1061,14 @@ export function createCompatProvider(
 		}
 		if (!lifecycleMatches(refreshGeneration) || requestId !== latestRequestId)
 			return;
-		await withCommit(async () => {
-			if (!lifecycleMatches(refreshGeneration)) return;
-			if (context.signal?.aborted) throw abortError();
-			if (requestId !== latestRequestId || !connectionStillMatches(connection))
-				return;
-			fetched.store = store;
-			fetched.requestId = requestId;
-			fetched.checkedAt = now();
-			const publishFetched = (persisted: boolean): void => {
-				if (
-					!lifecycleMatches(refreshGeneration) ||
-					context.signal?.aborted ||
-					requestId !== latestRequestId ||
-					!connectionStillMatches(connection)
-				)
-					return;
-				modelsAheadOfStore = !persisted;
-				setModels(fetched.models, fetched);
-				lastConnection = connection;
-				// Only a persisted catalog starts the freshness window.
-				if (persisted) lastCheckedAt = now();
-			};
-			const applied = await store.commit(
-				{ models: fetched.models, checkedAt: fetched.checkedAt },
-				() => publishFetched(true),
-			);
-			if (!applied) publishFetched(false);
+		await commitAndPublish(fetched, {
+			store,
+			requestId,
+			signal: context.signal,
+			connection,
+			refreshGeneration,
+			abort: "throw",
+			assignLastConnection: true,
 		});
 		if (!lifecycleMatches(refreshGeneration)) return;
 	}
@@ -1168,38 +1200,16 @@ export function createCompatProvider(
 				requestGeneration,
 			);
 
-			let committed = false;
-			await withCommit(async () => {
-				if (
-					!lifecycleMatches(requestGeneration) ||
-					controller.signal.aborted ||
-					requestId !== latestRequestId ||
-					!connectionStillMatches(connection)
-				)
-					return;
-				fetched.store = store;
-				fetched.requestId = requestId;
-				fetched.checkedAt = now();
-				const publishFetched = (persisted: boolean): void => {
-					if (
-						!lifecycleMatches(requestGeneration) ||
-						controller.signal.aborted ||
-						requestId !== latestRequestId ||
-						!connectionStillMatches(connection)
-					)
-						return;
-					modelsAheadOfStore = !persisted;
-					setModels(fetched.models, fetched);
-					if (persisted) lastCheckedAt = now();
-					committed = true;
-				};
-				const applied = await store.commit(
-					{ models: fetched.models, checkedAt: fetched.checkedAt },
-					() => publishFetched(true),
-				);
-				// The command asked for this catalog: publish it even when a newer pi
-				// refresh took the store, so /endpoint-setting still takes effect.
-				if (!applied) publishFetched(false);
+			// The command asked for this catalog: publish it even when a newer pi
+			// refresh took the store, so /endpoint-setting still takes effect.
+			const committed = await commitAndPublish(fetched, {
+				store,
+				requestId,
+				signal: controller.signal,
+				connection,
+				refreshGeneration: requestGeneration,
+				abort: "skip",
+				assignLastConnection: false,
 			});
 			// Returning the mapped models lets the caller derive the expected api for
 			// `auto` from the same mapping that produced them.
@@ -1324,14 +1334,7 @@ export function createCompatProvider(
 		}): Promise<void> {
 			if (shutDown || isOfflineMode() || !scopedStore || !lastConnection)
 				return;
-			if (
-				!refreshOptions?.force &&
-				typeof lastCheckedAt === "number" &&
-				now() - lastCheckedAt < CATALOG_BACKGROUND_REFRESH_MS &&
-				models.length > 0
-			) {
-				return;
-			}
+			if (!refreshOptions?.force && catalogIsFresh()) return;
 
 			const controller = sessionController ?? new AbortController();
 			const store = scopedStore;
@@ -1347,34 +1350,14 @@ export function createCompatProvider(
 						requestGeneration,
 					);
 					if (!lifecycleMatches(requestGeneration)) return;
-					await withCommit(async () => {
-						if (
-							!lifecycleMatches(requestGeneration) ||
-							controller.signal.aborted ||
-							requestId !== latestRequestId ||
-							!connectionStillMatches(connection)
-						)
-							return;
-						fetched.store = store;
-						fetched.requestId = requestId;
-						fetched.checkedAt = now();
-						const publishFetched = (persisted: boolean): void => {
-							if (
-								!lifecycleMatches(requestGeneration) ||
-								controller.signal.aborted ||
-								requestId !== latestRequestId ||
-								!connectionStillMatches(connection)
-							)
-								return;
-							modelsAheadOfStore = !persisted;
-							setModels(fetched.models, fetched);
-							if (persisted) lastCheckedAt = now();
-						};
-						const applied = await store.commit(
-							{ models: fetched.models, checkedAt: fetched.checkedAt },
-							() => publishFetched(true),
-						);
-						if (!applied) publishFetched(false);
+					await commitAndPublish(fetched, {
+						store,
+						requestId,
+						signal: controller.signal,
+						connection,
+						refreshGeneration: requestGeneration,
+						abort: "skip",
+						assignLastConnection: false,
 					});
 				} catch (error) {
 					if (error instanceof DOMException && error.name === "AbortError")
