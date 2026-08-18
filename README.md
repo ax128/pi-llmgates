@@ -133,7 +133,7 @@ pi
 - **API key** 以 literal string 存入 pi `auth.json`（OAuth 凭证）；实例元数据（ID、显示名、scheme、base URL）写入 `~/.pi/agent/llmgates/2api.json`。
 - 会话里会留下一条含实例 ID 的消息（`default` 类型若留空 ID，派生出的 ID 只能从这里或 `/llmgates list` 读到）。
 
-凭证校验失败最多重试 **5 次**（含非法 URL、网络/HTTP/JSON 错误），之后中止登录。远程 HTTP 会被拒绝，可在 5 次内改正为 HTTPS 或 loopback HTTP。
+凭证校验失败最多尝试 **5 次**（含非法 URL、网络/HTTP/JSON 错误），之后中止登录。远程 HTTP 会被拒绝，可在 5 次内改正为 HTTPS 或 loopback HTTP。
 
 实例 registry 写入 `~/.pi/agent/llmgates/2api.json`，与 `auth.json` 均以 `0600` 权限写入，并使用跨进程文件锁、锁内重读和原子替换保护并发更新。
 
@@ -340,7 +340,7 @@ TUI 扩展状态行：
 - 同步 pi `subagent` / Cursor `Task` 工具结果与 `_meta.json` 汇总计入同一计数器；扫描 `.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧版 `.pi-subagents/artifacts` 及会话文件旁的 `subagent-artifacts/`。
 - async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 事件旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。
 - 事件里的 `sessionId` 可能是裸 ID、会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。
-- 设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与 Cursor `Task` 仍统计）。
+- 设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与同步 `subagent` / Cursor `Task` 工具结果仍统计）。
 - 用量聚合在后台任务链中执行，不阻塞 agent 循环；计数只在交互式父会话（TUI）进行。
 
 ### 定价数据

@@ -14,15 +14,42 @@ if [[ ! -f .env ]]; then
 	exit 1
 fi
 
-set -a
-# shellcheck disable=SC1091
-source .env
-set +a
+# Read the token without exporting it. check / build / pack must not see NPM_TOKEN:
+# those steps execute dependency code. Only npm publish and npm view get it via a
+# prefix assignment. Unset any pre-exported value so a caller who sourced .env
+# first (the old handbook flow) cannot leak the token into those processes.
+read_npm_token() {
+	node --input-type=module -e '
+		import { readFileSync } from "node:fs";
+		let text;
+		try {
+			text = readFileSync(".env", "utf8");
+		} catch {
+			process.exit(2);
+		}
+		for (const line of text.split(/\r?\n/)) {
+			const m = line.match(/^\s*NPM_TOKEN\s*=\s*(.*?)\s*$/);
+			if (!m) continue;
+			let value = m[1];
+			if (
+				(value.startsWith("\"") && value.endsWith("\"")) ||
+				(value.startsWith("'\''") && value.endsWith("'\''"))
+			) {
+				value = value.slice(1, -1);
+			}
+			if (!value) process.exit(1);
+			process.stdout.write(value);
+			process.exit(0);
+		}
+		process.exit(1);
+	'
+}
 
-if [[ -z "${NPM_TOKEN:-}" ]]; then
+NPM_TOKEN_VALUE="$(read_npm_token)" || {
 	echo "error: NPM_TOKEN empty in .env" >&2
 	exit 1
-fi
+}
+unset NPM_TOKEN
 
 PASS_FILE=".gate/pre-publish-pass.json"
 # What a release commit is allowed to touch after the gate ran: the version
@@ -30,7 +57,7 @@ PASS_FILE=".gate/pre-publish-pass.json"
 # release notes. Everything else — extensions/, deps, scripts, other docs —
 # invalidates the gate, because the gate validated the built artifact.
 # Keep this in sync with docs/pre-publish-gate.md §6 and npm-package.md §3.2.
-BUMP_ALLOWED='^(package\.json|package-lock\.json|README\.md|CHANGELOG\.md|docs/npm-package\.md)$'
+BUMP_ALLOWED='^(package\.json|package-lock\.json|README\.md|README\.en\.md|CHANGELOG\.md|docs/npm-package\.md)$'
 HEAD="$(git rev-parse HEAD)"
 GATE_COMMIT=""
 if [[ "${GATE_SKIP:-}" == "1" ]]; then
@@ -97,6 +124,9 @@ if [[ -n "$GATE_VERSION" && "$GATE_VERSION" != "$VERSION" ]]; then
 	done <<<"$CHANGED"
 	PACK_OUTPUT="$(npm pack 2>&1)"
 	PUBLISH_TGZ="$(echo "$PACK_OUTPUT" | tail -1)"
+	# shellcheck source=lib/assert-tarball.sh
+	source "$ROOT/scripts/lib/assert-tarball.sh"
+	assert_publish_tarball "$PUBLISH_TGZ"
 	PUBLISH_SHA256="$(sha256sum "$PUBLISH_TGZ" | awk '{print $1}')"
 	echo "  publish tarball: $PUBLISH_TGZ"
 	echo "  sha256: $PUBLISH_SHA256"
@@ -119,9 +149,9 @@ for entry in dist/index.js dist/tps.js; do
 	fi
 done
 
-npm publish --access public --ignore-scripts "$@"
+NPM_TOKEN="$NPM_TOKEN_VALUE" npm publish --access public --ignore-scripts "$@"
 
-REMOTE="$(npm view @llmgates_api/pi-llmgates-provider version)"
+REMOTE="$(NPM_TOKEN="$NPM_TOKEN_VALUE" npm view @llmgates_api/pi-llmgates-provider version)"
 echo "Published. registry version=$REMOTE"
 echo
 echo "Install examples (send to user):"

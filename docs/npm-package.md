@@ -23,7 +23,7 @@
 ### A. 准备（Agent 自己做）
 
 1. 确认 §0 门禁已通过（`.gate/pre-publish-pass.json` + 对话 PASS 回执）
-2. 确认或升版本（§3.2 的五个文件）：`package.json`、`package-lock.json`、README 中的 `@x.y.z` / `@vX.Y.Z`、本文档 §1 / §2 / §D 示例中的版本号，以及 `CHANGELOG.md` 的 `[Unreleased]` 定版
+2. 确认或升版本（§3.2 的六个文件）：`package.json`、`package-lock.json`、两份 README 中的 `@x.y.z` / `@vX.Y.Z`、本文档 §1 / §2 / §D 示例中的版本号，以及 `CHANGELOG.md` 的 `[Unreleased]` 定版
 3. `npm run check` 通过
 4. commit + `git push origin HEAD`
 5. 打 tag（可先本地）：`VERSION=$(node -p "require('./package.json').version")` → `git tag "v$VERSION"`
@@ -31,7 +31,6 @@
 ### B. 要认证链接（Agent → 用户）
 
 ```bash
-set -a && source .env && set +a
 node ./scripts/npm-publish-auth-link.mjs
 ```
 
@@ -52,10 +51,10 @@ node ./scripts/npm-publish-auth-link.mjs
 用户回复验证码（可能是 6 位 TOTP，或更长的安全密钥会话码）后：
 
 ```bash
-set -a && source .env && set +a
 VERSION=$(node -p "require('./package.json').version")
 ./scripts/publish-npm.sh --otp="<用户回复的验证码>"
-npm view @llmgates_api/pi-llmgates-provider version   # 须等于 $VERSION
+NPM_TOKEN=$(grep -E '^\s*NPM_TOKEN=' .env | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'") \
+  npm view @llmgates_api/pi-llmgates-provider version   # 须等于 $VERSION
 git push origin "v$VERSION"                          # 若尚未推送 tag
 ```
 
@@ -100,9 +99,11 @@ pi install -l npm:@llmgates_api/pi-llmgates-provider@VERSION
 | 泄露处理 | 若 token 曾出现在聊天或日志：到 npm 网站撤销并换新，更新 `.env` |
 
 ```bash
-set -a
-source .env
-set +a
+# 不要把 .env export 进当前 shell。publish-npm.sh 与探测脚本自行读取 NPM_TOKEN；
+# 测试 / 构建阶段不应看见 token。手工 npm 命令（whoami / view）必须显式前缀，
+# 否则 .npmrc 里未展开的 ${NPM_TOKEN} 会变成非法 Authorization 头。
+test -f .env || { echo "missing .env"; exit 1; }
+NPM_TOKEN=$(grep -E '^\s*NPM_TOKEN=' .env | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
 test -n "$NPM_TOKEN" || { echo "missing NPM_TOKEN in .env"; exit 1; }
 ```
 
@@ -149,7 +150,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider@0.3.1
 
 ```bash
 git status
-set -a && source .env && set +a && npm whoami
+NPM_TOKEN=$(grep -E '^\s*NPM_TOKEN=' .env | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'") npm whoami
 npm run check
 npm pack --dry-run
 ```
@@ -163,10 +164,11 @@ npm pack --dry-run
 1. `package.json` → `"version"`
 2. `package-lock.json` → 根 `version` 与 `packages[""].version`
 3. `README.md` → 安装示例中的版本
-4. `docs/npm-package.md` → §1 / §2 / §D 示例中的版本
-5. `CHANGELOG.md` → `[Unreleased]` 定版为 `## [x.y.z] — YYYY-MM-DD`，并在文件末尾补 `[x.y.z]: https://github.com/ax128/pi-llmgates/compare/v<上一版>...vx.y.z`
+4. `README.en.md` → 安装示例中的版本
+5. `docs/npm-package.md` → §1 / §2 / §D 示例中的版本
+6. `CHANGELOG.md` → `[Unreleased]` 定版为 `## [x.y.z] — YYYY-MM-DD`，并在文件末尾补 `[x.y.z]: https://github.com/ax128/pi-llmgates/compare/v<上一版>...vx.y.z`
 
-这五个文件正是 `publish-npm.sh` 的 `BUMP_ALLOWED` 白名单——发布提交碰到白名单以外的文件，publish 会被拒绝并要求重跑门禁（见 [pre-publish-gate.md §6](./pre-publish-gate.md#6-门禁通过后再发布)）。
+这六个文件正是 `publish-npm.sh` 的 `BUMP_ALLOWED` 白名单——发布提交碰到白名单以外的文件，publish 会被拒绝并要求重跑门禁（见 [pre-publish-gate.md §6](./pre-publish-gate.md#6-门禁通过后再发布)）。
 
 ### 3.3 脚本
 

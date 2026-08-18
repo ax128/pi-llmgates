@@ -135,7 +135,7 @@ After a successful add:
 - The **API key** is stored as a literal string in pi's `auth.json` (as an OAuth credential); instance metadata (ID, display name, scheme, base URL) goes to `~/.pi/agent/llmgates/2api.json`.
 - A message containing the instance ID is left in the session (for a `default` instance with a blank ID, that message — or `/llmgates list` — is the only place to read the derived ID).
 
-Credential validation retries at most **5 times** (covering invalid URLs and network/HTTP/JSON errors) before the login is aborted. Remote HTTP is rejected; you can correct it to HTTPS or loopback HTTP within those 5 attempts.
+Credential validation makes at most **5 attempts** (covering invalid URLs and network/HTTP/JSON errors) before the login is aborted. Remote HTTP is rejected; you can correct it to HTTPS or loopback HTTP within those 5 attempts.
 
 The instance registry is written to `~/.pi/agent/llmgates/2api.json`. Both it and `auth.json` are written with mode `0600`, guarded by a cross-process file lock, an in-lock re-read, and atomic replacement.
 
@@ -342,7 +342,7 @@ The TUI extension status line shows:
 - Synchronous pi `subagent` / Cursor `Task` tool results and `_meta.json` summaries feed the same counter; scanned directories are `.pi/subagents/artifacts` (pi-subagents ≥ 0.49), the legacy `.pi-subagents/artifacts`, and `subagent-artifacts/` next to the session file.
 - async / background subagents are collected through the `subagent:async-complete` / `subagent:foreground-complete` event bypass (falling back to `status.json` / the child `session.jsonl` when the event carries no tokens).
 - The `sessionId` in those events may be a bare ID, the full session file path, or its basename (pi-subagents identifies a session with `getSessionFile() ?? getSessionId()`); all three identity forms are matched.
-- Set `LLMGATES_TPS_SUBAGENT=0` to turn off the subagent bypass and the meta scan (the parent model and Cursor `Task` are still counted).
+- Set `LLMGATES_TPS_SUBAGENT=0` to turn off the subagent bypass and the meta scan (the parent model and synchronous `subagent` / Cursor `Task` tool results are still counted).
 - Aggregation runs in a background task chain and never blocks the agent loop; counting happens only in an interactive parent session (TUI).
 
 ### Pricing data
