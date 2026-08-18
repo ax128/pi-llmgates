@@ -97,9 +97,14 @@ export function deriveDefaultInstanceId(
 		baseId = baseId.slice(0, 64);
 	}
 
-	const occupiedLower = new Set(
-		Array.from(occupied, (id) => id.toLowerCase()),
-	);
+	const occupiedLower = new Set([
+		...Array.from(occupied, (id) => id.toLowerCase()),
+		...Array.from(BUILTIN_PROVIDER_IDS, (id) => id.toLowerCase()),
+		"llmgates",
+		"llmgates-2api",
+		BOOTSTRAP_PROVIDER_ID.toLowerCase(),
+		...Array.from(extraReserved, (id) => id.toLowerCase()),
+	]);
 	let candidate = baseId;
 	let suffix = 2;
 	while (occupiedLower.has(candidate.toLowerCase())) {

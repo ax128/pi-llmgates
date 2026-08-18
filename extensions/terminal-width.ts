@@ -177,6 +177,12 @@ function graphemeVisibleWidth(segment: string): number {
 	return 1;
 }
 
+export function padEndToWidth(value: string, width: number): string {
+	const current = visibleWidth(value);
+	if (current >= width) return value;
+	return value + " ".repeat(width - current);
+}
+
 /** Visible column count for plain text (no ANSI). */
 export function visibleWidth(str: string): number {
 	if (str.length === 0) return 0;

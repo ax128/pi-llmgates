@@ -24,6 +24,10 @@ type CompatGatewayModel = GatewayModel & {
 	max_tokens?: unknown;
 };
 
+function stripControlChars(value: string): string {
+	return value.replace(/\p{Control}/gu, "");
+}
+
 const MOONSHOT_KIMI_VENDOR_IDS = new Set([
 	"moonshotai",
 	"moonshotai-cn",
@@ -161,8 +165,8 @@ export function mapCompatModelsPayload(
 	const seen = new Set<string>();
 
 	for (const upstream of parseGatewayModelsPayload(payload) as CompatGatewayModel[]) {
-		const id = typeof upstream.id === "string" ? upstream.id : "";
-		if (!id.trim() || seen.has(id)) {
+		const id = stripControlChars(typeof upstream.id === "string" ? upstream.id : "").trim();
+		if (!id || seen.has(id)) {
 			continue;
 		}
 		// Image/video generation models cannot be driven by the coding agent; a
@@ -195,9 +199,11 @@ export function mapCompatModelsPayload(
 		const thinking = resolveThinkingMetadata(id, api);
 
 		const displayName =
-			(typeof upstream.display_name === "string" && upstream.display_name.trim()) ||
-			(typeof upstream.name === "string" && upstream.name.trim()) ||
-			id;
+			stripControlChars(
+				(typeof upstream.display_name === "string" && upstream.display_name.trim()) ||
+					(typeof upstream.name === "string" && upstream.name.trim()) ||
+					id,
+			).trim() || id;
 		const model: Model<Api> = {
 			id,
 			name: displayName,

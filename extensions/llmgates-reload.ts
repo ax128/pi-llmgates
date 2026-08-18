@@ -8,11 +8,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	acquireEndpointInFlight,
+	ENDPOINT_IN_FLIGHT_MESSAGE,
 	IDLE_WAIT_TIMEOUT_MESSAGE,
 	releaseEndpointInFlight,
 	waitForIdleBounded,
 } from "./endpoint.js";
-import type { EndpointRefreshResult } from "./catalog-store.js";
+import { refreshFailureReason, type EndpointRefreshResult } from "./catalog-store.js";
+import { errorSummary } from "./util.js";
 import type { CompatGatewayRegistration } from "./compat/index.js";
 
 export const CATALOG_RELOAD_COMMAND = "llmgates-reload";
@@ -40,20 +42,6 @@ export interface CatalogReloadContext {
 	find(providerId: string, modelId: string): Model<Api> | undefined;
 	setModel(model: Model<Api>): Promise<boolean>;
 	notify(message: string, level: "info" | "warning" | "error"): void;
-}
-
-function errorSummary(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function refreshFailureReason(
-	refresh: Exclude<EndpointRefreshResult, { status: "ok" }>,
-): string {
-	return refresh.status === "offline"
-		? "offline mode"
-		: refresh.status === "not-ready"
-			? "provider not ready"
-			: "superseded by a newer refresh";
 }
 
 export function mergeCatalogReloadOutcomes(
@@ -118,10 +106,7 @@ export async function runCatalogReloadCommand(
 	ctx: CatalogReloadContext,
 ): Promise<void> {
 	if (!acquireEndpointInFlight()) {
-		ctx.notify(
-			"Another endpoint or catalog refresh command is already running; wait for it to finish.",
-			"error",
-		);
+		ctx.notify(ENDPOINT_IN_FLIGHT_MESSAGE, "error");
 		return;
 	}
 

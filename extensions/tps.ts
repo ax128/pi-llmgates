@@ -273,6 +273,7 @@ export default function (pi: ExtensionAPI) {
 						() => {
 							truncated = true;
 						},
+						subagentIngestState.pendingNullMeta,
 					),
 					targetStats,
 				);
@@ -578,6 +579,8 @@ export default function (pi: ExtensionAPI) {
 						startedAtMs,
 						subagentIngestState.keys,
 						sessionRunIds,
+						undefined,
+						subagentIngestState.pendingNullMeta,
 					),
 					settledTurnStats,
 				);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { truncateToWidth, visibleWidth } from "../extensions/terminal-width.js";
+import { padEndToWidth, truncateToWidth, visibleWidth } from "../extensions/terminal-width.js";
 
 describe("terminal-width", () => {
 	it("counts CJK characters as two columns", () => {
@@ -57,5 +57,11 @@ describe("terminal-width", () => {
 
 	it("counts a VS16 emoji sequence as two columns", () => {
 		expect(visibleWidth("☺️")).toBe(2);
+	});
+
+	it("pads to a visible-column width so CJK and ASCII share a column start", () => {
+		expect(padEndToWidth("中", 4)).toBe("中  ");
+		expect(visibleWidth(padEndToWidth("中", 4))).toBe(4);
+		expect(visibleWidth(padEndToWidth("ab", 4))).toBe(4);
 	});
 });

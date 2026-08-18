@@ -95,4 +95,9 @@ describe("deriveDefaultInstanceId", () => {
 			]),
 		).toBe("api.foo.com-3");
 	});
+
+	it("suffixes reserved builtin hostnames instead of throwing", () => {
+		expect(deriveDefaultInstanceId("https://anthropic/", [])).toBe("anthropic-2");
+		expect(deriveDefaultInstanceId("https://openai/v1", [])).toBe("openai-2");
+	});
 });

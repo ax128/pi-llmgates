@@ -137,6 +137,7 @@ interface PendingCatalog {
 export interface CompatProviderOptions {
 	agentDir: string;
 	instance: CompatInstance;
+	/** @internal Test-only seed catalog. Production always starts empty and refreshes. */
 	initialModels?: readonly Model<Api>[];
 	initialCatalog?: {
 		models: readonly Model<Api>[];
@@ -163,6 +164,7 @@ export interface CompatProvider extends Provider {
 	 * Never awaits another commitChain task from inside withCommit (no deadlock).
 	 */
 	refreshEndpointForeground(): Promise<EndpointRefreshResult>;
+	/** @internal Test-only snapshot of provider bookkeeping. */
 	getInternalState(): {
 		providerId: string;
 		modelCount: number;
@@ -929,12 +931,14 @@ export function createCompatProvider(
 			logWarn(providerId, message),
 		);
 		scopedStore = store;
-		if (
+		const connectionChanged = Boolean(
 			lastConnection &&
-			(lastConnection.baseUrl !== connection.baseUrl ||
-				!keysEqual(lastConnection.apiKey, connection.apiKey))
-		) {
+				(lastConnection.baseUrl !== connection.baseUrl ||
+					!keysEqual(lastConnection.apiKey, connection.apiKey)),
+		);
+		if (connectionChanged) {
 			modelsAheadOfStore = false;
+			lastCheckedAt = undefined;
 		}
 		lastConnection = connection;
 		if (connection.baseUrl !== currentInstance.baseUrl) {
@@ -970,6 +974,12 @@ export function createCompatProvider(
 				providerId,
 				`Failed to read model cache: ${error instanceof Error ? error.message : String(error)}`,
 			);
+		}
+		// restoreFromStore copies checkedAt from the previous connection's catalog.
+		// Clear it again so the 5-minute freshness gate cannot skip a fetch after
+		// baseUrl/key changed (L7).
+		if (connectionChanged) {
+			lastCheckedAt = undefined;
 		}
 
 		if (

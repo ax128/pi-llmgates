@@ -7,6 +7,7 @@ import {
 	SELECTOR_ENDPOINT_OPTIONS,
 	type SelectorSnapshot,
 } from "../extensions/endpoint-selector.js";
+import { visibleWidth } from "../extensions/terminal-width.js";
 
 function snapshot(): SelectorSnapshot {
 	return {
@@ -74,6 +75,28 @@ describe("renderSelectorList", () => {
 			rejected: [],
 			warnings: [],
 		});
+	});
+
+	it("aligns CJK and ASCII name columns by visible width", () => {
+		const snap: SelectorSnapshot = {
+			groups: [
+				{
+					providerId: "g",
+					label: "l",
+					models: [
+						{ id: "ascii-id", name: "English", endpoint: "chat", hasOverride: false },
+						{ id: "cjk-id", name: "中文名称", endpoint: "chat", hasOverride: false },
+					],
+				},
+			],
+			unmanaged: { total: 0, byProvider: [] },
+		};
+		const lines = renderSelectorList(snap)
+			.split("\n")
+			.filter((line) => line.startsWith("[ ]"));
+		expect(lines).toHaveLength(2);
+		const beforeEndpoint = (line: string) => visibleWidth(line.slice(0, line.indexOf("chat")));
+		expect(beforeEndpoint(lines[0]!)).toBe(beforeEndpoint(lines[1]!));
 	});
 });
 

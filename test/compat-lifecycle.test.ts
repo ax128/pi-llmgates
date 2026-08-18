@@ -262,6 +262,30 @@ describe("compat lifecycle", () => {
 		}
 	});
 
+	it("does not leave an orphan-cleanup retry timer after session_shutdown", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const instance = INSTANCES[0]!;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir);
+			await pi.emit("session_start", { reason: "start" });
+			writeFileSync(join(agentDir, "auth.json"), "{");
+			await vi.waitFor(
+				() => expect(warn).toHaveBeenCalledWith(expect.stringMatching(/temporarily unreadable/i)),
+				{ timeout: 5_000 },
+			);
+			await pi.emit("session_shutdown");
+			writeJson(join(agentDir, "auth.json"), {});
+			await new Promise((resolve) => setTimeout(resolve, 1500));
+			expect(listInstances(agentDir)).toEqual([instance]);
+		} finally {
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
 	it.each([
 		[
 			"differently-cased auth key",

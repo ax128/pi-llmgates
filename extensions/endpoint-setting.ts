@@ -19,11 +19,13 @@
 
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { EndpointRefreshResult } from "./catalog-store.js";
+import { refreshFailureReason, type EndpointRefreshResult } from "./catalog-store.js";
+import { errorSummary } from "./util.js";
 import type { CompatGatewayRegistration } from "./compat/index.js";
 import { createEndpointPicker } from "./endpoint-picker.js";
 import {
 	acquireEndpointInFlight,
+	ENDPOINT_IN_FLIGHT_MESSAGE,
 	EXPECTED_API,
 	IDLE_WAIT_TIMEOUT_MESSAGE,
 	releaseEndpointInFlight,
@@ -87,10 +89,6 @@ export interface EndpointSettingContext {
 	editor(title: string, prefill: string): Promise<string | undefined>;
 	select(title: string, options: string[]): Promise<string | undefined>;
 	notify(message: string, level: "info" | "warning" | "error"): void;
-}
-
-function errorSummary(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -157,10 +155,7 @@ export async function runEndpointSettingCommand(
 	ctx: EndpointSettingContext,
 ): Promise<void> {
 	if (!acquireEndpointInFlight()) {
-		ctx.notify(
-			"Another endpoint or catalog refresh command is already running; wait for it to finish.",
-			"error",
-		);
+		ctx.notify(ENDPOINT_IN_FLIGHT_MESSAGE, "error");
 		return;
 	}
 	try {
@@ -355,16 +350,10 @@ async function applyGroup(
 		};
 	}
 	if (refresh.status !== "ok") {
-		const reason =
-			refresh.status === "offline"
-				? "offline mode"
-				: refresh.status === "not-ready"
-					? "provider not ready"
-					: "superseded by a newer refresh";
 		return {
 			...base,
 			status: "partial",
-			detail: `saved, but not active yet (${reason}); it activates on the next successful catalog refresh`,
+			detail: `saved, but not active yet (${refreshFailureReason(refresh)}); it activates on the next successful catalog refresh`,
 		};
 	}
 
@@ -499,6 +488,8 @@ export function mergeOutcomes(
 }
 
 export interface InteractionCancellation {
+	/** Arm a new command so a prior session_shutdown cancel does not leak. */
+	begin(): void;
 	/** Resolve the interaction that is currently open, if any, to `undefined`. */
 	cancel(): void;
 	/** Run one interaction under cancellation. Nesting is not supported (none exists). */
@@ -520,19 +511,25 @@ export interface InteractionCancellation {
  */
 export function createInteractionCancellation(): InteractionCancellation {
 	let cancelOpen: (() => void) | undefined;
+	let cancelled = false;
 	return {
+		begin() {
+			cancelled = false;
+		},
 		cancel() {
+			cancelled = true;
 			cancelOpen?.();
 		},
 		async wrap<T>(open: () => Promise<T | undefined>): Promise<T | undefined> {
+			if (cancelled) return undefined;
 			// Captured so a settled wrap() cannot clear a newer one's canceller.
 			let cancelThis!: () => void;
-			const cancelled = new Promise<undefined>((resolve) => {
+			const cancelledOpen = new Promise<undefined>((resolve) => {
 				cancelThis = () => resolve(undefined);
 			});
 			cancelOpen = cancelThis;
 			try {
-				return await Promise.race([open(), cancelled]);
+				return await Promise.race([open(), cancelledOpen]);
 			} finally {
 				if (cancelOpen === cancelThis) cancelOpen = undefined;
 			}
@@ -569,6 +566,7 @@ export function registerEndpointSettingCommand(
 		description:
 			"Interactively switch the inference endpoint for multiple models",
 		handler: async (_args, ctx) => {
+			interaction.begin();
 			await runEndpointSettingCommand(
 				{
 					agentDir,

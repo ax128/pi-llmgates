@@ -20,7 +20,7 @@ import type {
 	SelectorSelection,
 	SelectorSnapshot,
 } from "./endpoint-selector.js";
-import { truncateToWidth } from "./terminal-width.js";
+import { padEndToWidth, truncateToWidth, visibleWidth } from "./terminal-width.js";
 
 /**
  * Subset of pi's `Theme` this component uses.
@@ -112,9 +112,7 @@ export function filterPickerRows(
 }
 
 function padEnd(value: string, width: number): string {
-	return value.length >= width
-		? value
-		: value + " ".repeat(width - value.length);
+	return padEndToWidth(value, width);
 }
 
 function clip(value: string, width: number): string {
@@ -138,11 +136,11 @@ export function createEndpointPicker(options: PickerOptions): PickerComponent {
 	const rows = buildPickerRows(snapshot);
 	const idWidth = Math.min(
 		38,
-		Math.max(12, ...rows.map((row) => row.modelId.length)),
+		Math.max(12, ...rows.map((row) => visibleWidth(row.modelId))),
 	);
 	const nameWidth = Math.min(
 		28,
-		Math.max(8, ...rows.map((row) => row.name.length)),
+		Math.max(8, ...rows.map((row) => visibleWidth(row.name))),
 	);
 
 	const selected = new Set<string>();

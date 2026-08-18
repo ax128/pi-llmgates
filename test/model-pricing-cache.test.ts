@@ -13,6 +13,7 @@ import {
 	lookupMemoryPricingRates,
 	mergePricingRates,
 	pricingCacheKey,
+	ratesFromLiteLLMEntry,
 	readModelPricingFile,
 	refreshModelPricing,
 	reloadModelPricingFromDisk,
@@ -519,6 +520,54 @@ describe("model-pricing-cache", () => {
 			input: 1.25,
 			output: 2.5,
 		});
+	});
+
+	it("defaults Anthropic cacheWrite to 1.25× input when LiteLLM omits cache creation", () => {
+		const entry = { input_cost_per_token: 3e-6, output_cost_per_token: 15e-6 };
+		expect(ratesFromLiteLLMEntry(entry, "anthropic")?.cacheWrite).toBe(3.75);
+		expect(ratesFromLiteLLMEntry(entry, "openai")?.cacheWrite).toBe(3);
+	});
+
+	it("stores rates for toString and __proto__ model ids as own properties", () => {
+		const agentDir = tempAgentDir("pricing-proto-");
+		writeFileSync(
+			join(agentDir, MODEL_PRICING_CACHE_FILE),
+			'{"updatedAt":1,"rates":{"toString":{"input":1,"output":2,"cacheRead":0.1,"cacheWrite":1},"__proto__":{"input":3,"output":4,"cacheRead":0.3,"cacheWrite":3}}}\n',
+		);
+		const file = readModelPricingFile(agentDir);
+		expect(file).not.toBeNull();
+		expect(Object.getPrototypeOf(file!.rates)).toBeNull();
+		expect(Object.hasOwn(file!.rates, "toString")).toBe(true);
+		expect(Object.hasOwn(file!.rates, "__proto__")).toBe(true);
+		applyPricingCacheToResolver(file);
+		expect(resolveModelCostRates("toString")).toEqual({
+			input: 1,
+			output: 2,
+			cacheRead: 0.1,
+			cacheWrite: 1,
+		});
+		expect(resolveModelCostRates("__proto__")).toEqual({
+			input: 3,
+			output: 4,
+			cacheRead: 0.3,
+			cacheWrite: 3,
+		});
+	});
+
+	it("syncs a toString model id instead of treating Object.prototype as a cached rate", async () => {
+		const agentDir = tempAgentDir("pricing-tostring-");
+		const cache = await syncModelPricingCache(
+			agentDir,
+			[{ id: "toString", capability_tags: ["chat"] }],
+			{
+				now: () => 1,
+				loadLiteLLMTable: async () => ({
+					toString: { input_cost_per_token: 9e-6, output_cost_per_token: 10e-6 },
+				}),
+			},
+		);
+		expect(Object.hasOwn(cache!.rates, "toString")).toBe(true);
+		expect(cache!.rates.toString).toMatchObject({ input: 9, output: 10 });
 	});
 
 	it("fetchLiteLLMPriceTable parses table via bounded client", async () => {

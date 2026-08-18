@@ -1192,12 +1192,20 @@ describe("createInteractionCancellation", () => {
 		await expect(interaction.wrap(async () => "picked")).resolves.toBe("picked");
 	});
 
-	it("is inert once the interaction has settled", async () => {
+	it("is inert once the interaction has settled until begin() arms the next session", async () => {
 		const interaction = createInteractionCancellation();
 		await interaction.wrap(async () => "picked");
-		// No open interaction: cancel() must not throw or leak into the next wrap().
 		expect(() => interaction.cancel()).not.toThrow();
+		await expect(interaction.wrap(async () => "again")).resolves.toBeUndefined();
+		interaction.begin();
 		await expect(interaction.wrap(async () => "again")).resolves.toBe("again");
+	});
+
+	it("returns undefined from wrap() when cancel() lands between two steps", async () => {
+		const interaction = createInteractionCancellation();
+		await interaction.wrap(async () => "step-1");
+		interaction.cancel();
+		await expect(interaction.wrap(async () => "step-2")).resolves.toBeUndefined();
 	});
 
 	it("propagates a rejection from the interaction itself", async () => {

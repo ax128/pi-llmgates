@@ -740,7 +740,7 @@ export function listPiSubagentMetaFiles(artifactsDir: string): string[] {
 export function resolveSubagentArtifactDirs(cwd: string, sessionFile?: string | null): string[] {
 	const dirs = [
 		join(cwd, PI_SUBAGENTS_PROJECT_DIR, "artifacts"),
-		join(cwd, PI_SUBAGENTS_DIR, "artifacts"),
+		join(cwd, PI_SUBAGENTS_ARTIFACTS_DIR),
 	];
 	const normalizedSessionFile = typeof sessionFile === "string" ? sessionFile.trim() : "";
 	if (normalizedSessionFile) {
@@ -783,9 +783,10 @@ export function isSubagentPathWithinWorkspace(candidate: string, cwd: string): b
 export function collectPiSubagentsMetaUsage(
 	artifactsDir: string,
 	sessionStartedAtMs: number,
-	ingested: ReadonlySet<string>,
+	ingested: Set<string>,
 	allowedRunIds?: ReadonlySet<string>,
 	onTruncated?: () => void,
+	pendingNullMeta?: Map<string, number>,
 ): SubagentUsageRecord[] {
 	const out: SubagentUsageRecord[] = [];
 	let reads = 0;
@@ -795,9 +796,11 @@ export function collectPiSubagentsMetaUsage(
 		const source = sourceKey ? parseMetaSourceKeyGranularity(sourceKey) : null;
 		if (
 			!sourceKey ||
-			ingested.has(sourceKey) ||
 			(allowedRunIds !== undefined && (!source || !allowedRunIds.has(source.runId)))
 		) {
+			continue;
+		}
+		if (ingested.has(sourceKey) && !pendingNullMeta?.has(sourceKey)) {
 			continue;
 		}
 		let stats: Stats;
@@ -809,6 +812,14 @@ export function collectPiSubagentsMetaUsage(
 		if (stats.mtimeMs < sessionStartedAtMs) {
 			continue;
 		}
+		if (ingested.has(sourceKey)) {
+			const pendingMtime = pendingNullMeta?.get(sourceKey);
+			if (pendingMtime === undefined || pendingMtime === stats.mtimeMs) {
+				continue;
+			}
+			ingested.delete(sourceKey);
+			pendingNullMeta?.delete(sourceKey);
+		}
 		if (reads >= MAX_SUBAGENT_META_READS_PER_SCAN) {
 			// Not a silent truncation: everything skipped here is still un-ingested,
 			// so the next scan starts from it. Bail out rather than block the turn on
@@ -819,10 +830,16 @@ export function collectPiSubagentsMetaUsage(
 		reads += 1;
 		const record = readPiSubagentsMetaUsage(metaPath, stats.size);
 		if (record) {
+			pendingNullMeta?.delete(sourceKey);
 			out.push(record);
+		} else {
+			// Stable null (corrupt JSON, all-zero usage, oversize) must occupy a slot
+			// in `ingested` so a backlog of them cannot starve later good files.
+			ingested.add(sourceKey);
+			pendingNullMeta?.set(sourceKey, stats.mtimeMs);
 		}
 	}
-	if (truncated && out.length > 0) {
+	if (truncated) {
 		onTruncated?.();
 	}
 	return out;
@@ -907,6 +924,8 @@ export type SubagentIngestState = {
 	keys: Set<string>;
 	aggregateRunIds: Set<string>;
 	perChildRunIds: Set<string>;
+	/** sourceKey → mtimeMs for files ingested as stable-null; mtime change revives them. */
+	pendingNullMeta: Map<string, number>;
 };
 
 export function createSubagentIngestState(): SubagentIngestState {
@@ -914,6 +933,7 @@ export function createSubagentIngestState(): SubagentIngestState {
 		keys: new Set(),
 		aggregateRunIds: new Set(),
 		perChildRunIds: new Set(),
+		pendingNullMeta: new Map(),
 	};
 }
 

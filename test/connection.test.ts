@@ -78,6 +78,7 @@ describe("normalizeAndValidateBaseUrl", () => {
 			normalizeAndValidateBaseUrl("https://[fd12:3456:789a:1::1]/v1").ok,
 		).toBe(false);
 		expect(normalizeAndValidateBaseUrl("https://[fe80::1]/v1").ok).toBe(false);
+		expect(normalizeAndValidateBaseUrl("https://[febf::1]/v1").ok).toBe(false);
 		expect(
 			normalizeAndValidateBaseUrl("https://[::ffff:192.168.0.1]/v1").ok,
 		).toBe(false);
