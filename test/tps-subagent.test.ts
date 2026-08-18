@@ -1306,10 +1306,9 @@ describe("tps subagent meta scan rescheduling", () => {
 		expect(onTruncated).not.toHaveBeenCalled();
 	});
 
-	it("does not ask again when a full scan ingested nothing", () => {
-		// Every candidate is over the size cap: rescheduling here would spin forever,
-		// because no scan can ever grow the ingested set. Forward progress is the
-		// termination condition.
+	it("registers oversize metas as ingested so a later scan can make progress", () => {
+		// Oversize files parse as null. Registering them (and firing onTruncated)
+		// lets the next scan skip them instead of re-reading the same 256 forever.
 		const root = mkdtempSync(join(tmpdir(), "pi-subagents-stuck-"));
 		const artifactsDir = join(root, ".pi-subagents", "artifacts");
 		mkdirSync(artifactsDir, { recursive: true });
@@ -1325,18 +1324,113 @@ describe("tps subagent meta scan rescheduling", () => {
 				}),
 			);
 		}
+		const ingested = new Set<string>();
 		const onTruncated = vi.fn();
 
 		const records = collectPiSubagentsMetaUsage(
 			artifactsDir,
 			Date.now() - 60_000,
-			new Set<string>(),
+			ingested,
 			undefined,
 			onTruncated,
 		);
 
 		expect(records).toHaveLength(0);
-		expect(onTruncated).not.toHaveBeenCalled();
+		expect(onTruncated).toHaveBeenCalledOnce();
+		expect(ingested.size).toBe(MAX_SUBAGENT_META_READS_PER_SCAN);
+
+		const onTruncatedAgain = vi.fn();
+		expect(
+			collectPiSubagentsMetaUsage(
+				artifactsDir,
+				Date.now() - 60_000,
+				ingested,
+				undefined,
+				onTruncatedAgain,
+			),
+		).toHaveLength(0);
+		expect(onTruncatedAgain).not.toHaveBeenCalled();
+		expect(ingested.size).toBe(total);
+	});
+
+	it("reaches a good meta behind a backlog of unparseable files", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-nulls-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		for (let i = 0; i < 300; i++) {
+			writeFileSync(
+				join(artifactsDir, `aaaa${i.toString(16).padStart(4, "0")}_worker_0_meta.json`),
+				"{",
+			);
+		}
+		writeFileSync(
+			join(artifactsDir, "ffff0001_worker_0_meta.json"),
+			JSON.stringify({
+				agent: "worker",
+				model: "llmgates/gpt-5.6-sol",
+				usage: { turns: 1, input: 42, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
+			}),
+		);
+		const ingested = new Set<string>();
+		const pending = new Map<string, number>();
+		const startedAtMs = Date.now() - 60_000;
+		const found: ReturnType<typeof collectPiSubagentsMetaUsage> = [];
+		for (let scan = 0; scan < 8 && found.length === 0; scan++) {
+			found.push(
+				...collectPiSubagentsMetaUsage(
+					artifactsDir,
+					startedAtMs,
+					ingested,
+					undefined,
+					undefined,
+					pending,
+				),
+			);
+		}
+		expect(found).toHaveLength(1);
+		expect(found[0]?.input).toBe(42);
+	});
+
+	it("revives a meta that was truncated then completed", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-revive-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const metaPath = join(artifactsDir, "bbbb0001_worker_0_meta.json");
+		writeFileSync(metaPath, "{");
+		const ingested = new Set<string>();
+		const pending = new Map<string, number>();
+		const startedAtMs = Date.now() - 60_000;
+		expect(
+			collectPiSubagentsMetaUsage(
+				artifactsDir,
+				startedAtMs,
+				ingested,
+				undefined,
+				undefined,
+				pending,
+			),
+		).toHaveLength(0);
+		expect(ingested.size).toBe(1);
+		writeFileSync(
+			metaPath,
+			JSON.stringify({
+				agent: "worker",
+				model: "llmgates/gpt-5.6-sol",
+				usage: { turns: 1, input: 9, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
+			}),
+		);
+		const later = Date.now() / 1000 + 2;
+		utimesSync(metaPath, later, later);
+		const second = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			startedAtMs,
+			ingested,
+			undefined,
+			undefined,
+			pending,
+		);
+		expect(second).toHaveLength(1);
+		expect(second[0]?.input).toBe(9);
 	});
 
 	it("converges when the whole read budget goes to cross-granularity duplicates", () => {

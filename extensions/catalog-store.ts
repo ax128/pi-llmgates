@@ -33,6 +33,23 @@ export type EndpointRefreshResult =
 	| { status: "superseded" }
 	| { status: "ok"; models: Model<Api>[] };
 
+export function refreshFailureReason(
+	refresh: Exclude<EndpointRefreshResult, { status: "ok" }>,
+): string {
+	switch (refresh.status) {
+		case "offline":
+			return "offline mode";
+		case "not-ready":
+			return "provider not ready";
+		case "superseded":
+			return "superseded by a newer refresh";
+		default: {
+			const exhaustive: never = refresh;
+			return exhaustive;
+		}
+	}
+}
+
 export interface CatalogStore {
 	/** Cached catalog for this refresh phase. Rejects only on the legacy read path. */
 	read(): Promise<CatalogStoreEntry | undefined>;

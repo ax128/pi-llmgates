@@ -180,10 +180,19 @@ describe("compat lifecycle", () => {
 			await pi.emit("session_start", { reason: "start" });
 			await deleteProviderAuthEntry(agentDir, instance.id);
 
-			await vi.waitFor(() => expect(listInstances(agentDir)).toEqual([]));
+			// The purge removes the registry entry first and the overrides after, so
+			// waiting only on listInstances() can observe the gap between the two.
+			await vi.waitFor(
+				() => {
+					expect(listInstances(agentDir)).toEqual([]);
+					expect(
+						existsSync(join(agentDir, "llmgates/2api-models", `${instance.id}.json`)),
+					).toBe(false);
+				},
+				{ timeout: 5_000 },
+			);
 			expect(registration.providers.has(instance.id)).toBe(false);
 			expect(pi.unregistered).toEqual([instance.id]);
-			expect(existsSync(join(agentDir, "llmgates/2api-models", `${instance.id}.json`))).toBe(false);
 		} finally {
 			cleanup();
 		}
@@ -256,6 +265,30 @@ describe("compat lifecycle", () => {
 			// Once the file is readable again, the pending logout cleanup completes.
 			writeJson(join(agentDir, "auth.json"), {});
 			await vi.waitFor(() => expect(listInstances(agentDir)).toEqual([]), { timeout: 5_000 });
+		} finally {
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("does not leave an orphan-cleanup retry timer after session_shutdown", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const instance = INSTANCES[0]!;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir);
+			await pi.emit("session_start", { reason: "start" });
+			writeFileSync(join(agentDir, "auth.json"), "{");
+			await vi.waitFor(
+				() => expect(warn).toHaveBeenCalledWith(expect.stringMatching(/temporarily unreadable/i)),
+				{ timeout: 5_000 },
+			);
+			await pi.emit("session_shutdown");
+			writeJson(join(agentDir, "auth.json"), {});
+			await new Promise((resolve) => setTimeout(resolve, 1500));
+			expect(listInstances(agentDir)).toEqual([instance]);
 		} finally {
 			warn.mockRestore();
 			cleanup();

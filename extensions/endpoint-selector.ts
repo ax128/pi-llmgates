@@ -9,6 +9,8 @@
  * never silently retarget a different model.
  */
 
+import { padEndToWidth, visibleWidth } from "./terminal-width.js";
+
 /** pi `api` → the endpoint word shown in the checklist and accepted by /endpoint. */
 const API_TO_ENDPOINT_LABEL: Record<string, string> = {
 	"openai-completions": "chat",
@@ -70,7 +72,7 @@ const HEADER_LINES = [
 const UNMANAGED_HEADER = "# ── 本扩展不管辖（无 api 写入通道，不可配置）──";
 
 function padEnd(value: string, width: number): string {
-	return value.length >= width ? value : value + " ".repeat(width - value.length);
+	return padEndToWidth(value, width);
 }
 
 /** Render the checklist prefilled into `ui.editor`. Deterministic, no I/O. */
@@ -78,11 +80,11 @@ export function renderSelectorList(snapshot: SelectorSnapshot): string {
 	const lines: string[] = [...HEADER_LINES];
 	const idWidth = Math.max(
 		12,
-		...snapshot.groups.flatMap((group) => group.models.map((model) => model.id.length)),
+		...snapshot.groups.flatMap((group) => group.models.map((model) => visibleWidth(model.id))),
 	);
 	const nameWidth = Math.max(
 		8,
-		...snapshot.groups.flatMap((group) => group.models.map((model) => model.name.length)),
+		...snapshot.groups.flatMap((group) => group.models.map((model) => visibleWidth(model.name))),
 	);
 
 	for (const group of snapshot.groups) {
@@ -90,8 +92,9 @@ export function renderSelectorList(snapshot: SelectorSnapshot): string {
 		lines.push(`# ── ${group.providerId} · ${group.label} ──`);
 		for (const model of group.models) {
 			const marker = model.hasOverride ? " *" : "";
+			const spacedIdNote = /\s/.test(model.id) ? "  # id 含空白，仅 TUI 可配置" : "";
 			lines.push(
-				`[ ] ${padEnd(model.id, idWidth)}  ${padEnd(model.name, nameWidth)}  ${model.endpoint}${marker}`,
+				`[ ] ${padEnd(model.id, idWidth)}  ${padEnd(model.name, nameWidth)}  ${model.endpoint}${marker}${spacedIdNote}`,
 			);
 		}
 	}
@@ -169,7 +172,14 @@ export function parseSelectorList(text: string, snapshot: SelectorSnapshot): Sel
 		const modelId = match[2]!;
 		const candidates = providersById.get(modelId);
 		if (!candidates) {
-			rejected.push(`${modelId}（不在本扩展管辖的模型集合内，无 api 写入通道）`);
+			const spaced = [...providersById.keys()].find(
+				(id) => /\s/.test(id) && id.split(/\s+/)[0] === modelId,
+			);
+			rejected.push(
+				spaced
+					? `${modelId}（网关 id 含空白，清单只读到第一个词；请用 TUI 的 /endpoint-setting 配置，或用 /endpoint 精确指定）`
+					: `${modelId}（不在本扩展管辖的模型集合内，无 api 写入通道）`,
+			);
 			continue;
 		}
 

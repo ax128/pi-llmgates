@@ -273,6 +273,7 @@ export default function (pi: ExtensionAPI) {
 						() => {
 							truncated = true;
 						},
+						subagentIngestState.pendingNullMeta,
 					),
 					targetStats,
 				);
@@ -283,7 +284,9 @@ export default function (pi: ExtensionAPI) {
 			// on records having been read: the consumer drops cross-granularity
 			// duplicates, whose files stay eligible, so a scan whose whole read
 			// budget went to them would otherwise re-queue itself unchanged forever.
-			// `keys` is monotonic and bounded by the file count, so this terminates.
+			// A stable-null meta is revived only when its mtime changes, and the
+			// revive deletes then re-adds one key, so `keys` cannot grow without a
+			// file being newly accounted for. Bounded by the file count: terminates.
 			if (truncated && subagentIngestState.keys.size > ingestedBefore) {
 				scheduleSubagentMetaScan();
 			}
@@ -583,6 +586,8 @@ export default function (pi: ExtensionAPI) {
 						startedAtMs,
 						subagentIngestState.keys,
 						sessionRunIds,
+						undefined,
+						subagentIngestState.pendingNullMeta,
 					),
 					settledTurnStats,
 				);

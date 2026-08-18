@@ -74,6 +74,17 @@ describe("resolveModelCostRates", () => {
 		expect(resolveModelCostRates("grok-4.5", "xai").output).toBe(6);
 	});
 
+	it("matches o1-mini instead of falling through to DEFAULT_MODEL_COST", () => {
+		expect(resolveModelCostRates("o1-mini", "openai")).toMatchObject({
+			input: 1.1,
+			output: 4.4,
+		});
+		expect(resolveModelCostRates("o1", "openai")).toMatchObject({
+			input: 15,
+			output: 60,
+		});
+	});
+
 	it("resolves by model id when provider is llmgates", () => {
 		expect(resolveModelCostRates("claude-opus-4-8", "llmgates").input).toBe(5);
 	});

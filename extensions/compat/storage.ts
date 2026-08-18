@@ -176,6 +176,11 @@ export async function addInstance(
 	});
 }
 
+/**
+ * Unconditionally replace a registry entry by id (no compare-and-swap).
+ *
+ * @deprecated Prefer {@link replaceInstanceIfEqual}. Production code uses the CAS path.
+ */
 export async function updateInstance(
 	agentDir: string,
 	instance: CompatInstance,

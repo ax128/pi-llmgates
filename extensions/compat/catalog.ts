@@ -24,6 +24,10 @@ type CompatGatewayModel = GatewayModel & {
 	max_tokens?: unknown;
 };
 
+function stripControlChars(value: string): string {
+	return value.replace(/\p{Control}/gu, "");
+}
+
 const MOONSHOT_KIMI_VENDOR_IDS = new Set([
 	"moonshotai",
 	"moonshotai-cn",
@@ -161,7 +165,9 @@ export function mapCompatModelsPayload(
 	const seen = new Set<string>();
 
 	for (const upstream of parseGatewayModelsPayload(payload) as CompatGatewayModel[]) {
-		const id = typeof upstream.id === "string" ? upstream.id : "";
+		// Control chars only: trimming would rewrite the id pi sends upstream and
+		// would orphan any override keyed on the original.
+		const id = stripControlChars(typeof upstream.id === "string" ? upstream.id : "");
 		if (!id.trim() || seen.has(id)) {
 			continue;
 		}
@@ -195,9 +201,11 @@ export function mapCompatModelsPayload(
 		const thinking = resolveThinkingMetadata(id, api);
 
 		const displayName =
-			(typeof upstream.display_name === "string" && upstream.display_name.trim()) ||
-			(typeof upstream.name === "string" && upstream.name.trim()) ||
-			id;
+			stripControlChars(
+				(typeof upstream.display_name === "string" && upstream.display_name.trim()) ||
+					(typeof upstream.name === "string" && upstream.name.trim()) ||
+					id,
+			).trim() || id;
 		const model: Model<Api> = {
 			id,
 			name: displayName,

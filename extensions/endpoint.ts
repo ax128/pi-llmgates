@@ -16,7 +16,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { EndpointRefreshResult } from "./catalog-store.js";
+import { refreshFailureReason, type EndpointRefreshResult } from "./catalog-store.js";
+import { errorSummary } from "./util.js";
 import type { CompatGatewayRegistration } from "./compat/index.js";
 import { writeModelOverride, type ModelOverrideWrite } from "./model-overrides.js";
 
@@ -88,10 +89,6 @@ export interface EndpointCommandContext {
 	notify(message: string, level: "info" | "warning" | "error"): void;
 }
 
-function errorSummary(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
 function describeChange(value: EndpointValue): string {
 	return value === "auto" ? "cleared per-model endpoint" : `endpoint=${value}`;
 }
@@ -121,6 +118,9 @@ export const IDLE_WAIT_TIMEOUT_MS = 120_000;
 
 export const IDLE_WAIT_TIMEOUT_MESSAGE =
 	"The agent is still busy; nothing was changed. Wait for the current turn to finish and run the command again.";
+
+export const ENDPOINT_IN_FLIGHT_MESSAGE =
+	"Another endpoint or catalog refresh command is already running; wait for it to finish. If the /endpoint-setting picker is open, close it first — it holds this lock the whole time it is on screen.";
 
 /**
  * Bounded `waitForIdle`. The in-flight guard above is taken BEFORE the idle wait
@@ -165,7 +165,7 @@ export async function runEndpointCommand(
 	ctx: EndpointCommandContext,
 ): Promise<void> {
 	if (!acquireEndpointInFlight()) {
-		ctx.notify("Another endpoint or catalog refresh command is already running; wait for it to finish.", "error");
+		ctx.notify(ENDPOINT_IN_FLIGHT_MESSAGE, "error");
 		return;
 	}
 	let fileWritten = false;
@@ -205,15 +205,9 @@ export async function runEndpointCommand(
 		}
 
 		if (refresh.status !== "ok") {
-			const reason =
-				refresh.status === "offline"
-					? "offline mode"
-					: refresh.status === "not-ready"
-						? "provider not ready"
-						: "superseded by a newer refresh";
 			notifyPartial(
 				ctx,
-				`Saved ${describeChange(parsed.value)} for ${targetId}, but not active yet (${reason}). It activates on the next successful catalog refresh.`,
+				`Saved ${describeChange(parsed.value)} for ${targetId}, but not active yet (${refreshFailureReason(refresh)}). It activates on the next successful catalog refresh.`,
 			);
 			return;
 		}
@@ -224,9 +218,15 @@ export async function runEndpointCommand(
 				: EXPECTED_API[parsed.value];
 		const actualApi = ctx.modelRegistry.find(providerId, targetId)?.api;
 		if (actualApi === undefined || expectedApi === undefined || actualApi !== expectedApi) {
+			const vanishedOnAuto =
+				parsed.value === "auto" &&
+				(expectedApi === undefined || actualApi === undefined);
+			const detail = vanishedOnAuto
+				? "the model is no longer in the refreshed catalog"
+				: `registry api: ${actualApi ?? "missing"}`;
 			notifyPartial(
 				ctx,
-				`Saved ${describeChange(parsed.value)} for ${targetId}, but the new endpoint is not fully active (registry api: ${actualApi ?? "missing"}). Use /model to reselect it, or retry.`,
+				`Saved ${describeChange(parsed.value)} for ${targetId}, but the new endpoint is not fully active (${detail}). Use /model to reselect it, or retry.`,
 			);
 			return;
 		}

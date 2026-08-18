@@ -294,7 +294,7 @@ pi
 - 三态结果：全部刷新成功为 **info**；至少一个 provider 成功、其余 offline / 未就绪 / 被取代 / 抛错为 **warning**（文案含 *partial*）；**零** provider 刷新成功且并非全部 hard-fail 时为 **warning**（*did not update any provider*，不含 *partial*）；全部 provider hard-fail 为 **error**。
 - 若当前模型的 provider 刷新成功但该 model id 已不在新 catalog 中，追加 **warning** 提示用 `/model` 重选（不会 silent 保留 stale binding）。
 
-> `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 共用同一把 in-flight 锁：任一命令执行期间，其余命令会被拒绝。三者都会等待 agent 空闲，最多 **120s**，超时则**不写入任何文件**、释放锁并提示稍后重试。
+> `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 共用同一把 in-flight 锁：任一命令执行期间，其余命令会被拒绝。`/endpoint-setting` 的选择器打开期间同样持锁（可能长达数分钟），需要先关掉选择器。三者都会等待 agent 空闲，最多 **120s**，超时则**不写入任何文件**、释放锁并提示稍后重试。
 
 ### 手工编辑 override 文件
 

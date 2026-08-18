@@ -222,6 +222,20 @@ describe("mapCompatModelsPayload", () => {
 		]);
 	});
 
+	it("strips control characters from gateway ids and display names", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{ id: "ok\nline", display_name: "Name\u001b[31mRed" },
+				{ id: "\u0007", display_name: "bell-only" },
+			],
+			OPTIONS,
+		);
+		expect(models.map(({ id, name }) => ({ id, name }))).toEqual([
+			{ id: "okline", name: "Name[31mRed" },
+		]);
+		expect(models.every((model) => !/[\p{Control}]/u.test(model.id + model.name))).toBe(true);
+	});
+
 	it("uses only true known upstream vendors in catalog refs and never the instance ID", () => {
 		const { catalogRefs } = mapCompatModelsPayload(
 			[

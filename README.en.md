@@ -296,7 +296,7 @@ Every model has `reasoning: true`, so the selector always exposes the levels abo
 - Three-state result: all providers refreshed is **info**; at least one succeeded while the rest were offline / not ready / superseded / threw is a **warning** (the text contains *partial*); **zero** providers refreshed without all of them hard-failing is a **warning** (*did not update any provider*, without *partial*); all providers hard-failing is an **error**.
 - If the current model's provider refreshed successfully but that model ID is no longer in the new catalog, an extra **warning** asks you to reselect with `/model` (a stale binding is never kept silently).
 
-> `/endpoint`, `/endpoint-setting` and `/llmgates-reload` share one in-flight lock: while any of them runs, the others are rejected. All three wait for the agent to go idle for at most **120s**; on timeout **no file is written**, the lock is released, and you are asked to retry later.
+> `/endpoint`, `/endpoint-setting` and `/llmgates-reload` share one in-flight lock: while any of them runs, the others are rejected. The `/endpoint-setting` picker holds that lock the whole time it is on screen (which can be several minutes), so close it first. All three wait for the agent to go idle for at most **120s**; on timeout **no file is written**, the lock is released, and you are asked to retry later.
 
 ### Editing the override file by hand
 

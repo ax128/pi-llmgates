@@ -28,6 +28,7 @@ import {
 	writeProviderOAuthCredential,
 } from "./storage.js";
 import { normalizeInstanceId, type CompatInstance } from "./types.js";
+import { errorSummary } from "../util.js";
 
 export interface RegisterCompatGatewaysOptions {
 	reservedProviderIds?: Iterable<string>;
@@ -90,7 +91,7 @@ export function formatCompatInstanceList(
 }
 
 function errorText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	return errorSummary(error);
 }
 
 function compatInitError(error: unknown): Error {
@@ -263,11 +264,13 @@ export function registerCompatGateways(
 	let orphanCleanupRequested = false;
 	let orphanCleanupRetryTimer: ReturnType<typeof setTimeout> | undefined;
 	let orphanCleanupRetryCount = 0;
+	let stopped = false;
 
 	const ORPHAN_CLEANUP_MAX_RETRIES = 3;
 	const ORPHAN_CLEANUP_RETRY_DELAY_MS = 1_000;
 
 	function scheduleOrphanCleanupRetry(): void {
+		if (stopped) return;
 		if (orphanCleanupRetryTimer) return;
 		if (orphanCleanupRetryCount >= ORPHAN_CLEANUP_MAX_RETRIES) {
 			logWarn(
@@ -361,6 +364,7 @@ export function registerCompatGateways(
 	}
 
 	function requestOrphanCleanup(): void {
+		if (stopped) return;
 		orphanCleanupRequested = true;
 		if (orphanCleanup) return;
 		orphanCleanup = Promise.resolve()
@@ -641,6 +645,7 @@ export function registerCompatGateways(
 	});
 
 	pi.on("session_start", (event) => {
+		stopped = false;
 		startAuthWatcher();
 		requestOrphanCleanup();
 		const reason =
@@ -657,6 +662,7 @@ export function registerCompatGateways(
 	});
 
 	pi.on("session_shutdown", async () => {
+		stopped = true;
 		stopAuthWatcher();
 		stopOrphanCleanupRetry();
 		await Promise.allSettled([

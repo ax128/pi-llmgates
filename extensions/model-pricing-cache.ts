@@ -143,7 +143,7 @@ export function resetPricingSyncChainForTests(): void {
 }
 
 export function mergePricingRates(file: ModelPricingFile): Record<string, ModelCostRates> {
-	const merged: Record<string, ModelCostRates> = {};
+	const merged = Object.create(null) as Record<string, ModelCostRates>;
 	for (const [key, value] of Object.entries(file.rates ?? {})) {
 		merged[key] = { ...value };
 	}
@@ -154,9 +154,15 @@ export function mergePricingRates(file: ModelPricingFile): Record<string, ModelC
 }
 
 export function applyPricingCacheToResolver(file: ModelPricingFile | null | undefined): void {
-	memoryRates = file?.rates ? { ...file.rates } : undefined;
-	memoryOverrides = file?.overrides ? { ...file.overrides } : undefined;
-	memoryContextWindows = file?.contextWindows ? { ...file.contextWindows } : undefined;
+	memoryRates = file?.rates
+		? Object.assign(Object.create(null), file.rates)
+		: undefined;
+	memoryOverrides = file?.overrides
+		? Object.assign(Object.create(null), file.overrides)
+		: undefined;
+	memoryContextWindows = file?.contextWindows
+		? Object.assign(Object.create(null), file.contextWindows)
+		: undefined;
 }
 
 function memoryLookupKeys(modelId: string, providerId?: string): string[] {
@@ -167,14 +173,24 @@ function memoryLookupKeys(modelId: string, providerId?: string): string[] {
 
 export function lookupMemoryPricingRates(modelId: string, providerId?: string): ModelCostRates | undefined {
 	const keys = memoryLookupKeys(modelId, providerId);
-	const rates = keys.map((key) => memoryOverrides?.[key]).find(Boolean) ??
-		keys.map((key) => memoryRates?.[key]).find(Boolean);
-	return rates ? { ...rates } : undefined;
+	for (const key of keys) {
+		if (memoryOverrides && Object.hasOwn(memoryOverrides, key)) {
+			return { ...memoryOverrides[key]! };
+		}
+	}
+	for (const key of keys) {
+		if (memoryRates && Object.hasOwn(memoryRates, key)) {
+			return { ...memoryRates[key]! };
+		}
+	}
+	return undefined;
 }
 
 export function lookupMemoryContextWindow(modelId: string, providerId?: string): number | undefined {
+	if (!memoryContextWindows) return undefined;
 	for (const key of memoryLookupKeys(modelId, providerId)) {
-		const contextWindow = memoryContextWindows?.[key];
+		if (!Object.hasOwn(memoryContextWindows, key)) continue;
+		const contextWindow = memoryContextWindows[key];
 		if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
 			return contextWindow;
 		}
@@ -196,7 +212,7 @@ function isModelCostRates(value: unknown): value is ModelCostRates {
 }
 
 function parseRatesObject(value: unknown): Record<string, ModelCostRates> {
-	const rates: Record<string, ModelCostRates> = {};
+	const rates = Object.create(null) as Record<string, ModelCostRates>;
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return rates;
 	}
@@ -212,7 +228,7 @@ function parseRatesObject(value: unknown): Record<string, ModelCostRates> {
 }
 
 function parseContextWindows(value: unknown): Record<string, number> {
-	const contextWindows: Record<string, number> = {};
+	const contextWindows = Object.create(null) as Record<string, number>;
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return contextWindows;
 	}
@@ -322,7 +338,10 @@ export function litellmLookupCandidates(modelId: string, providerId?: string): s
 	];
 }
 
-export function ratesFromLiteLLMEntry(entry: LiteLLMPriceEntry): ModelCostRates | null {
+export function ratesFromLiteLLMEntry(
+	entry: LiteLLMPriceEntry,
+	vendor?: string,
+): ModelCostRates | null {
 	const inputRaw = entry.input_cost_per_token;
 	const outputRaw = entry.output_cost_per_token;
 	if (typeof inputRaw !== "number" || !Number.isFinite(inputRaw) || inputRaw < 0) {
@@ -343,9 +362,17 @@ export function ratesFromLiteLLMEntry(entry: LiteLLMPriceEntry): ModelCostRates 
 	const cacheWrite =
 		typeof cacheWriteRaw === "number" && Number.isFinite(cacheWriteRaw) && cacheWriteRaw > 0
 			? cacheWriteRaw * 1_000_000
-			: input;
+			: cacheWriteFallback(input, vendor);
 
 	return { input, output, cacheRead, cacheWrite };
+}
+
+function cacheWriteFallback(input: number, vendor?: string): number {
+	const v = vendor?.trim().toLowerCase() ?? "";
+	if (v === "anthropic" || v.startsWith("anthropic")) {
+		return input * 1.25;
+	}
+	return input;
 }
 
 export function lookupLiteLLMRates(
@@ -358,7 +385,7 @@ export function lookupLiteLLMRates(
 		if (!entry) {
 			continue;
 		}
-		const rates = ratesFromLiteLLMEntry(entry);
+		const rates = ratesFromLiteLLMEntry(entry, providerId);
 		if (rates) {
 			return rates;
 		}
@@ -383,8 +410,10 @@ export function lookupLiteLLMContextWindow(
 
 function hasCachedRate(file: ModelPricingFile, ref: CatalogModelRef): boolean {
 	const keys = memoryLookupKeys(ref.id, ref.providerId);
-	if (keys.some((key) => Boolean(file.overrides?.[key]))) return true;
-	return keys[0]! in file.rates;
+	if (keys.some((key) => Boolean(file.overrides && Object.hasOwn(file.overrides, key)))) {
+		return true;
+	}
+	return Object.hasOwn(file.rates, keys[0]!);
 }
 
 function hasCachedContextWindow(file: ModelPricingFile, ref: CatalogModelRef): boolean {
@@ -394,7 +423,9 @@ function hasCachedContextWindow(file: ModelPricingFile, ref: CatalogModelRef): b
 }
 
 function isOverridden(file: ModelPricingFile, ref: CatalogModelRef): boolean {
-	return memoryLookupKeys(ref.id, ref.providerId).some((key) => Boolean(file.overrides?.[key]));
+	return memoryLookupKeys(ref.id, ref.providerId).some(
+		(key) => Boolean(file.overrides && Object.hasOwn(file.overrides, key)),
+	);
 }
 
 export interface SyncModelPricingCacheOptions {
@@ -536,7 +567,10 @@ export async function syncModelPricingCache(
 	}
 
 	// Keep existing values as base so hand-edited and off-catalog entries survive refresh.
-	const nextRates = { ...existing.rates };
+	const nextRates = Object.assign(
+		Object.create(null) as Record<string, ModelCostRates>,
+		existing.rates,
+	);
 	for (const ref of rateRefsToResolve) {
 		if (isOverridden(existing, ref)) {
 			continue;
@@ -548,7 +582,10 @@ export async function syncModelPricingCache(
 		nextRates[pricingCacheKey(ref.id, ref.providerId)] = rates;
 	}
 
-	const nextContextWindows = { ...existing.contextWindows };
+	const nextContextWindows = Object.assign(
+		Object.create(null) as Record<string, number>,
+		existing.contextWindows,
+	);
 	for (const ref of contextRefsToResolve) {
 		const contextWindow = lookupLiteLLMContextWindow(table, ref.id, ref.providerId);
 		if (contextWindow === undefined) {
@@ -565,7 +602,10 @@ export async function syncModelPricingCache(
 		contextWindows: nextContextWindows,
 	};
 	if (existing.overrides && Object.keys(existing.overrides).length > 0) {
-		next.overrides = { ...existing.overrides };
+		next.overrides = Object.assign(
+			Object.create(null) as Record<string, ModelCostRates>,
+			existing.overrides,
+		);
 	}
 
 	try {

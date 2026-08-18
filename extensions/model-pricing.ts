@@ -35,6 +35,12 @@ export const MODEL_PRICE_RULES: readonly ModelPriceRule[] = [
 		rates: { input: 150, output: 600, cacheRead: 75, cacheWrite: 150 },
 	},
 	{
+		label: "OpenAI o1-mini",
+		provider: "openai",
+		pattern: /^o1-mini/i,
+		rates: { input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 1.1 },
+	},
+	{
 		label: "OpenAI o1",
 		provider: "openai",
 		pattern: /^o1(?!.*mini)/i,

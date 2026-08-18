@@ -226,6 +226,10 @@ export function abortError(message = "The operation was aborted."): DOMException
 	return new DOMException(message, "AbortError");
 }
 
+export function errorSummary(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 /** AbortSignal.timeout() rejects with TimeoutError; caller aborts reject with AbortError. */
 export function isAbortLikeError(error: unknown): boolean {
 	return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");

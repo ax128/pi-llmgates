@@ -66,6 +66,9 @@ const LOOPBACK_RANGES = new BlockList();
 LOOPBACK_RANGES.addSubnet("127.0.0.0", 8, "ipv4");
 LOOPBACK_RANGES.addAddress("::1", "ipv6");
 
+const LINK_LOCAL_V6 = new BlockList();
+LINK_LOCAL_V6.addSubnet("fe80::", 10, "ipv6");
+
 /** Accept localhost, 127/8, ::1, and IPv4-mapped loopback. */
 export function isLoopbackHostname(hostname: string): boolean {
 	const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
@@ -93,7 +96,11 @@ function isPrivateOrLinkLocalIpLiteral(hostname: string): boolean {
 		return false;
 	}
 	if (version === 6) {
-		if (host.startsWith("fe80:")) return true;
+		try {
+			if (LINK_LOCAL_V6.check(host, "ipv6")) return true;
+		} catch {
+			// Not a literal we can classify.
+		}
 		if (host.startsWith("fc") || host.startsWith("fd")) return true;
 		if (host.startsWith("::ffff:")) {
 			const mapped = host.slice("::ffff:".length);

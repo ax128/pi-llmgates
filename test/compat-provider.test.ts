@@ -1240,4 +1240,44 @@ describe("override path ownership and per-instance isolation", () => {
 			cleanup();
 		}
 	});
+
+	it("fetches again inside the freshness window when the API key changes", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		let nowMs = 1_000_000;
+		let fetchCount = 0;
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createCompatProvider({
+				agentDir,
+				instance: INSTANCE,
+				now: () => nowMs,
+				fetchImpl: async () => {
+					fetchCount += 1;
+					return new Response(JSON.stringify([{ id: `model-${fetchCount}` }]));
+				},
+			});
+			const store = createMemoryStore();
+			await provider.refreshModels!({
+				credential: credential("key-a", INSTANCE.baseUrl),
+				store,
+				allowNetwork: true,
+			});
+			expect(fetchCount).toBe(1);
+			nowMs += 60_000;
+			await provider.refreshModels!({
+				credential: credential("key-a", INSTANCE.baseUrl),
+				store,
+				allowNetwork: true,
+			});
+			expect(fetchCount).toBe(1);
+			await provider.refreshModels!({
+				credential: credential("key-b", INSTANCE.baseUrl),
+				store,
+				allowNetwork: true,
+			});
+			expect(fetchCount).toBe(2);
+		} finally {
+			cleanup();
+		}
+	});
 });
