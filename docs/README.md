@@ -63,4 +63,4 @@
 | `scripts/gate-record-pass.sh` | §4 功能验证通过后写入 `.gate/pre-publish-pass.json` |
 | `scripts/npm-publish-auth-link.mjs` | 取出 npm 浏览器认证链接，发布时发给操作者 |
 | `scripts/publish-npm.sh` | 发布唯一入口：校验 gate + check + 显式 build + publish（含 bump 后 re-pack）；不要绕过它直接 `npm publish` |
-| `scripts/local-cpa-smoke.mjs` | 本地手工冒烟：读 `--agent-dir`（默认 `~/.pi/agent`）真实凭证与 registry，对 `cpa` 实例的 `claude-opus-4-8` 复现一次流式请求；仅人工调试用，不进 CI，也非发版门禁环节 |
+| `scripts/lib/assert-tarball.sh` | tarball 内容断言（`REQUIRED_PATHS`），由 `pre-publish-gate.sh` 与 `publish-npm.sh` 的 re-pack 分支共用 |
