@@ -9,7 +9,7 @@
 
 - 发布操作细节：[npm-package.md](./npm-package.md)
 - Agent 入口：[AGENTS.md](../AGENTS.md)
-- 本地开发（源码目录，非发版验证）：[README § 开发](../README.md#开发)
+- 本地开发（源码目录，非发版验证）：[README § 开发与发布](../README.md#开发与发布)
 
 ---
 
@@ -309,7 +309,7 @@ ln -s "$PWD/node_modules/@earendil-works/pi-coding-agent" <pkgdir>/node_modules/
 门禁与 [npm-package.md § Agent 标准发布对话](./npm-package.md#agent-标准发布对话下次照此执行) 的衔接：
 
 1. **本页 §2–§5 全部通过**（含 `.gate/pre-publish-pass.json` 与对话回执）
-2. 升版本与定版发布说明（见 [npm-package.md §3.2](./npm-package.md#32-升版本)）：`package.json`、`package-lock.json`、`README.md`、`docs/npm-package.md`、`CHANGELOG.md`
+2. 升版本与定版发布说明（见 [npm-package.md §3.2](./npm-package.md#32-升版本)）：`package.json`、`package-lock.json`、`README.md`、`README.en.md`、`docs/npm-package.md`、`CHANGELOG.md`
 3. `npm run check`（升版本后若**仅**改上述文件，可省略重复 check，但推荐再跑一次）
 4. commit + push + tag
 5. `node ./scripts/npm-publish-auth-link.mjs` → 等 OTP → `./scripts/publish-npm.sh --otp=...`
@@ -317,8 +317,8 @@ ln -s "$PWD/node_modules/@earendil-works/pi-coding-agent" <pkgdir>/node_modules/
 **bump 与 re-pack 规则：**
 
 - 门禁在 **pre-bump commit** 上完成（验证代码行为）。
-- 发布提交**只可**触及这五个文件——`package.json`、`package-lock.json`、`README.md`、`docs/npm-package.md`、`CHANGELOG.md`（即 `publish-npm.sh` 里的 `BUMP_ALLOWED`）→ **不必**重复 §4，但 publish 时 `publish-npm.sh` 会 **re-pack**。
-- 碰到白名单以外的任何文件（`extensions/`、依赖、`scripts/`、其他 docs）→ `publish-npm.sh` 拒绝发布，须从 §2 **完整**重跑门禁。改动这五个文件之外的东西时，请在跑门禁**之前**改完。
+- 发布提交**只可**触及这六个文件——`package.json`、`package-lock.json`、`README.md`、`README.en.md`、`docs/npm-package.md`、`CHANGELOG.md`（即 `publish-npm.sh` 里的 `BUMP_ALLOWED`）→ **不必**重复 §4，但 publish 时 `publish-npm.sh` 会 **re-pack**。
+- 碰到白名单以外的任何文件（`extensions/`、依赖、`scripts/`、其他 docs）→ `publish-npm.sh` 拒绝发布，须从 §2 **完整**重跑门禁。改动这六个文件之外的东西时，请在跑门禁**之前**改完。
 
 紧急人工 override（**Agent 禁止使用**）：`GATE_SKIP=1 ./scripts/publish-npm.sh --otp=...`
 

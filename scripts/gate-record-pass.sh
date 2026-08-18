@@ -51,10 +51,14 @@ if [[ "$HEAD" != "$BUILD_COMMIT" ]]; then
 fi
 
 VERIFIED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-node <<EOF
+export GATE_BUILD_FILE="$BUILD_FILE"
+export GATE_TESTS_VALUE="$TESTS"
+export GATE_VERIFIED_BY_VALUE="$VERIFIED_BY"
+export GATE_VERIFIED_AT="$VERIFIED_AT"
+node <<'EOF'
 const fs = require("node:fs");
-const build = JSON.parse(fs.readFileSync("$BUILD_FILE", "utf8"));
-const tests = "$TESTS".split(",").map((s) => s.trim()).filter(Boolean);
+const build = JSON.parse(fs.readFileSync(process.env.GATE_BUILD_FILE, "utf8"));
+const tests = (process.env.GATE_TESTS_VALUE ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const pass = {
 	schema: "pre-publish-gate/v1",
 	status: "PASS",
@@ -65,8 +69,8 @@ const pass = {
 	built_at: build.built_at,
 	installed: true,
 	tests,
-	verified_by: "$VERIFIED_BY",
-	verified_at: "$VERIFIED_AT",
+	verified_by: process.env.GATE_VERIFIED_BY_VALUE,
+	verified_at: process.env.GATE_VERIFIED_AT,
 };
 fs.writeFileSync(".gate/pre-publish-pass.json", JSON.stringify(pass, null, 2) + "\n");
 EOF
