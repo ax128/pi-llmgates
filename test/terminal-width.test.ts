@@ -40,6 +40,25 @@ describe("terminal-width", () => {
 		}
 	});
 
+	it("covers the whole EAW Wide table, including blocks outside the CJK scripts", () => {
+		// Regression guard for a hand-picked subset: every one of these is Wide per
+		// Unicode EAW, none is matched by the Script regex or the emoji heuristic,
+		// and each sits in a range an incomplete table is likely to omit.
+		const samples = [
+			["\u2630", "2630 trigram"],
+			["\u268a", "268A monogram"],
+			["\u31e4", "31E4 CJK stroke"],
+			["\u4dc0", "4DC0 hexagram"],
+			["\u{17000}", "17000 Tangut"],
+			["\u{18d80}", "18D80 Tangut components"],
+			["\u{1d300}", "1D300 Tai Xuan Jing"],
+			["\u{1d360}", "1D360 counting rod"],
+		] as const;
+		for (const [ch, name] of samples) {
+			expect(visibleWidth(ch), name).toBe(2);
+		}
+	});
+
 	it("keeps already-correct wide characters at two columns", () => {
 		expect(visibleWidth("中")).toBe(2);
 		expect(visibleWidth("\u2E80")).toBe(2);
