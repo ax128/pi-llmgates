@@ -66,10 +66,26 @@ function createPi(options: { failProviderId?: string } = {}) {
 const NOW = 1_800_000_000_000;
 const BASE_URL = "https://compat.example/v1";
 
+/**
+ * A fetch stub that serves the catalog for these bootstrap tests.
+ *
+ * It must branch on the URL rather than assert a single one: the same `fetchImpl`
+ * also receives the LiteLLM pricing sync, and that call is wrapped in a catch that
+ * degrades to cached rates. An `expect()` rejection there never reaches the runner —
+ * it is swallowed and re-logged as a pricing warning, so the assertion silently stops
+ * guarding anything. Returning an empty table lets the sync succeed and keeps the
+ * catalog URL guarded by the branch below.
+ */
 function successfulFetch(modelId = "shared-model"): typeof fetch {
 	return vi.fn(async (input) => {
-		expect(String(input)).toBe(`${BASE_URL}/models`);
-		return new Response(JSON.stringify([{ id: modelId }]));
+		const url = String(input);
+		if (url === `${BASE_URL}/models`) {
+			return new Response(JSON.stringify([{ id: modelId }]));
+		}
+		if (url === LITELLM_PRICING_URL) {
+			return new Response(JSON.stringify({}));
+		}
+		throw new Error(`unexpected URL: ${url}`);
 	});
 }
 
