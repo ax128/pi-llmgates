@@ -56,7 +56,7 @@ This extension uses the **native Provider** API and does **not** support pi 0.80
 
 ```bash
 pi install npm:@llmgates_api/pi-llmgates-provider          # latest
-pi install npm:@llmgates_api/pi-llmgates-provider@0.3.1    # pinned version
+pi install npm:@llmgates_api/pi-llmgates-provider@0.3.2    # pinned version
 pi install -l npm:@llmgates_api/pi-llmgates-provider       # this project only (otherwise ~/.pi/agent/)
 ```
 
