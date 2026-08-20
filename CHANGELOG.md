@@ -6,6 +6,22 @@
 
 > 0.2.11 及更早的条目是在 0.2.11 发布后，依据 git 历史与各版本 tag 回补的；只收录对使用者可见的变更，纯内部重构与测试补强不单列。
 
+## [Unreleased]
+
+### 新增
+
+- **英文版 README（`README.en.md`）。** 与中文 README 同步维护，随包一起发布（已在 `files` 白名单与发布 tarball 断言中）。
+
+### 修复
+
+- **宽字符不再被少算，窄终端下的出口选择器不会再把 TUI 顶崩。** 行宽计算此前用的是一份不完整的 East Asian Width 表，与 pi-tui 实际使用的 `get-east-asian-width` 逐码点比对后发现 7719 个码点被算成一列而 pi-tui 算两列（U+2630–2637、U+268A–268F、U+31E4–31E5、U+4DC0–4DFF、U+17000–18CD5、U+18CFF–18D1E、U+18D80–18DF2、U+1D300–1D356、U+1D360–1D376）。少算是会崩的方向：`clip()` 会交给 pi-tui 一行它判定为超宽的文本，pi-tui 抛错、TUI 直接停住。现在表是完整的 W + F 集合（123 段）。同时补掉 `/endpoint-setting` 选择器里剩余未裁剪的标题、空结果提示与翻页计数行，并让选择器按可见宽度而非字符数补齐列宽——含 CJK 的行此前会错位。
+- **`/llmgates-reload` 拉到的模型列表不再被 pi 的缓存刷新丢弃。** pi 在 provider 注册后会发起一次 `allowNetwork: false` 的缓存刷新；它此前会递增请求序号，把正在进行中的前台 catalog 拉取判成 superseded 并丢弃结果。现在纯缓存刷新复用当前序号，只有更新的联网刷新才会取代前一次。
+- **网关模型 id 原样保留，只剥控制字符。** 此前的清洗顺带做了 `trim()`，会改写首尾带空白的模型 id——而该 id 正是 pi 上送给网关的值、也是 `model-overrides` 的键，改写它等于静默换了一个模型。
+- **改了 base URL 或 API Key 之后立即重新拉取模型。** 凭证变化时只重置了 `modelsAheadOfStore`，`checkedAt` 仍从上一套凭证的缓存目录里恢复，于是 5 分钟新鲜度闸门会跳过这次拉取，短时间内继续沿用旧网关的模型列表。
+- **补上 OpenAI o1-mini 的内置费率。** `^o1` 规则带 `(?!.*mini)` 排除，而 o1-mini 自己没有规则（o3-mini 有），于是落到默认费率 3 / 15，比真实的 1.1 / 4.4 高出约 3 倍——`/calls` 与状态栏的成本估算随之偏高。
+- **模型 id 撞上 `Object.prototype` 上的名字时不再串价。** 内存里的定价 / override / 上下文窗口表改用无原型对象并以 `Object.hasOwn` 查表；此前模型 id 恰好叫 `constructor`、`toString` 之类时，查表会把原型上的同名属性当成命中结果。
+- **IPv6 link-local 按 `fe80::/10` 判定。** 此前只匹配字面前缀 `fe80:`，`fe90::` 至 `febf::` 这段同属 link-local 的地址会漏判。仅影响开启 `LLMGATES_BLOCK_PRIVATE_URLS` 的场景。
+
 ## [0.3.1] — 2026-08-17
 
 ### 修复
@@ -160,6 +176,7 @@
 
 0.1.x 的历史未回补，请查阅 git log 与各 `v0.1.*` tag。
 
+[0.3.1]: https://github.com/ax128/pi-llmgates/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ax128/pi-llmgates/compare/v0.2.13...v0.3.0
 [0.2.13]: https://github.com/ax128/pi-llmgates/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/ax128/pi-llmgates/compare/v0.2.11...v0.2.12
