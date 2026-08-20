@@ -407,6 +407,7 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与网关
 - API key 一律视为 **literal string**；`!`、`$`、`${...}`、`$$`、`$!` 等不会被解释为 shell 命令或环境变量展开。
 - 网关凭证只来自 `/login`（写入 pi 的 `auth.json`），不从环境变量或配置文件读取，实例之间不共享 key 或 URL。
 - 远程网关须使用 **HTTPS**；HTTP 仅允许 loopback（`localhost`、`127.0.0.0/8`、`::1`、IPv4-mapped loopback）。无 insecure 覆盖开关。
+- 通配地址 `0.0.0.0` 与 `::` **一律拒绝**（与 `LLMGATES_BLOCK_PRIVATE_URLS` 无关）：它们是监听地址，不是可连接的目的地址。网关以 `0.0.0.0:8317` 监听时，base URL 请填 `http://127.0.0.1:8317/v1`。
 - 网关网络调用（`/models`、`/balance`、推理）使用全操作超时、5 MiB 响应体上限、同源手动重定向。
 - 启用 `pricingAutoUpdate` 时，零售价同步从 `raw.githubusercontent.com` 拉取固定 LiteLLM JSON（后台、30s 超时、8 MiB 上限），不阻塞目录或推理。可通过配置或 `LLMGATES_PRICING_AUTO_UPDATE=0` 关闭。
 - TPS / 费用统计在后台队列预处理 assistant usage；畸形 usage 跳过或归零，失败不影响推理（`LLMGATES_DEBUG=1` 记录详情）。

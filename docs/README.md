@@ -8,15 +8,20 @@
 | --- | --- |
 | [README](../README.md) | 安装、登录、配置、命令、安全与故障排查（简体中文） |
 | [README.en](../README.en.md) | 同上，英文版；改动用户可见行为时两份需同步 |
-| [pre-publish-gate.md](./pre-publish-gate.md) | **发布前门禁**：`npm run gate` → 从 `.tgz` 安装 → pi 功能验证 → `gate-record-pass.sh`；`publish-npm.sh` 硬校验 |
-| [npm-package.md](./npm-package.md) | **Agent / 维护者**：npm 安装、更新、升版本、发布与 `.env` 密钥 |
+
+## 维护者 / Agent 文档
+
+| 文档 | 说明 |
+| --- | --- |
 | [AGENTS.md](../AGENTS.md) | 项目级 Agent 入口（指向门禁、npm 手册与约定） |
+| [pre-publish-gate.md](./pre-publish-gate.md) | **发布前门禁**：`npm run gate` → 从 `.tgz` 安装 → pi 功能验证 → `gate-record-pass.sh`；`publish-npm.sh` 硬校验 |
+| [npm-package.md](./npm-package.md) | npm 安装、更新、升版本、发布与 `.env` 密钥 |
 
 ## 审计与后续优化
 
 | 文档 | 说明 |
 | --- | --- |
-| [2026-08-18-audit-remediation-plan.md](./superpowers/specs/2026-08-18-audit-remediation-plan.md) | 2026-08-18 全仓审计的后续优化方案（rev 3，7 个批次）。批次 1–6 由 PR #45–#50 实施；批次 7 为长期方向，未实施。审计原始汇总未落盘本仓，文首「关于问题编号」小节记录了该缺口 |
+| [2026-08-18-audit-remediation-plan.md](./superpowers/specs/2026-08-18-audit-remediation-plan.md) | 2026-08-18 全仓审计的后续优化方案（rev 4）。**已归档**：批次 1–6 全部实施完成（PR #45–#50），2026-08-20 已逐条对照代码复核。仍然有效的只有「批次 7 — 长期考虑」与「明确不做的事」两节，其余为实施记录。审计原始汇总从未落盘本仓，文首「关于问题编号」小节已结案——它不再是任何工作的前置门禁 |
 
 ## 设计与实现（内部）
 
@@ -63,4 +68,12 @@
 | `scripts/gate-record-pass.sh` | §4 功能验证通过后写入 `.gate/pre-publish-pass.json` |
 | `scripts/npm-publish-auth-link.mjs` | 取出 npm 浏览器认证链接，发布时发给操作者 |
 | `scripts/publish-npm.sh` | 发布唯一入口：校验 gate + check + 显式 build + publish（含 bump 后 re-pack）；不要绕过它直接 `npm publish` |
-| `scripts/lib/assert-tarball.sh` | tarball 内容断言（`REQUIRED_PATHS`），由 `pre-publish-gate.sh` 与 `publish-npm.sh` 的 re-pack 分支共用 |
+| `scripts/lib/assert-tarball.sh` | tarball 内容断言（`assert_publish_tarball`），由 `pre-publish-gate.sh` 与 `publish-npm.sh` 的 re-pack 分支共用 |
+
+## CI
+
+| 工作流 | 职责 |
+| --- | --- |
+| `.github/workflows/check.yml` | 每次 `push` 与 `pull_request` 在 Node 22.19 上跑 `npm ci` + `npm run check`（typecheck + vitest） |
+
+CI 是本地门禁之外的远程护栏，**不替代**门禁——它跑不了 `.tgz` 安装与 pi 功能验证（见 [pre-publish-gate.md §8](./pre-publish-gate.md#8-为何需要这层)）。

@@ -14,7 +14,7 @@ Pi coding agent 扩展包：`@llmgates_api/pi-llmgates-provider`。
 ## npm 发布（下次照此）
 
 **门禁（必做，不可跳过）：** **[docs/pre-publish-gate.md](./docs/pre-publish-gate.md)**  
-新功能合并 push 后，须 **`npm run gate`**（或 `./scripts/pre-publish-gate.sh`）→ **`pi install` 该 tgz** → 功能验证 → **`./scripts/gate-record-pass.sh`** 生成 `.gate/pre-publish-pass.json` 与 §5 对话回执，**然后才能**进入下方 npm 流程。`publish-npm.sh` 会硬校验 gate 文件。
+新功能合并 push 后，须 **`npm run gate`**（或 `./scripts/pre-publish-gate.sh`）→ **解包 tarball 后 `pi install <目录>`** → 功能验证 → **`./scripts/gate-record-pass.sh`** 生成 `.gate/pre-publish-pass.json` 与 §5 对话回执，**然后才能**进入下方 npm 流程。`publish-npm.sh` 会硬校验 gate 文件。
 
 完整手册：**[docs/npm-package.md](./docs/npm-package.md)**（开头「Agent 标准发布对话」）。
 
@@ -53,6 +53,7 @@ npm pack --dry-run
 - 改命令 / 用户可见行为时同步改 README（`README.md` 中文 + `README.en.md` 英文，两份都要改）
 - 改 session / adapter / 发布流程时补或更新 focused tests
 - 不把真实 API key、npm token、OTP 写入文档、示例或生成文件
+- push / PR 会触发 CI（`.github/workflows/check.yml`）在 Node 22.19 上跑 `npm run check`；**CI 红灯不得进入发布流程**。CI 不替代门禁——它跑不了 `.tgz` 安装与 pi 功能验证
 
 ## 安全
 

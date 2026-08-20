@@ -66,7 +66,7 @@ git push origin "v$VERSION"                          # 若尚未推送 tag
 
 ### D. 发布成功后（Agent → 用户）
 
-**必须**回复安装示例（把 `VERSION` 换成真实版本，如 `0.3.2`）：
+**必须**回复安装示例（把 `VERSION` 换成刚发布的真实版本，取自 `package.json`）：
 
 ```bash
 # 最新版
@@ -170,6 +170,14 @@ npm pack --dry-run
 
 这六个文件正是 `publish-npm.sh` 的 `BUMP_ALLOWED` 白名单——发布提交碰到白名单以外的文件，publish 会被拒绝并要求重跑门禁（见 [pre-publish-gate.md §6](./pre-publish-gate.md#6-门禁通过后再发布)）。
 
+改完后跑一次自检，确认没有遗留旧版本号（第 3–5 项最容易漏）：
+
+```bash
+VERSION=$(node -p "require('./package.json').version")
+grep -rn '@[0-9]\+\.[0-9]\+\.[0-9]\+' README.md README.en.md docs/npm-package.md | grep -v "@$VERSION"
+# 应无输出；有输出即为漏改的安装示例
+```
+
 ### 3.3 脚本
 
 | 脚本 | 用途 |
@@ -207,7 +215,7 @@ git push origin "v$VERSION"
 | --- | --- |
 | `name` | `@llmgates_api/pi-llmgates-provider` |
 | `publishConfig.access` | `public` |
-| `files` | `dist`, `README.md`, `CHANGELOG.md`, `LICENSE` |
+| `files` | `dist`, `README.md`, `README.en.md`, `CHANGELOG.md`, `LICENSE`（每一项都由 `scripts/lib/assert-tarball.sh` 断言） |
 | `pi.extensions` | `./dist/index.js`, `./dist/tps.js`（由 `npm run build` 从 `extensions/` 编译；`prepack` 自动执行） |
 | `prepublishOnly` | `npm run check` |
 | `engines.node` | `>=22.19.0` |

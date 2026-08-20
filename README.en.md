@@ -409,6 +409,7 @@ All of these parse the same way: `1` / `true` / `yes` / `on` is on, `0` / `false
 - API keys are always treated as a **literal string**; `!`, `$`, `${...}`, `$$`, `$!` and friends are never interpreted as shell commands or environment expansion.
 - Gateway credentials come only from `/login` (written to pi's `auth.json`), never from environment variables or config files, and keys and URLs are never shared between instances.
 - Remote gateways must use **HTTPS**; HTTP is allowed only for loopback (`localhost`, `127.0.0.0/8`, `::1`, IPv4-mapped loopback). There is no insecure override switch.
+- The wildcard addresses `0.0.0.0` and `::` are **always rejected** (independent of `LLMGATES_BLOCK_PRIVATE_URLS`): they are listen addresses, not connectable destinations. When a gateway listens on `0.0.0.0:8317`, use `http://127.0.0.1:8317/v1` as the base URL.
 - Gateway network calls (`/models`, `/balance`, inference) use a whole-operation timeout, a 5 MiB response body cap, and same-origin manual redirects.
 - With `pricingAutoUpdate` enabled, the retail price sync fetches a fixed LiteLLM JSON from `raw.githubusercontent.com` (background, 30s timeout, 8 MiB cap) without blocking the catalog or inference. Disable it via config or `LLMGATES_PRICING_AUTO_UPDATE=0`.
 - TPS / cost tracking preprocesses assistant usage on a background queue; malformed usage is skipped or zeroed, and a failure never affects inference (`LLMGATES_DEBUG=1` records the details).
