@@ -72,7 +72,7 @@ npm run gate
 脚本会：
 
 - 跑 `npm run check` 与 `npm pack`
-- 断言 tarball 含 `dist/index.js`、`dist/tps.js`、`README.md`、`LICENSE`
+- 断言 tarball 含 `package.json`、`dist/index.js`、`dist/tps.js`、`README.md`、`README.en.md`、`CHANGELOG.md`、`LICENSE`（断言来自 `scripts/lib/assert-tarball.sh`，`publish-npm.sh` 的 bump re-pack 分支也会跑同一份）
 - 计算 sha256 并写入 `.gate/pre-publish-build.json`（已 gitignore）
 
 **通过标准：**
