@@ -14,7 +14,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [AGENTS.md](../AGENTS.md) | 项目级 Agent 入口（指向门禁、npm 手册与约定） |
-| [pre-publish-gate.md](./pre-publish-gate.md) | **发布前门禁**：`npm run gate` → 从 `.tgz` 安装 → pi 功能验证 → `gate-record-pass.sh`；`publish-npm.sh` 硬校验 |
+| [pre-publish-gate.md](./pre-publish-gate.md) | **发布前门禁**：`npm run gate` → 解包 tarball 后 `pi install <目录>` → pi 功能验证 → `gate-record-pass.sh`；`publish-npm.sh` 硬校验 |
 | [npm-package.md](./npm-package.md) | npm 安装、更新、升版本、发布与 `.env` 密钥 |
 
 ## 审计与后续优化

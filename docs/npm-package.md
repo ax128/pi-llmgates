@@ -174,7 +174,7 @@ npm pack --dry-run
 
 ```bash
 VERSION=$(node -p "require('./package.json').version")
-grep -rn '@[0-9]\+\.[0-9]\+\.[0-9]\+' README.md README.en.md docs/npm-package.md | grep -v "@$VERSION"
+grep -rn 'pi-llmgates-provider@[0-9]\+\.[0-9]\+\.[0-9]\+' README.md README.en.md docs/npm-package.md | grep -v "@$VERSION"
 # 应无输出；有输出即为漏改的安装示例
 ```
 
@@ -215,7 +215,7 @@ git push origin "v$VERSION"
 | --- | --- |
 | `name` | `@llmgates_api/pi-llmgates-provider` |
 | `publishConfig.access` | `public` |
-| `files` | `dist`, `README.md`, `README.en.md`, `CHANGELOG.md`, `LICENSE`（每一项都由 `scripts/lib/assert-tarball.sh` 断言） |
+| `files` | `dist`, `README.md`, `README.en.md`, `CHANGELOG.md`, `LICENSE`；`scripts/lib/assert-tarball.sh` 断言后四项、`dist` 的两个入口（`dist/index.js` / `dist/tps.js`），外加 npm 始终打包的 `package.json` |
 | `pi.extensions` | `./dist/index.js`, `./dist/tps.js`（由 `npm run build` 从 `extensions/` 编译；`prepack` 自动执行） |
 | `prepublishOnly` | `npm run check` |
 | `engines.node` | `>=22.19.0` |
