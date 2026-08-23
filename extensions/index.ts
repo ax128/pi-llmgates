@@ -13,6 +13,7 @@ import {
 	registerEndpointCommand,
 } from "./endpoint.js";
 import { registerEndpointSettingCommand } from "./endpoint-setting.js";
+import { registerInputHistory } from "./input-history.js";
 import { registerCatalogReloadCommand } from "./llmgates-reload.js";
 import {
 	registerCompatGateways,
@@ -42,6 +43,19 @@ export default function (pi: ExtensionAPI): void {
 	}
 
 	/**
+	 * Registered before the gateway wiring below and guarded on its own: input
+	 * history has nothing to do with gateways, so an unparseable 2api.json must not
+	 * take it down with the providers.
+	 */
+	try {
+		registerInputHistory(pi, agentDir);
+	} catch (error) {
+		logWarn(
+			`Input history registration failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	/**
 	 * Do NOT rethrow out of the extension entry point: this runs inside pi's
 	 * extension loader, where an exception can abort loading and take every
 	 * command registered below down with it. A failed registration means no
@@ -55,7 +69,7 @@ export default function (pi: ExtensionAPI): void {
 	} catch (error) {
 		logWarn(
 			`${error instanceof Error ? error.message : String(error)}. ` +
-				"No gateway and no command was registered; fix the reported problem and run /reload.",
+				"No gateway and no gateway command was registered; fix the reported problem and run /reload.",
 		);
 		return;
 	}

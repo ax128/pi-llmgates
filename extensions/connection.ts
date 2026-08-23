@@ -5,9 +5,18 @@
 
 import { readFileSync } from "node:fs";
 import { BlockList, isIP } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { normalizeInferenceBaseUrl } from "./catalog.js";
-import { envFlag, isPlainObject, LLMGATES_CONFIG_FILE } from "./util.js";
+import type { InputHistoryScope } from "./input-history-store.js";
+import {
+	atomicWriteJson,
+	ensureDirMode,
+	envFlag,
+	isPlainObject,
+	LLMGATES_CONFIG_FILE,
+	SECRET_DIR_MODE,
+	withFileLock,
+} from "./util.js";
 
 export interface UrlValidationResult {
 	ok: boolean;
@@ -214,6 +223,10 @@ export function normalizeAndValidateBaseUrl(
 export interface LLMGatesConfigFile {
 	/** When true (default), sync upstream retail prices for catalog entries. */
 	pricingAutoUpdate?: boolean;
+	/** When true (default), persist interactive input across pi processes. */
+	inputHistory?: boolean;
+	/** Which history file interactive input is persisted to. Default "cwd". */
+	inputHistoryScope?: InputHistoryScope;
 	[key: string]: unknown;
 }
 
@@ -232,6 +245,21 @@ export function loadValidatedConfigFile(agentDir: string): LLMGatesConfigFile {
 		) {
 			throw new Error(
 				`${CONFIG_FILE_NAME}.pricingAutoUpdate must be a boolean`,
+			);
+		}
+		if (
+			config.inputHistory !== undefined &&
+			typeof config.inputHistory !== "boolean"
+		) {
+			throw new Error(`${CONFIG_FILE_NAME}.inputHistory must be a boolean`);
+		}
+		if (
+			config.inputHistoryScope !== undefined &&
+			config.inputHistoryScope !== "cwd" &&
+			config.inputHistoryScope !== "global"
+		) {
+			throw new Error(
+				`${CONFIG_FILE_NAME}.inputHistoryScope must be "cwd" or "global"`,
 			);
 		}
 		return config;
@@ -259,4 +287,85 @@ export function resolvePricingAutoUpdate(agentDir: string): boolean {
 		// fall through to default
 	}
 	return true;
+}
+
+export const INPUT_HISTORY_ENV = "LLMGATES_INPUT_HISTORY";
+export const INPUT_HISTORY_SCOPE_ENV = "LLMGATES_INPUT_HISTORY_SCOPE";
+
+/** Where an effective setting came from, so /input-history can explain itself. */
+export type SettingSource = "env" | "config" | "default";
+
+export interface InputHistorySettings {
+	enabled: boolean;
+	enabledSource: SettingSource;
+	scope: InputHistoryScope;
+	scopeSource: SettingSource;
+}
+
+/**
+ * Unrecognized values fall through to config/default, matching `envFlag`'s tri-state.
+ * A value that does not win must not be reported as an override either — see
+ * `resolveInputHistorySettings`.
+ */
+function envScope(env: NodeJS.ProcessEnv = process.env): InputHistoryScope | undefined {
+	const raw = env[INPUT_HISTORY_SCOPE_ENV]?.trim().toLowerCase();
+	if (raw === "cwd" || raw === "global") return raw;
+	return undefined;
+}
+
+/**
+ * env > llmgates/config.json > default, the same precedence `resolvePricingAutoUpdate`
+ * uses. Defaults are ON and "cwd": pi already stores every user message in a per-cwd
+ * session file, so persisting input at the same granularity adds aggregation but no
+ * new cross-project exposure. "global" is the only option that does, so it stays an
+ * explicit opt-in.
+ *
+ * A malformed config file falls back to the defaults rather than throwing, so a hand
+ * edit cannot make the editor un-installable.
+ */
+export function resolveInputHistorySettings(agentDir: string): InputHistorySettings {
+	const envEnabled = envFlag(INPUT_HISTORY_ENV);
+	const envScopeValue = envScope();
+
+	let fileEnabled: boolean | undefined;
+	let fileScope: InputHistoryScope | undefined;
+	try {
+		const file = loadValidatedConfigFile(agentDir);
+		if (typeof file.inputHistory === "boolean") fileEnabled = file.inputHistory;
+		if (file.inputHistoryScope === "cwd" || file.inputHistoryScope === "global") {
+			fileScope = file.inputHistoryScope;
+		}
+	} catch {
+		// fall through to defaults
+	}
+
+	return {
+		enabled: envEnabled ?? fileEnabled ?? true,
+		enabledSource:
+			envEnabled !== undefined ? "env" : fileEnabled !== undefined ? "config" : "default",
+		scope: envScopeValue ?? fileScope ?? "cwd",
+		scopeSource:
+			envScopeValue !== undefined ? "env" : fileScope !== undefined ? "config" : "default",
+	};
+}
+
+/**
+ * Merge `patch` into llmgates/config.json under the file lock.
+ *
+ * A config file that fails validation makes this throw WITHOUT writing: overwriting
+ * an unparseable file with a "clean" object would silently drop whatever else the
+ * user has in there (`pricingAutoUpdate`, unknown keys kept by `loadValidatedConfigFile`).
+ * Only command handlers call this — never the history persistence path, which must
+ * not take a second file lock.
+ */
+export async function updateConfigFile(
+	agentDir: string,
+	patch: Partial<LLMGatesConfigFile>,
+): Promise<void> {
+	const configPath = join(agentDir, CONFIG_FILE_NAME);
+	ensureDirMode(dirname(configPath), SECRET_DIR_MODE);
+	await withFileLock(configPath, () => {
+		const config = loadValidatedConfigFile(agentDir);
+		atomicWriteJson(configPath, { ...config, ...patch });
+	});
 }

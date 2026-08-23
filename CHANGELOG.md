@@ -6,6 +6,20 @@
 
 > 0.2.11 及更早的条目是在 0.2.11 发布后，依据 git 历史与各版本 tag 回补的；只收录对使用者可见的变更，纯内部重构与测试补强不单列。
 
+## [Unreleased]
+
+### 新增
+
+- **输入历史现在跨 pi 进程保留（`/input-history`，默认开启）。** pi 的输入框本来就支持 ↑↓ 翻看敲过的内容（上限 100 条），但它只活在编辑器实例里，**退出 pi 就没了**。本版把这份列表落到 `~/.pi/agent/llmgates/input-history/`（文件 `0600`、目录 `0700`），启动时按「旧→新」重新喂回 pi 的历史，↑↓ 的触发规则、草稿保护、去重与 100 条上限仍然全部是 pi 自己的实现。
+  - **作用域默认 `cwd`**（每个工作目录一份，粒度与 pi 自己按 cwd 存会话文件一致）；`global`（全部工作目录共用一份）是显式 opt-in，因为只有它引入跨项目可见性，首次启用时会提示一次。
+  - **只记录 TUI 里真实敲进去的 prompt**。pi 内置与扩展注册的斜杠命令、`!bash` / `!!bash`、rpc 与扩展注入的消息、以及 pi 打开旧会话时的历史重放都不落盘（`/skill:` 与 prompt template 调用会落盘——它们不是命令，pi 把整行当 prompt 送出去）。`!bash` 不落盘是有意为之：`!export TOKEN=…` 这类最可能带密钥的输入结构性地写不进这个文件；代价是重启后 ↑ 能翻到的条目比本次会话内少。
+  - **代价：进程内的历史寿命变短。** pi 把历史挂在一个进程内只建一次的编辑器实例上，`/reload`、`/new`、`/resume` 之后原本还在；预填必须新建实例，而 pi 换编辑器只搬草稿文本、不搬历史，所以这三个动作之后 ↑ 翻到的是磁盘上那一份，没落盘的条目（`!bash`、斜杠命令）会消失。`LLMGATES_INPUT_HISTORY=0` 可换回 pi 原样。
+  - 上限只有两条：最新 100 条、单条 8 KiB（超限的整条不落盘，不截断）。磁盘上是 MRU 列表，重复提交同一条会把它提到队首而不是新增一条。
+  - `/input-history` 查看状态，`on` / `off` 开关，`scope cwd|global` 切作用域，`clear` 清空当前作用域——全部在当前 pi 进程立即生效，不需要 `/reload`。`LLMGATES_INPUT_HISTORY=0` 是总闸；env 生效时 `on` / `off` / `scope` 会拒绝执行并提示先 unset。
+  - 关闭时（`LLMGATES_INPUT_HISTORY=0` 或 `"inputHistory": false`）不注册 `input` handler、不换编辑器、不建目录、不写盘，pi 行为与安装前一致。
+- **`llmgates/config.json` 新增 `inputHistory` 与 `inputHistoryScope` 两个键**，并有了第一个写入口：`/input-history` 会把改动**合并**进文件（保留 `pricingAutoUpdate` 与任何未知键）。配置文件解析失败时**拒绝写入**并报错，绝不用一份「干净」的配置覆盖掉用户手上的内容。
+- **补上 pi 漏复制的 `autocompleteMaxVisible`。** `setCustomEditorComponent` 会把 paddingX、autocomplete provider 和 app 级快捷键复制到扩展提供的编辑器上，却漏了这一项，而 pi 重新应用该值的两处都发生在扩展绑定之前。于是在 `settings.json` 里把补全条数调成 12 的用户，装上任何换编辑器的扩展后都会回落到 pi 默认的 5。现在安装时读一次全局 `settings.json` 并作为构造参数传入。
+
 ## [0.3.2] — 2026-08-20
 
 ### 新增

@@ -16,6 +16,7 @@ Pi provider 扩展：并行接入多个 **OpenAI 兼容网关**——[NewAPI](ht
 - [添加与管理实例](#添加与管理实例)
 - [模型与推理出口](#模型与推理出口)
 - [用量与费用](#用量与费用)
+- [输入历史](#输入历史)
 - [配置](#配置)
 - [安全](#安全)
 - [故障排查](#故障排查)
@@ -31,6 +32,7 @@ Pi provider 扩展：并行接入多个 **OpenAI 兼容网关**——[NewAPI](ht
 - **按模型路由出口**：优先用网关自报的 `inference_endpoint` / `web_chat_endpoint`，未自报时走 OpenAI Chat Completions，可按模型覆盖为 `messages` / `responses`；图像 / 视频生成模型不注册。
 - **额度查询**：`/balance` 按实例探测网关额度，网关不提供时明确显示「不可用」而非 0。
 - **用量与费用统计**：TUI 状态行 + `/calls` 明细，覆盖父会话与同步 / async 子代理，费用按上游零售价估算。
+- **输入历史持久化**：↑↓ 翻到的输入跨 pi 进程保留（默认开启，按工作目录隔离），`/input-history` 管理开关、作用域与清空。
 
 ## 快速开始
 
@@ -85,6 +87,10 @@ pi -e npm:@llmgates_api/pi-llmgates-provider
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | 切换或清除**一个**模型的推理出口 |
 | `/endpoint-setting` | 交互式多选，批量切换任意实例模型的推理出口 |
 | `/calls` | 查看本轮或本会话的 per-model 用量与费用明细 |
+| `/input-history` | 查看输入历史的开关、作用域、文件路径与已存条数 |
+| `/input-history on\|off` | 开启 / 关闭输入历史持久化（写入 `config.json`，当前 pi 进程立即生效） |
+| `/input-history scope <cwd\|global>` | 切换作用域：每个工作目录一份（默认）或全部目录共用一份 |
+| `/input-history clear` | 删除当前作用域的历史文件，并清空当前进程的内存历史 |
 | `/llmgates list` | 列出实例 ID、scheme、base URL 和 display name（不显示密钥） |
 | `/llmgates remove <id>` | 删除指定实例及其 registry / auth / endpoint override 记录 |
 | `/llmgates help` | 显示用法与已知限制 |
@@ -192,7 +198,7 @@ pi
 - 若 `auth.json` 整体缺失或暂时损坏（如手动重置凭证、同步工具改写中途），本轮清理会被跳过以防止误删全部实例；文件恢复可读后清理自动继续。
 - `/llmgates remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能短暂列出已删除的 ID，执行 `/reload` 后会完成清理。
 - 若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/llmgates remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
-- 若 `~/.pi/agent/llmgates/2api.json` 无法解析（手工编辑出错、重复实例 ID 等），扩展**不注册任何 provider 与命令**——包括 `/login` 里的「LLMGates 网关」入口，pi 里看不到任何提示。启动日志会打印具体原因（含文件名），修好或删除该文件后 `/reload` 即可恢复。
+- 若 `~/.pi/agent/llmgates/2api.json` 无法解析（手工编辑出错、重复实例 ID 等），扩展**不注册任何 provider 与网关命令**——包括 `/login` 里的「LLMGates 网关」入口，pi 里看不到任何提示。启动日志会打印具体原因（含文件名），修好或删除该文件后 `/reload` 即可恢复。（与网关无关的 `/input-history` 不受影响，仍然可用。）
 
 ## 模型与推理出口
 
@@ -365,6 +371,36 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与网关
 
 启用 `pricingAutoUpdate` 时，每次 catalog 刷新会在后台从 [LiteLLM](https://github.com/BerriAI/litellm) 同步模型零售价（不阻塞列表）：缺失模型立即拉取，否则每 24h 刷新。同步失败时保留缓存与静态规则（`LLMGATES_DEBUG=1` 可查看详情）。自动同步**只写 `rates`**，**不修改 `overrides`**。catalog 外 `rates` 条目在刷新时保留。每次刷新会重读磁盘，手改无需重启。`extensions/model-pricing.ts` 中的静态规则为离线兜底。同步成功后会在内存中 patch 已注册模型的 `cost` 字段，不额外请求 catalog。
 
+## 输入历史
+
+pi 的输入框本来就支持用 ↑↓ 翻看敲过的内容（上限 100 条），但它**只活在内存里**：历史挂在编辑器实例上，**退出 pi 就没了**，也不区分工作目录。（同一个 pi 进程内 `/reload`、`/new`、`/resume` 之后 pi 自己是保留的——它不重建编辑器实例；本扩展会改变这一点，见下面的「已知限制」。）本扩展只补一件事——把这份列表**存到磁盘**，下次启动时重新喂回 pi 的历史。↑↓ 的触发规则、草稿保护、去重与 100 条上限全部沿用 pi 自己的实现。
+
+**默认开启，作用域为当前工作目录。**
+
+| 作用域 | 文件 | 含义 |
+| --- | --- | --- |
+| `cwd`（默认） | `~/.pi/agent/llmgates/input-history/--<编码后的 cwd>--.json` | 每个工作目录一份，粒度与 pi 自己按 cwd 存会话文件一致 |
+| `global` | `~/.pi/agent/llmgates/input-history/global.json` | 同一 pi 用户下**所有工作目录共用一份**。只有它引入跨项目可见性，因此是显式 opt-in，首次启用时会提示一次 |
+
+### 记录什么
+
+- 只记录 TUI 里**真实敲进去的 prompt**（`input` 事件且来源为交互式输入）。
+- **不记录**：pi 内置斜杠命令（`/model`、`/resume` …）与扩展注册的斜杠命令（`/endpoint`、`/input-history` …）、`!bash` / `!!bash`、rpc 客户端与扩展注入的消息，以及 pi 打开旧会话时的历史重放。
+- **会记录**：`/skill:<名字>`、prompt template 调用，以及打错的 `/xxx`。它们不是命令——pi 把整行当 prompt 送给模型，所以按 prompt 记录。
+- `!bash` 不落盘是有意为之的安全取舍：`!export TOKEN=…`、`!curl -H "Authorization: Bearer …"` 这类最可能带密钥的输入，结构性地永远写不进这个文件。
+- 上限只有两条：**最新 100 条**、**单条 8 KiB**（UTF-8）。超过 8 KiB 的条目整条不落盘（不截断——半截 prompt 被翻出来直接回车是真实危害），但本次会话内 ↑ 仍能翻到。
+- 磁盘上是 MRU 列表：再次提交一条已存在的输入会把它**提到队首**，而不是新增一条，所以「继续」「跑一下测试」这类常用 prompt 不会占满 100 个槽位。
+
+### 已知限制
+
+- 斜杠命令与 `!bash` 不进持久化历史，所以**重启后 ↑ 能翻到的条目会比本次会话内少**。
+- **本扩展会缩短进程内的历史寿命**：pi 自己把历史挂在一个进程内只建一次的编辑器实例上，所以 `/reload`、`/new`、`/resume` 之后它原本还在。预填必须新建编辑器实例，而 pi 换编辑器时只搬草稿文本、不搬历史，于是这三个动作之后 ↑ 翻到的是**磁盘上那一份**——没落盘的条目（`!bash`、斜杠命令）就此消失。这是拿「跨进程持久化」换来的，`LLMGATES_INPUT_HISTORY=0` 可以换回 pi 原样。
+- 同一作用域下同时开着多个 pi 时，各自的内存历史相互不可见，要到下次启动预填时才合流；磁盘上的合并是完整的（跨进程文件锁 + 读-改-写）。
+- `/input-history off` 与 `/input-history clear` **只作用于当前 pi 进程**：同机另一个还开着的 pi 在下次提交时会把文件重建（内容只剩新条目）。
+- 历史文件解析失败（手工编辑出错等）时按空历史处理，并会在下一次写入时被整份覆盖。**它不是备份，别往里手写东西。**
+- 预填走 pi 的自定义编辑器接口：若有别的扩展在本扩展**之后**也调用 `setEditorComponent`（例如 vim 模式类扩展），它会把我们顶掉，**预填静默失效**（记录不受影响）。这是 pi 扩展 API 的固有性质。
+- 不提供单条删除。密钥不慎落盘时只能 `/input-history clear` 整份清掉。
+
 ## 配置
 
 网关地址与 API Key **只能通过 `/login` 配置**，不从环境变量或配置文件读取。
@@ -375,32 +411,40 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与网关
 
 | 文件 | 内容 |
 | --- | --- |
-| `config.json` | 扩展级开关，目前只有 `pricingAutoUpdate` |
+| `config.json` | 扩展级开关：`pricingAutoUpdate`、`inputHistory`、`inputHistoryScope` |
 | `2api.json` | 实例 registry（ID、显示名、scheme、base URL；**不含密钥**） |
 | `2api-models/<instanceId>.json` | 每个实例的出口覆盖，见 [手工编辑 override 文件](#手工编辑-override-文件) |
 | `pricing.json` | 可编辑的模型单价与 LiteLLM 同步缓存，见 [定价数据](#定价数据) |
+| `input-history/*.json` | 持久化的输入历史，每个作用域一份，见 [输入历史](#输入历史) |
 
-`config.json`：
+`config.json`（下面写的是**默认值**，文件不存在或缺少某个键时即按此生效）：
 
 ```json
 {
-  "pricingAutoUpdate": true
+  "pricingAutoUpdate": true,
+  "inputHistory": true,
+  "inputHistoryScope": "cwd"
 }
 ```
 
-设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
+- 设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
+- `inputHistory` / `inputHistoryScope` 见 [输入历史](#输入历史)，改这两个键请优先用 `/input-history`（会原地保留文件里的其他键）。手工编辑后需 `/reload` 生效。
 
 ### 环境变量
 
 | 变量 | 作用 |
 | --- | --- |
 | `LLMGATES_PRICING_AUTO_UPDATE` | 覆盖 `pricingAutoUpdate`（默认 `true`；`0` / `false` 关闭） |
+| `LLMGATES_INPUT_HISTORY` | 覆盖 `inputHistory`（默认 `true`；`0` / `false` 关闭输入历史持久化，是最省事的总闸） |
+| `LLMGATES_INPUT_HISTORY_SCOPE` | 覆盖 `inputHistoryScope`：`cwd`（默认）或 `global` |
 | `LLMGATES_DEBUG` | 设为 `1` / `true` / `yes` 时输出调试日志 |
 | `LLMGATES_BLOCK_PRIVATE_URLS` | 设为 `1` / `true` / `yes` 时拒绝 **IP 字面量** 形式的 private / link-local 网关地址（loopback 仍允许）；hostname（如 `gateway.local`）不受此规则约束 |
 | `LLMGATES_TPS_SUBAGENT` | 默认启用；设为 `0` / `false` / `no` 时关闭子代理 async 旁路与 meta 扫描 |
 | `PI_OFFLINE` | 设为 `1` / `true` / `yes` 时跳过网络 catalog 刷新 |
 
-上述开关统一解析：`1` / `true` / `yes` / `on` 为开，`0` / `false` / `no` / `off` 为关，其余值视为未设置（回落到各自默认）。
+上述开关统一解析：`1` / `true` / `yes` / `on` 为开，`0` / `false` / `no` / `off` 为关，其余值视为未设置（回落到各自默认）。`LLMGATES_INPUT_HISTORY_SCOPE` 只认 `cwd` / `global`，其余值同样视为未设置。
+
+环境变量生效时，`/input-history on` / `off` / `scope` 会**拒绝执行**并提示先 `unset`——否则会出现「写了 config、但 env 仍然优先」的自相矛盾。
 
 ## 安全
 
@@ -414,6 +458,11 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与网关
 - 启动采用 cache-first；cache-only、离线或 freshness-window skip 直接使用缓存中的 routing/thinking metadata。session 启动可触发一次后台刷新，但没有周期刷新 timer；失败会 warning 并保留旧 catalog/cache。
 - 普通 catalog refresh 只有在网络映射与 cache 写入都成功后才发布新模型；网络或 cache 写入失败保留内存与磁盘旧值。登录后 cache 写入失败是例外：不撤销登录，会话使用已验证目录，磁盘保留旧缓存。
 - 配置写入 mode `0600` 且原子替换。
+- 输入历史文件同样是 `0600`、目录 `0700`（与 `auth.json` 同级）。⚠️ POSIX 权限位在 Windows 上没有实际保护力，那里请依赖用户目录本身的访问控制。
+- 输入历史默认作用域是 `cwd`：pi 本来就把每条用户消息写进 per-cwd 会话文件（`~/.pi/agent/sessions/`），所以默认开启带来的增量风险是「把散落的输入**聚合**成一份易读列表」，而不是「输入从此开始落盘」。`global` 是唯一引入**跨项目可见性**的选项，因此需要显式开启，且首次启用时会提示一次。
+- pi 内置与扩展注册的斜杠命令、`!bash` **结构性地不进**输入历史文件；`/skill:` 与 prompt template 调用会进（它们本质是 prompt，不是命令）。见 [输入历史](#输入历史)。
+- 输入历史不做敏感词过滤或自动脱敏：不完整的脱敏比没有更危险，它只会给人「已经安全了」的错觉。也不提供单条删除。
+- 输入历史的三条退出通道：`/input-history off`、`/input-history clear`、`LLMGATES_INPUT_HISTORY=0`。卸载扩展后直接 `rm -rf ~/.pi/agent/llmgates/input-history/` 即可彻底清零。
 - **不支持 / 不安全：** 通过 `~/.pi/agent/models.json` overlay 配置本扩展 provider 的 `apiKey`（pi 可能重新启用 config-value 语法）。请勿这样做。
 
 ## 故障排查
