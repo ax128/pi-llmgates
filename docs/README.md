@@ -22,6 +22,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [2026-08-23-input-history-design.md](./superpowers/specs/2026-08-23-input-history-design.md) | 输入历史持久化（`/input-history`）设计方案（rev 2）。**已实施**：记录走 `pi.on("input")`、预填走 `ctx.ui.setEditorComponent()` 装饰器，落盘 `~/.pi/agent/llmgates/input-history/`；含 pi 侧三个坑（会话重放、包装 submit 路径、工厂抛错清空输入框）的取证与规避。§6 为实施记录，§6.1 记录合并前复核推翻的两条判断（历史何时清空、工厂兜底是否真的兜得住）与修订 |
+| [2026-08-22-multi-agent-usage-compat-design.md](./superpowers/specs/2026-08-22-multi-agent-usage-compat-design.md) | 多代理生态用量统计兼容方案（rev 3）。2026-08-22 逐包审查 pi.dev 生态（pi-subagents / @tintinweb/pi-subagents / pi-background-tasks / dynamic-workflows / piolium / pi-goal-x / pi-vision / 压缩类）后，补齐 pi 自身口径中我们缺失的两类来源（工具结果 `usage`、压缩条目 `usage`）。**P0 分三步实施**：§6.1 共享定价助手、§4.2 入口 E（压缩 / 分支摘要）、§4.1 入口 D（通用工具结果）；入口 F（第三方完成事件）按 §9 默认不排期。含 §3.2 命名空间登记表、§3.3 归属表与 §5 逐条双计论证 |
 | [2026-08-18-audit-remediation-plan.md](./superpowers/specs/2026-08-18-audit-remediation-plan.md) | 2026-08-18 全仓审计的后续优化方案（rev 4）。**已归档**：批次 1–6 全部实施完成（PR #45–#50），2026-08-20 已逐条对照代码复核。仍然有效的只有「批次 7 — 长期考虑」与「明确不做的事」两节，其余为实施记录。审计原始汇总从未落盘本仓，文首「关于问题编号」小节已结案——它不再是任何工作的前置门禁 |
 
 ## 设计与实现（内部）
