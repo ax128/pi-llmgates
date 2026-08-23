@@ -84,6 +84,8 @@ type CustomEditorCtor = new (
 	keybindings: never,
 	options?: { autocompleteMaxVisible?: number },
 ) => EditorLike;
+/** What `ctx.ui.setEditorComponent` accepts, without naming pi-tui's types. */
+type SetEditorComponentArg = Parameters<ExtensionContext["ui"]["setEditorComponent"]>[0];
 
 function logWarn(message: string): void {
 	console.warn(`[pi-llmgates-provider] ${message}`);
@@ -160,12 +162,50 @@ function construct(
 }
 
 /**
+ * Produce the editor the factory hands back: the wrapped factory's if it has one,
+ * ours otherwise.
+ *
+ * Throwing is the honest outcome when neither works. There is no third source of an
+ * editor, and re-running the constructor that just failed would only raise the same
+ * error — the previous shape of this code did exactly that, which made the fallback
+ * unreachable in practice. `install` catches the throw and restores pi's own editor.
+ */
+function buildEditor(
+	inner: EditorFactoryLike | undefined,
+	ctor: CustomEditorCtor,
+	editorOptions: { autocompleteMaxVisible?: number } | undefined,
+	tui: never,
+	theme: never,
+	keybindings: never,
+): EditorLike {
+	if (inner) {
+		try {
+			const wrapped = inner(tui, theme, keybindings);
+			if (wrapped) return wrapped;
+		} catch (error) {
+			logDebug(`input history: wrapped editor factory failed: ${errorSummary(error)}`);
+		}
+	}
+	try {
+		return construct(ctor, tui, theme, keybindings, editorOptions);
+	} catch (error) {
+		logDebug(`input history: editor factory failed: ${errorSummary(error)}`);
+		throw error;
+	}
+}
+
+/**
  * Build the prefilling factory.
  *
- * HARD CONSTRAINT: the body must never throw. `setCustomEditorComponent` calls
- * `editorContainer.clear()` BEFORE invoking the factory and only re-adds the editor
- * after it returns, so an exception escaping here leaves the terminal with no input
- * box at all, past the point where our own try/catch could recover.
+ * HARD CONSTRAINT: every path that can still produce an editor must produce one, and
+ * a prefill failure must never cost the user a working one. `setCustomEditorComponent`
+ * calls `editorContainer.clear()` BEFORE invoking the factory and only re-adds the
+ * editor after it returns, so an exception escaping here leaves the terminal with no
+ * input box.
+ *
+ * Exactly one path cannot produce an editor: the wrapped factory failed (or there was
+ * none) AND `CustomEditor` itself cannot be constructed. `buildEditor` rethrows there
+ * rather than pretending, and `install` turns that into a restore of pi's own editor.
  */
 export function createHistoryEditorFactory(options: {
 	entries: readonly string[];
@@ -178,30 +218,17 @@ export function createHistoryEditorFactory(options: {
 	const snapshot = [...options.entries];
 
 	const factory: MarkedFactory = ((tui: never, theme: never, keybindings: never) => {
+		const base = buildEditor(inner, ctor, editorOptions, tui, theme, keybindings);
 		try {
-			let base: EditorLike | undefined;
-			if (inner) {
-				try {
-					base = inner(tui, theme, keybindings);
-				} catch (error) {
-					logDebug(`input history: wrapped editor factory failed: ${errorSummary(error)}`);
-				}
+			// Oldest first: pi unshifts, so the newest entry ends up at the head.
+			for (let index = snapshot.length - 1; index >= 0; index--) {
+				base.addToHistory?.(snapshot[index] as string);
 			}
-			if (!base) base = construct(ctor, tui, theme, keybindings, editorOptions);
-			try {
-				// Oldest first: pi unshifts, so the newest entry ends up at the head.
-				for (let index = snapshot.length - 1; index >= 0; index--) {
-					base.addToHistory?.(snapshot[index] as string);
-				}
-			} catch (error) {
-				// A prefill failure must not cost the user a working editor.
-				logDebug(`input history: prefill failed: ${errorSummary(error)}`);
-			}
-			return base;
 		} catch (error) {
-			logDebug(`input history: editor factory failed: ${errorSummary(error)}`);
-			return new ctor(tui, theme, keybindings);
+			// A prefill failure must not cost the user a working editor.
+			logDebug(`input history: prefill failed: ${errorSummary(error)}`);
 		}
+		return base;
 	}) as MarkedFactory;
 
 	factory[INNER_FACTORY] = inner;
@@ -277,10 +304,21 @@ export function registerInputHistory(pi: ExtensionAPI, agentDir: string): void {
 
 	/**
 	 * Install the prefilling factory. Everything that can fail runs BEFORE
-	 * `setEditorComponent`, so a failure here leaves the container untouched and pi
-	 * keeps its own editor (§ the hard constraint on `createHistoryEditorFactory`).
+	 * `setEditorComponent`, so a failure in the preparation leaves the container
+	 * untouched and pi keeps its own editor.
+	 *
+	 * `setEditorComponent` is the one call that cannot be made safe up front:
+	 * `setCustomEditorComponent` clears the editor container and only then invokes the
+	 * factory, so a factory that cannot produce an editor at all (see
+	 * `createHistoryEditorFactory`) leaves the terminal with no input box — and pi has
+	 * not reassigned `this.editor`, so its own editor is still intact, just unmounted.
+	 * Calling `setEditorComponent(undefined)` re-runs that same method down its
+	 * "restore the default editor" branch, which puts the editor back into the
+	 * container. That is the only recovery available from out here, and it is worth
+	 * more than the prefill we just lost.
 	 */
 	function install(ctx: ExtensionContext): void {
+		let factory: MarkedFactory;
 		try {
 			const ctor = customEditorCtor();
 			if (!ctor) {
@@ -291,17 +329,27 @@ export function registerInputHistory(pi: ExtensionAPI, agentDir: string): void {
 			const path = inputHistoryFilePath(agentDir, settings.scope, ctx.cwd);
 			const file = readInputHistoryFile(path);
 			maybeNotifyGlobalScope(ctx, settings.scope, file?.noticeShown === true);
-			const factory = createHistoryEditorFactory({
+			factory = createHistoryEditorFactory({
 				entries: file?.entries ?? [],
 				inner: unwrapFactory(ctx.ui.getEditorComponent()),
 				editorOptions: readEditorOptions(agentDir),
 				ctor,
 			});
-			ctx.ui.setEditorComponent(factory as unknown as Parameters<
-				ExtensionContext["ui"]["setEditorComponent"]
-			>[0]);
 		} catch (error) {
 			warnOnce(`Input history prefill is unavailable: ${errorSummary(error)}`);
+			return;
+		}
+		try {
+			ctx.ui.setEditorComponent(factory as unknown as SetEditorComponentArg);
+		} catch (error) {
+			warnOnce(`Input history prefill is unavailable: ${errorSummary(error)}`);
+			try {
+				ctx.ui.setEditorComponent(undefined);
+			} catch (restoreError) {
+				logDebug(
+					`input history: restoring pi's editor failed: ${errorSummary(restoreError)}`,
+				);
+			}
 		}
 	}
 
@@ -315,9 +363,7 @@ export function registerInputHistory(pi: ExtensionAPI, agentDir: string): void {
 			const current = ctx.ui.getEditorComponent();
 			if (!isOurFactory(current)) return;
 			ctx.ui.setEditorComponent(
-				current[INNER_FACTORY] as unknown as Parameters<
-					ExtensionContext["ui"]["setEditorComponent"]
-				>[0],
+				current[INNER_FACTORY] as unknown as SetEditorComponentArg,
 			);
 		} catch (error) {
 			logDebug(`input history: unhooking the editor failed: ${errorSummary(error)}`);
@@ -335,7 +381,6 @@ export function registerInputHistory(pi: ExtensionAPI, agentDir: string): void {
 	 */
 	function ensureRuntimeHandlers(): void {
 		if (runtimeHandlersRegistered) return;
-		runtimeHandlersRegistered = true;
 
 		pi.on("input", (event, ctx) => {
 			if (!settings.enabled) return;
@@ -356,6 +401,13 @@ export function registerInputHistory(pi: ExtensionAPI, agentDir: string): void {
 		pi.on("session_shutdown", async () => {
 			await persistChain;
 		});
+
+		// Flipped last on purpose: `pi.on` calls `assertActive()` and throws on a stale
+		// extension runtime, and latching the flag before that would turn every later
+		// attempt into a silent no-op — history would stay unrecorded for good. A retry
+		// after a partial failure can only re-add handlers that are idempotent anyway
+		// (a repeat entry is already a no-op write, and installing is re-entrant).
+		runtimeHandlersRegistered = true;
 	}
 
 	if (settings.enabled) ensureRuntimeHandlers();

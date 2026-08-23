@@ -375,7 +375,7 @@ With `pricingAutoUpdate` enabled, every catalog refresh syncs retail model price
 
 ## Input history
 
-pi's editor already walks through what you typed this session with ↑↓ (capped at 100 entries), but it lives **in memory only**: quitting pi, `/reload`, `/new` and `/resume` all wipe it, and it does not distinguish working directories. This extension adds exactly one thing — it **stores that list on disk** and feeds it back into pi's history on the next start. The ↑↓ triggering rules, draft protection, de-duplication and the 100-entry cap all stay pi's own.
+pi's editor already walks through what you typed with ↑↓ (capped at 100 entries), but it lives **in memory only**: the list hangs off the editor instance, so **quitting pi wipes it**, and it does not distinguish working directories. (Within one pi process `/reload`, `/new` and `/resume` do *not* wipe it — pi never rebuilds that editor instance. This extension changes that; see “Known limitations” below.) This extension adds exactly one thing — it **stores that list on disk** and feeds it back into pi's history on the next start. The ↑↓ triggering rules, draft protection, de-duplication and the 100-entry cap all stay pi's own.
 
 **On by default, scoped to the current working directory.**
 
@@ -387,7 +387,8 @@ pi's editor already walks through what you typed this session with ↑↓ (cappe
 ### What is recorded
 
 - Only prompts **actually typed in the TUI** (the `input` event with an interactive source).
-- **Not recorded**: slash commands (`/model`, `/endpoint`, `/input-history`, …), `!bash` / `!!bash`, messages from rpc clients or injected by extensions, and pi's replay of an older session's history.
+- **Not recorded**: pi's built-in slash commands (`/model`, `/resume`, …) and extension-registered ones (`/endpoint`, `/input-history`, …), `!bash` / `!!bash`, messages from rpc clients or injected by extensions, and pi's replay of an older session's history.
+- **Recorded**: `/skill:<name>`, prompt-template invocations and mistyped `/xxx`. Those are not commands — pi sends the whole line to the model as a prompt, so they are stored like any other prompt.
 - Leaving `!bash` out is a deliberate security trade: `!export TOKEN=…` or `!curl -H "Authorization: Bearer …"` — the inputs most likely to carry a secret — structurally can never reach this file.
 - There are exactly two caps: the **newest 100 entries** and **8 KiB per entry** (UTF-8). An entry over 8 KiB is skipped whole rather than truncated (a half prompt resurrected by ↑ and submitted is a real hazard); it still works with ↑ for the rest of the session.
 - On disk it is an MRU list: re-submitting an entry that is already stored **moves it to the front** instead of adding a copy, so habitual prompts ("continue", "run the tests") cannot fill all 100 slots.
@@ -395,6 +396,7 @@ pi's editor already walks through what you typed this session with ↑↓ (cappe
 ### Known limitations
 
 - Slash commands and `!bash` never reach the persisted history, so **after a restart ↑ walks through fewer entries than it did inside the session**.
+- **This extension shortens the in-process lifetime of the history.** pi keeps it on an editor instance it builds exactly once per process, so `/reload`, `/new` and `/resume` normally leave it alone. Prefilling requires a fresh editor instance, and pi copies only the draft text — not the history — when it swaps editors, so after those three actions ↑ walks through **what is on disk**: entries that were never persisted (`!bash`, slash commands) are gone. That is the price of cross-process persistence; `LLMGATES_INPUT_HISTORY=0` gets pi's own behaviour back.
 - Several pi processes running in the same scope cannot see each other's in-memory history; they converge on the next start's prefill. The merge on disk is complete (cross-process file lock plus read-modify-write).
 - `/input-history off` and `/input-history clear` **only affect the current pi process**: another pi still running in the same scope recreates the file on its next prompt (with the new entries only).
 - A history file that fails to parse is treated as empty and is overwritten wholesale by the next write. **It is not a backup — do not hand-write anything into it.**
@@ -460,7 +462,7 @@ While one of these is in effect, `/input-history on` / `off` / `scope` **refuses
 - Config files are written with mode `0600` and replaced atomically.
 - Input history files are `0600` in a `0700` directory, the same level as `auth.json`. ⚠️ POSIX permission bits offer no real protection on Windows; rely on the access control of the user profile directory there.
 - Input history is scoped to `cwd` by default: pi already writes every user message into a per-cwd session file (`~/.pi/agent/sessions/`), so the incremental risk of having this on by default is **aggregation** — turning scattered input into one readable list — not "input starts hitting the disk". `global` is the only option that adds **cross-project visibility**, which is why it is an explicit opt-in that discloses itself once.
-- Slash commands and `!bash` **structurally never enter** the input history file (see [Input history](#input-history)).
+- pi's built-in and extension-registered slash commands, and `!bash`, **structurally never enter** the input history file; `/skill:` and prompt-template invocations do (they are prompts, not commands). See [Input history](#input-history).
 - Input history does no secret filtering or automatic redaction: incomplete redaction is worse than none, because it suggests safety that is not there. There is no per-entry delete either.
 - Three ways out: `/input-history off`, `/input-history clear`, `LLMGATES_INPUT_HISTORY=0`. After uninstalling the extension, `rm -rf ~/.pi/agent/llmgates/input-history/` wipes it completely.
 - **Unsupported / unsafe:** configuring this extension's provider `apiKey` through a `~/.pi/agent/models.json` overlay (pi may re-enable config-value syntax). Do not do this.

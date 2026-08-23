@@ -326,6 +326,28 @@ describe("createHistoryEditorFactory", () => {
 		expect(() => factory(TUI, THEME, KEYS)).not.toThrow();
 		expect(seen).toEqual([{ autocompleteMaxVisible: 12 }, undefined]);
 	});
+
+	it("rethrows once nothing can build an editor, instead of retrying the same constructor", () => {
+		let calls = 0;
+		const ctor = function () {
+			calls++;
+			throw new Error("CustomEditor is gone");
+		} as unknown as Parameters<typeof createHistoryEditorFactory>[0]["ctor"];
+
+		const factory = createHistoryEditorFactory({
+			entries: ["a"],
+			inner: (() => {
+				throw new Error("inner exploded");
+			}) as never,
+			editorOptions: undefined,
+			ctor,
+		});
+
+		expect(() => factory(TUI, THEME, KEYS)).toThrow(/CustomEditor is gone/);
+		// Exactly one attempt: a second identical `new ctor(...)` could only fail again,
+		// and swallowing the error here would leave pi with no editor to mount.
+		expect(calls).toBe(1);
+	});
 });
 
 describe("registerInputHistory", () => {
@@ -385,6 +407,38 @@ describe("registerInputHistory", () => {
 			const { ctx, setCalls } = fakeCtx({ getThrows: true });
 			await fire(handlers, "session_start", { type: "session_start", reason: "startup" }, ctx);
 			expect(setCalls).toHaveLength(0);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("restores pi's own editor when installing the factory throws", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const { pi, handlers } = fakePi();
+			registerInputHistory(pi, agentDir);
+			const setCalls: unknown[] = [];
+			const ctx = {
+				mode: "tui",
+				cwd: CWD,
+				ui: {
+					notify: () => undefined,
+					getEditorComponent: () => undefined,
+					// pi clears the editor container before it calls the factory, so a
+					// factory that cannot build one surfaces here with nothing on screen.
+					setEditorComponent: (next: unknown) => {
+						setCalls.push(next);
+						if (next !== undefined) throw new Error("factory exploded");
+					},
+				},
+			};
+
+			await fire(handlers, "session_start", { type: "session_start", reason: "startup" }, ctx);
+
+			expect(setCalls).toHaveLength(2);
+			expect(typeof setCalls[0]).toBe("function");
+			// undefined sends pi down its "restore the default editor" branch.
+			expect(setCalls[1]).toBeUndefined();
 		} finally {
 			cleanup();
 		}

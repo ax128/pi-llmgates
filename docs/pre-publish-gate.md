@@ -200,6 +200,20 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
 - [ ] TUI 统计或 `/calls` 显示符合预期
 - [ ] 子代理任务后用量归因（若本次有改）
 
+**输入历史（`/input-history`）**
+
+默认开启，且失败模式是**输入框直接消失**（pi 换编辑器时先清空容器再调工厂）。改动 `input-history*.ts`、`connection.ts` 的配置读写或任何换编辑器的代码时必测：
+
+- [ ] **全新安装、不写任何配置**：跨两次 pi 启动，↑ 能翻到上次敲的内容（默认开启生效）
+- [ ] **第一条历史落盘不卡顿**（`llmgates/input-history/` 还不存在的场景；卡住约 43s 说明建目录没跑在拿锁之前）
+- [ ] 默认 `cwd`：A 目录敲的东西在 B 目录翻不到；`/input-history scope global` 后互通，且首次切换的提示只出现一次
+- [ ] `pi --continue` 打开一个有 20 条历史消息的会话、重启两次，历史文件条目数**不增长**；`/tree` 跳转后同样不增长
+- [ ] `!bash` 与 `/model` 之类**不进**持久化历史，但本会话内 ↑ 仍能翻到
+- [ ] `LLMGATES_INPUT_HISTORY=0` 与 `/input-history off` 之后 ↑↓ 行为与安装前一致；`/input-history clear` 立刻生效
+- [ ] 同一目录开两个 pi 交替提交，两边的条目最终都在同一个文件里（跨进程锁）
+- [ ] `settings.json` 里设 `autocompleteMaxVisible: 12` 时，装上扩展后补全下拉仍是 12 条
+- [ ] 输入框始终在：`/reload`、`/new`、`/resume`、`/tree` 之后编辑器都还能正常输入
+
 **安全 / HTTP**
 
 - [ ] 非 HTTPS 远程网关被拒绝（若涉及 URL 校验）
