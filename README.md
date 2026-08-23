@@ -349,7 +349,7 @@ TUI 扩展状态行：
 - 同步 pi `subagent` / Cursor `Task` 工具结果与 `_meta.json` 汇总计入同一计数器；扫描 `.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧版 `.pi-subagents/artifacts` 及会话文件旁的 `subagent-artifacts/`。
 - async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 事件旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。
 - 事件里的 `sessionId` 可能是裸 ID、会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。
-- 子代理的**费用**只在上游报了金额时才有：事件或 `_meta.json` 里的 `cost` / `modelAttempts[].usage.cost` 会原样采用；只报到 token（`totalTokens` / `tokens`）、或只能靠扫子会话 `session.jsonl` 兜底时，**token 照记、费用记 0**，不按父模型的费率倒推。所以 `/calls` 里子代理行的费用偏低是预期行为，不代表 token 漏算。
+- 子代理的**费用**只在上游报了金额时才有：按 `usage.cost` → `modelAttempts[].usage.cost` 之和 → `totalCost.costUsd` 的顺序取第一个有值的，原样采用；只报到 token（`tokens` / `totalTokens`）、或只能靠扫子会话 `session.jsonl` 兜底时，**token 照记、费用记 0**，不按父模型的费率倒推。所以 `/calls` 里子代理行的费用偏低是预期行为，不代表 token 漏算。
 - 任何按 pi 约定在工具结果顶层挂 `usage` 的工具（不限于某个具体扩展），其用量都会计入。结果自报模型时按 `<provider>/<模型>` 分行——与父模型同名时并入同一行；未自报模型时记为 `tool/<工具名>` 且费用记 0，**但自报了一个不在定价表里的模型 id 时会落到默认费率**（`resolveModelCostRates` 永不返回 0）。已被子代理路径认领或计了会重复的工具名不在此列：`subagent`、`task`、`subagent_wait`、`subagent_supervisor`、`intercom`，以及 `@tintinweb/pi-subagents` 的 `Agent` / `get_subagent_result` / `steer_subagent`。
 - 上一条有两处刻意的少算：`@tintinweb/pi-subagents` 的三个工具名当前是**排除但无人接手**的中间态（接手它的事件入口未排期），若你手动开启了该扩展默认关闭的 `reportUsage`，这部分用量不会被统计；另外，一条工具结果可能聚合多次 LLM 调用却不上报次数，此时 calls 记 1，token 与费用不受影响。少算是安全方向，重复计不是。
 - 上下文压缩与分支摘要那次 LLM 调用计入 `compact/<模型>` 一行（pi 自己也算这笔，我们此前漏计）。自动压缩、手动 `/compact`、上下文溢出恢复压缩与分支摘要都覆盖。由其他扩展代管的压缩（pi 标记为 `fromHook`）计入 `compact/unknown`，且只认它自报的费用——它用的是哪个模型我们看不到，不会按会话模型的费率估价；完全不上报用量的仍无从统计。

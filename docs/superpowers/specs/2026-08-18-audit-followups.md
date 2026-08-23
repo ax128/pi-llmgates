@@ -5,9 +5,9 @@
 批次 1–6 的全部 28 个条目（8 个 medium + 20 个 low）已由 PR #45–#50 实施完成，
 并在 2026-08-20 逐条对照 `a7d2cc3`（v0.3.2）复核、2026-08-24 再次抽查确认。
 **那 28 条的逐条现状、行号与改法正文已从本文删除**：它们是实施记录而非待办，正文里的行号以 `5b41a92`（v0.3.1）为基线、与当前代码早已偏移，留着只会误导。
-需要某一条的原始论证时，去 **PR #45–#50 的 commit message** 与**代码注释**（例如 `util.ts:89-101` 的锁 compromise 论证、`tps-usage-inlets.ts:33-70` 的排除集论证），或 `git show 93c1f93:docs/superpowers/specs/2026-08-18-audit-remediation-plan.md`（654 行全文）。
+（本文因此也**不再引用行号**，只点符号名。）需要某一条的原始论证时，去 **PR #45–#50 的 commit message** 与**代码注释**（例如 `util.ts` 的 `LOCK_OPTIONS` 注释、`tps-usage-inlets.ts` 的 `TOOL_USAGE_CLAIMED_ELSEWHERE` 及其上方三段注释），或 `git show 93c1f93:docs/superpowers/specs/2026-08-18-audit-remediation-plan.md`（654 行全文）。
 
-**本文只剩两件事**：还没做的[长期方向](#长期方向)，和已经判定[明确不做的事](#明确不做的事)。
+**本文只剩还是「决策」的东西**：三条[仍然有效的约束](#仍然有效的约束)、还没做的[长期方向](#长期方向)，以及已经判定[明确不做的事](#明确不做的事)。
 
 **依据:** 2026-08-18 全仓审计（compat 核心 / TPS 统计 / endpoint 命令层 / 网络安全基础层 / 文档与工程化，五路并行审查后汇总去重）。
 审计当轮实测 `vitest run` 31 文件 / 624 用例全部通过，`tsc --noEmit` 无输出，**未发现 critical / high 问题**。
@@ -56,12 +56,12 @@ rev 3 曾把「先把审计汇总落盘、并确认 L6 是已修复 / 已判为�
 
 每一条都是已完成的判断，不是待办项。
 
-- **不推翻锁 compromise 后不中断临界区的取舍。** 它存在一个 lost-update 窗口，但 `util.ts:89-101` 的注释已明确论证：`proper-lockfile` 的默认行为是抛 uncaughtException 直接杀死 pi 进程，更糟。保持现状，仅作已知观察项记录。
+- **不推翻锁 compromise 后不中断临界区的取舍。** 它存在一个 lost-update 窗口，但 `util.ts` 的 `LOCK_OPTIONS` 注释已明确论证：`proper-lockfile` 的默认行为是抛 uncaughtException 直接杀死 pi 进程，更糟。保持现状，仅作已知观察项记录。
 - **不替换 `proper-lockfile`。** 4.1.2 是该包多年未再发版的稳定末版（无已知 CVE，传递依赖仅 3 个成熟小包，精确 pin 合理），实质处于无人维护状态但当前完全可接受。锁语义（compromise 回调、stale 续期、`realpath: false` 与 pi 核心共用同一把锁）是本项目多个设计决策的地基，替换需要整套并发测试重跑——**不要因为「看起来旧」就换**。
-- **不动 `endpoint-setting.ts` 与 `endpoint.ts` 的调用形态隔离**（`endpoint-setting.ts:5-6` 声明了刻意隔离）。已落地的措辞收敛（三处共用 `catalog-store.ts` 导出的 `refreshFailureReason`）只统一分叉的提示文案，不合并调用形态。
+- **不动 `endpoint-setting.ts` 与 `endpoint.ts` 的调用形态隔离**（`endpoint-setting.ts` 的文件头注释声明了刻意隔离）。已落地的措辞收敛（三处共用 `catalog-store.ts` 导出的 `refreshFailureReason`）只统一分叉的提示文案，不合并调用形态。
 - **不对网关返回的 model id 做规范化重写。** 含内部空格的 id（网关允许，`compat/catalog.ts` 只要求非空）在 `/endpoint-setting` 的 RPC 文本清单里会解析失败并被拒绝——失败方向是安全的，只改提示措辞，不改写 id。静默改写网关返回的 id 比拒绝更危险。
 - **不在 `session.jsonl` 回退读里做尾部窗口求和。** 该函数是全文件累加；尾读会把总用量悄悄换成部分用量，是一种静默少算。
-- **不把 `createCompatBootstrapProvider` 从 `compat/provider.ts` 里拆出去，也不收敛两处 TTL 续期。** 已落地的 `commitAndPublish` 抽取（`provider.ts:865`）解决的是「三份守卫手工同步」；拆 bootstrap 对此零改善，却要把一个 1400 行文件对半拆开。TTL 两处分属不同对象，抽 helper 只换来跨模块依赖。
+- **不把 `createCompatBootstrapProvider` 从 `compat/provider.ts` 里拆出去，也不收敛两处 TTL 续期。** 已落地的 `commitAndPublish` 抽取（`compat/provider.ts`）解决的是「三份守卫手工同步」；拆 bootstrap 对此零改善，却要把一个 1400 行文件对半拆开。TTL 两处分属不同对象，抽 helper 只换来跨模块依赖。
 - **不删 `compat/storage.ts` 的 `updateInstance`。** 它已标 `@deprecated` 指向 `replaceInstanceIfEqual`（生产码走 CAS 路径）。删它防的是「未来有人误用」这个假想调用者，代价却是删掉 `test/compat-storage.test.ts` 的两条真实用例；注释能达到同样效果且不减覆盖。
 - **不给纯措辞改动写文案断言。** 把提示文案钉进断言只会让日后每次改措辞都要改测试，收益为零；以「不破坏现有用例」为准。有行为变化的改动仍然必须自带能复现原问题的测试。
 - **不把定价漂移检查挂进发布门禁**（见上节第 3 项）。

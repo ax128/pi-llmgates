@@ -646,7 +646,7 @@ rev 2 的「P0 / P0.5」不是两个里程碑（编号本身就说明了这点�
 - [ ] 走 [pre-publish-gate](../../pre-publish-gate.md)：其中 §4 功能验证至少覆盖「长会话触发一次自动压缩后 `/calls` 出现 `compact/*` 行」——**这是 P0 唯一未消化的收尾项，发版前必做**
 
 **P2① 的现状（2026-08-24 复核补记）：** 它修的缺口是真实存在且已可定位的——子代理只拿到 token 兜底时 cost 恒为 0
-（`tps-subagent.ts:250` 的 `mapTokenUsageToUsage`、`:1065` 的 session.jsonl 兜底都显式写 `cost: 0`），而记录里已经带着
+（`tps-subagent.ts:250` 的 `mapTokenUsageToUsage`、`:1064` 的 session.jsonl 兜底都显式写 `cost: 0`），而记录里已经带着
 `modelLabel`（真实模型 id），定价依据其实是齐的。仍不排期的理由不变：它会改变**已展示**的费用数字，且第三方 payload 里的
 model id 是任意字符串，落 `DEFAULT_MODEL_COST` 就违背 G8「不造钱」。做之前需要一份真实 async 子代理的 fixture 来确认
 `modelLabel` 的可信度。该少算已在两份 README 的「统计范围」如实披露。
