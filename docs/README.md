@@ -21,7 +21,7 @@
 
 | 文档 | 说明 |
 | --- | --- |
-| [2026-08-23-input-history-design.md](./superpowers/specs/2026-08-23-input-history-design.md) | 输入历史持久化（`/input-history`）设计方案（rev 2）。**已实施**：记录走 `pi.on("input")`、预填走 `ctx.ui.setEditorComponent()` 装饰器，落盘 `~/.pi/agent/llmgates/input-history/`；含 pi 侧三个坑（会话重放、包装 submit 路径、工厂抛错清空输入框）的取证与规避 |
+| [2026-08-23-input-history-design.md](./superpowers/specs/2026-08-23-input-history-design.md) | 输入历史持久化（`/input-history`）设计方案（rev 2）。**已实施**：记录走 `pi.on("input")`、预填走 `ctx.ui.setEditorComponent()` 装饰器，落盘 `~/.pi/agent/llmgates/input-history/`；含 pi 侧三个坑（会话重放、包装 submit 路径、工厂抛错清空输入框）的取证与规避。§6 为实施记录，§6.1 记录合并前复核推翻的两条判断（历史何时清空、工厂兜底是否真的兜得住）与修订 |
 | [2026-08-18-audit-remediation-plan.md](./superpowers/specs/2026-08-18-audit-remediation-plan.md) | 2026-08-18 全仓审计的后续优化方案（rev 4）。**已归档**：批次 1–6 全部实施完成（PR #45–#50），2026-08-20 已逐条对照代码复核。仍然有效的只有「批次 7 — 长期考虑」与「明确不做的事」两节，其余为实施记录。审计原始汇总从未落盘本仓，文首「关于问题编号」小节已结案——它不再是任何工作的前置门禁 |
 
 ## 设计与实现（内部）

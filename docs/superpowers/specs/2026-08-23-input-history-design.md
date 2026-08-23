@@ -1,6 +1,6 @@
 # 输入历史持久化（`/input-history`）设计方案
 
-状态：**已实施**（2026-08-23）。§1 的调研结论与 §2 的方案已逐条对照 pi-coding-agent 0.81.1 复核通过；实施时相对本文的偏差见文末「实施记录」。
+状态：**已实施**（2026-08-23）。§1 的调研结论与 §2 的方案已逐条对照 pi-coding-agent 0.81.1 复核；实施偏差见文末 §6，**合并前复核推翻的两条判断与随之的修订见 §6.1**（§0 关于历史何时清空的前提有误，§1.4-③ 的硬约束原实现并未真正成立）。
 日期：2026-08-23（rev 2，含复核修订）
 针对：`@llmgates_api/pi-llmgates-provider`，peer `@earendil-works/pi-coding-agent >=0.81.0 <0.85.0`
 
@@ -9,7 +9,7 @@
 ## 0. 结论摘要
 
 - **pi 已经有输入历史了**：pi-tui 的 `Editor` 内置 ↑↓ 历史浏览，上限恰好 **100 条**，交互语义与 Claude Code 基本一致。
-- **它只活在内存里**：历史挂在编辑器实例上，退出 pi、`/reload`、`/new`、`/resume` 都会清空，不落盘、不区分工作目录。
+- **它只活在内存里**：历史挂在编辑器实例上，**退出 pi 才清空**，不落盘、不区分工作目录。（rev 2 原文写的是"`/reload`、`/new`、`/resume` 也会清空"——实施后复核发现是错的，见 §1.1；纠正后本方案的收益仍然成立，但多了一项代价，见 §6。）
 - 所以本功能的真实内容不是"实现历史导航"，而是 **给 pi 既有的历史加持久化 + 作用域 + 开关**。
 - 落地方式是**两条互不耦合的链路**：
   - **记录**走 `pi.on("input")` 事件——只有真实用户输入会触发，pi 自己在 `emitInput` 里对每个 handler 做了 try/catch。
@@ -56,6 +56,9 @@
 - `addToHistory` 共 **8 个调用点**：L2229（`!bash`）/2239（steer）/2251/2267（普通提交）/**2657（会话重放）**/3020（压缩排队）/3032（follow-up）/3297（压缩队列）。
 - 帮助面板里 ↑↓ 的说明是 "Move cursor / browse history"。
 - 默认编辑器构造：`new CustomEditor(ui, getEditorTheme(), keybindings, { paddingX, autocompleteMaxVisible })`：L287–291。
+- **`defaultEditor` 每个进程只建一次**：全文只有 L288 一处赋值，`/reload`、`/new`、`/resume`、`/tree` 都不重建它。会话失效时 `resetExtensionUI()`（L1518）走 `setCustomEditorComponent(undefined)` → `this.editor = this.defaultEditor`（L1882），`history` 数组（`editor.js` L219，实例字段）原样保留。
+  ⇒ **不装任何换编辑器的扩展时，pi 的 ↑↓ 历史在 `/reload` / `/new` / `/resume` 之后是保留的，只有退出进程才丢。**
+  ⇒ 而 `setCustomEditorComponent` 换编辑器时只搬草稿文本、**不搬 history**（L1836–1878），所以本方案的预填（每次 `session_start` 新建实例）会把没落盘的条目丢掉。这是必须写进 README 的代价，不是可以忽略的细节。
 
 **结论**：历史导航、草稿保护、100 条上限、去重规则 pi 全都做好了。缺的只有"持久化"。
 `docs/keybindings.md` 里没有任何 history 相关 keybinding，说明这套行为硬编码在 `tui.editor.cursorUp/Down` 里，无法用配置改，也不需要我们重做。
@@ -439,7 +442,7 @@ pi 本来就把每条用户消息写进 **per-cwd 会话文件**（`session-mana
 | `CHANGELOG.md` | Unreleased 条目 | — |
 | `docs/README.md` | 索引加一行指向本文 | — |
 
-（`package.json` 的 `pi.extensions` 不用动——新模块由 `index.ts` import。`test/index.test.ts` 用的是 `commands.has()` 而非全等断言，新增命令不会撞已有测试。）
+（`package.json` 的 `pi.extensions` 不用动——新模块由 `index.ts` import。`test/index.test.ts` 用的是 `commands.has()`，不受影响；但 **`test/compat-index.test.ts` 对注册的命令集合做全等断言**，新增命令必须同步——rev 2 原文漏了这一条，实施时由 CI 抓到，见 §6。）
 
 ### 测试计划（vitest，focused）
 
@@ -535,5 +538,21 @@ pi 本来就把每条用户消息写进 **per-cwd 会话文件**（`session-mana
 | §2.3 单条上限的判定位置 | `mergeHistoryEntry` 纯函数里判，超限返回 `null`（不写盘、不影响其余条目） | 便于单测直接钉死上限 |
 | §1.5 长路径截断 | 按 **UTF-8 字节**而非字符数截断 | 文件名限制是字节；CJK 路径按字符截断会超 255 字节 |
 | 注释与用户可见文案语言 | 英文 | 与仓库现状一致（`util.ts` / `tps.ts` 注释、`/balance` `/endpoint` `/llmgates` 的 notify 文案都是英文）；中文只出现在 `login-ui.ts` 与 `endpoint-picker.ts` 这类本来就中文化的界面 |
+| §3「新增命令不会撞已有测试」 | `test/compat-index.test.ts` 需同步 | 该文件对注册的命令集合做**全等**断言（`index.test.ts` 用的才是 `has()`）。第二条断言「registry 损坏时不注册任何命令」也随之改变语义——`/input-history` 会活下来，这**正是设计意图**（注册放在 compat 的 try/catch 之前且自带 try/catch）。因此同步修正了三处随之失准的说法：README 中英双份「已知限制」的「不注册任何 provider 与命令」→「…与网关命令」并点明 `/input-history` 不受影响，`index.ts` 启动 warning 同步改为 "no gateway command" |
 
-`docs/pre-publish-gate.md` §4 的功能验证清单（§3「实施顺序」第 7 条）尚未执行——它需要真实的 pi 进程，属于发布前门禁的范围。
+### 6.1 合并前复核发现的问题与修订（2026-08-23）
+
+以下四条是 PR 复核阶段发现、并在合并前改掉的。前两条推翻了本文的原始判断，一并记在这里。
+
+| 问题 | 本文原说法 | 复核结论与修订 |
+| --- | --- | --- |
+| **前提有误**：pi 的历史何时清空 | §0「`/reload`、`/new`、`/resume` 都会清空」 | **错**。`defaultEditor` 每进程只建一次，`history` 是实例字段，这三个动作都不清空（证据见 §1.1 新增条目）。只有退出 pi 才丢。§0 与 README / CHANGELOG 已按事实改写 |
+| **由此掩盖的代价**：预填会缩短进程内历史寿命 | 无（本文声称对现有行为无影响） | 预填每次 `session_start` 新建编辑器实例，而 pi 换编辑器只搬草稿文本不搬 history，所以 `/reload` / `/new` / `/resume` 之后没落盘的条目（`!bash`、斜杠命令）会消失——装扩展前它们还在。**这是拿跨进程持久化换来的**，已写进两份 README 的「已知限制」并给出 `LLMGATES_INPUT_HISTORY=0` 的退路 |
+| **§1.4-③ 的硬约束没真正成立** | 「工厂函数体整体 try/catch，任何路径都返回可用的 `EditorComponent`」 | 兜底 catch 里 `return new ctor(...)` 与刚失败的那次调用完全相同，只会再抛一次——能走到 catch 的唯一路径就是构造失败。改为：`buildEditor` 依次试「被包装的工厂 → 我们自己的 `CustomEditor`」，两者都不行时**抛出**；`install` 捕获后调 `setEditorComponent(undefined)`，让 pi 走它自己的「恢复默认编辑器」分支把输入框放回去（`setCustomEditorComponent` 清空容器后并未重新赋值 `this.editor`，所以 pi 的编辑器还在，只是没挂上）。约束改述为「**能造出编辑器就一定返回；造不出时抛出并由 `install` 恢复**」 |
+| **§1.3 的覆盖面表述过宽** | 「斜杠命令不落盘」 | pi 内置命令在 `interactive-mode` 就被拦掉、扩展命令在 `prompt()` L798–806 提前 return，这两类确实不落盘；但 **`/skill:<名字>`、prompt template 调用和打错的 `/xxx` 会进 `emitInput`**（skill/template 展开发生在 `emitInput` 之后），照常落盘。它们本质是 prompt 不是命令，落盘是对的，但 README 的**安全**章节不能笼统写成「斜杠命令结构性地不落盘」。两份 README 与 CHANGELOG 已收窄 |
+
+另有两处小加固：`ensureRuntimeHandlers()` 把 `runtimeHandlersRegistered` 的置位挪到三个 `pi.on` 之后（`pi.on` 在 runtime 失效时会抛，先置位会让后续重试永久静默失效）；`install()` 里 `setEditorComponent` 单独 try/catch，与前置准备分开。
+
+### 6.2 待办
+
+`docs/pre-publish-gate.md` §4.2 已加入「输入历史（`/input-history`）」勾选块（§3「实施顺序」第 7 条的清单），**但尚未执行**——它需要真实的 pi 进程，属于发布前门禁的范围。
