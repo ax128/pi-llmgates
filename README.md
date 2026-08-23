@@ -346,7 +346,9 @@ TUI 扩展状态行：
 - 同步 pi `subagent` / Cursor `Task` 工具结果与 `_meta.json` 汇总计入同一计数器；扫描 `.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧版 `.pi-subagents/artifacts` 及会话文件旁的 `subagent-artifacts/`。
 - async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 事件旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。
 - 事件里的 `sessionId` 可能是裸 ID、会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。
+- 上下文压缩与分支摘要那次 LLM 调用计入 `compact/<模型>` 一行（pi 自己也算这笔，我们此前漏计）。自动压缩、手动 `/compact`、上下文溢出恢复压缩与分支摘要都覆盖。由其他扩展代管的压缩（pi 标记为 `fromHook`）计入 `compact/unknown`，且只认它自报的费用——它用的是哪个模型我们看不到，不会按会话模型的费率估价；完全不上报用量的仍无从统计。
 - 设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与同步 `subagent` / Cursor `Task` 工具结果仍统计）。
+- 设 `LLMGATES_TPS_COMPACTION=0` 可关闭压缩 / 分支摘要统计。
 - 用量聚合在后台任务链中执行，不阻塞 agent 循环；计数只在交互式父会话（TUI）进行。
 
 ### 定价数据
@@ -440,6 +442,7 @@ pi 的输入框本来就支持用 ↑↓ 翻看敲过的内容（上限 100 条�
 | `LLMGATES_DEBUG` | 设为 `1` / `true` / `yes` 时输出调试日志 |
 | `LLMGATES_BLOCK_PRIVATE_URLS` | 设为 `1` / `true` / `yes` 时拒绝 **IP 字面量** 形式的 private / link-local 网关地址（loopback 仍允许）；hostname（如 `gateway.local`）不受此规则约束 |
 | `LLMGATES_TPS_SUBAGENT` | 默认启用；设为 `0` / `false` / `no` 时关闭子代理 async 旁路与 meta 扫描 |
+| `LLMGATES_TPS_COMPACTION` | 默认启用；设为 `0` / `false` / `no` 时不统计压缩 / 分支摘要条目的用量 |
 | `PI_OFFLINE` | 设为 `1` / `true` / `yes` 时跳过网络 catalog 刷新 |
 
 上述开关统一解析：`1` / `true` / `yes` / `on` 为开，`0` / `false` / `no` / `off` 为关，其余值视为未设置（回落到各自默认）。`LLMGATES_INPUT_HISTORY_SCOPE` 只认 `cwd` / `global`，其余值同样视为未设置。

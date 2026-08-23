@@ -348,7 +348,9 @@ The TUI extension status line shows:
 - Synchronous pi `subagent` / Cursor `Task` tool results and `_meta.json` summaries feed the same counter; scanned directories are `.pi/subagents/artifacts` (pi-subagents ≥ 0.49), the legacy `.pi-subagents/artifacts`, and `subagent-artifacts/` next to the session file.
 - async / background subagents are collected through the `subagent:async-complete` / `subagent:foreground-complete` event bypass (falling back to `status.json` / the child `session.jsonl` when the event carries no tokens).
 - The `sessionId` in those events may be a bare ID, the full session file path, or its basename (pi-subagents identifies a session with `getSessionFile() ?? getSessionId()`); all three identity forms are matched.
+- The LLM call behind a context compaction or a branch summary is counted under a `compact/<model>` row (pi bills it to the session too; we used to miss it). Automatic compaction, manual `/compact`, overflow-recovery compaction and branch summaries are all covered. A compaction owned by another extension (pi flags it `fromHook`) lands under `compact/unknown` and is charged only the cost it reports itself — the model it ran on is invisible to us, so its tokens are never priced at the session model's rate; one that reports no usage at all still cannot be counted.
 - Set `LLMGATES_TPS_SUBAGENT=0` to turn off the subagent bypass and the meta scan (the parent model and synchronous `subagent` / Cursor `Task` tool results are still counted).
+- Set `LLMGATES_TPS_COMPACTION=0` to stop counting compaction / branch-summary entries.
 - Aggregation runs in a background task chain and never blocks the agent loop; counting happens only in an interactive parent session (TUI).
 
 ### Pricing data
@@ -442,6 +444,7 @@ Config files live under `~/.pi/agent/llmgates/` (older flat files under `~/.pi/a
 | `LLMGATES_DEBUG` | `1` / `true` / `yes` enables debug logging |
 | `LLMGATES_BLOCK_PRIVATE_URLS` | `1` / `true` / `yes` rejects private / link-local gateway addresses given as **IP literals** (loopback still allowed); hostnames such as `gateway.local` are not subject to this rule |
 | `LLMGATES_TPS_SUBAGENT` | Enabled by default; `0` / `false` / `no` turns off the subagent async bypass and the meta scan |
+| `LLMGATES_TPS_COMPACTION` | Enabled by default; `0` / `false` / `no` stops counting compaction / branch-summary entry usage |
 | `PI_OFFLINE` | `1` / `true` / `yes` skips network catalog refreshes |
 
 All of these parse the same way: `1` / `true` / `yes` / `on` is on, `0` / `false` / `no` / `off` is off, and any other value counts as unset (falling back to the respective default). `LLMGATES_INPUT_HISTORY_SCOPE` only accepts `cwd` / `global`; anything else likewise counts as unset.

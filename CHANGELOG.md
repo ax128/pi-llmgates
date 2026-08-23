@@ -19,6 +19,8 @@
   - 关闭时（`LLMGATES_INPUT_HISTORY=0` 或 `"inputHistory": false`）不注册 `input` handler、不换编辑器、不建目录、不写盘，pi 行为与安装前一致。
 - **`llmgates/config.json` 新增 `inputHistory` 与 `inputHistoryScope` 两个键**，并有了第一个写入口：`/input-history` 会把改动**合并**进文件（保留 `pricingAutoUpdate` 与任何未知键）。配置文件解析失败时**拒绝写入**并报错，绝不用一份「干净」的配置覆盖掉用户手上的内容。
 - **补上 pi 漏复制的 `autocompleteMaxVisible`。** `setCustomEditorComponent` 会把 paddingX、autocomplete provider 和 app 级快捷键复制到扩展提供的编辑器上，却漏了这一项，而 pi 重新应用该值的两处都发生在扩展绑定之前。于是在 `settings.json` 里把补全条数调成 12 的用户，装上任何换编辑器的扩展后都会回落到 pi 默认的 5。现在安装时读一次全局 `settings.json` 并作为构造参数传入。
+- **上下文压缩与分支摘要的用量现在计入 `/calls` 与状态行。** 压缩走 `completeSimple()` 直连、结果落成 `compaction` / `branch_summary` 会话条目而非 assistant 消息，所以此前 `message_end` 看不到它——pi 自己的 `/cost` 一直在算这笔钱，我们不算。现在它单独占 `compact/<模型>` 一行：自动压缩、手动 `/compact`、上下文溢出恢复压缩与分支摘要都覆盖。**这会让会话总额上升**（既有各行的数值不变），长会话尤其明显。由其他扩展代管的压缩（pi 标记为 `fromHook`）计入 `compact/unknown`，且只认它自报的费用——它用的是哪个模型我们看不到，不会按会话模型的费率估价；完全不上报用量的仍无从统计。
+- **新环境变量 `LLMGATES_TPS_COMPACTION`。** 默认启用；设为 `0` / `false` / `no` 时不统计压缩 / 分支摘要条目，且不影响父模型、子代理与 meta 扫描三条既有路径。
 
 ## [0.3.2] — 2026-08-20
 
