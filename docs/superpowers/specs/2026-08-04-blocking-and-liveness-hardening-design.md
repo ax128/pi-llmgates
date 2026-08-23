@@ -14,6 +14,22 @@
 >   construction rather than by each caller remembering to use it.
 > - The rest of §1–§9 still matches the code, including the bounds, the guard
 >   order, and the `ingested.size` re-queue condition.
+>
+> **2026-08-24 revision (re-checked against the code):**
+>
+> - The count above is stale. `withFileLock()` now has **six** call sites, not
+>   three: `compat/storage.ts:54`, both in `model-overrides.ts` (`:233`, `:344`),
+>   `connection.ts:367` (`updateConfigFile`), and both in
+>   `input-history-store.ts` (`:205`, `:226`). The first three arrived with the
+>   gateway work, the last three with `/input-history`.
+> - §4's invariant — this extension never holds two file locks at once — still
+>   holds across all six. `/input-history` writes `config.json` from the command
+>   handler (`input-history.ts:519`), deliberately **outside** the history-file
+>   lock; the input-history design doc records that as a hard rule, because two
+>   processes taking the two paths in opposite order would deadlock.
+> - §1's list of release sites is likewise a count from that era; releases still
+>   go through `releaseLockQuietly()` in `withFileLock`'s own `finally`, so the
+>   coverage argument is unchanged no matter how many sites exist.
 
 ## Goal
 

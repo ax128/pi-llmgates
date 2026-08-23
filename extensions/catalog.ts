@@ -12,7 +12,7 @@ export type ThinkingLevelMap = Partial<
 
 export type PiApiType = "openai-responses" | "openai-completions" | "anthropic-messages";
 
-export const PACKAGE_VERSION = packageJson.version;
+const PACKAGE_VERSION = packageJson.version;
 export const USER_AGENT = `pi-llmgates-provider/${PACKAGE_VERSION}`;
 
 export const DEFAULT_MAX_TOKENS = 16384;

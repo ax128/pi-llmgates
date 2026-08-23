@@ -60,7 +60,9 @@ const INPUT_HISTORY_HELP = [
 	"on/off  persist interactive input, or stop and unhook the editor (this pi process included)",
 	"scope   cwd = one file per working directory (default), global = one file shared by all of them",
 	"clear   delete the current scope's history file; the in-memory list is rebuilt empty",
-	`Only interactive prompts are stored (never slash commands or !bash), newest ${MAX_HISTORY_ENTRIES} kept, entries over ${MAX_ENTRY_BYTES / 1024} KiB skipped.`,
+	"Only interactive prompts are stored. pi's own and extension slash commands and !bash never are;",
+	"/skill:, prompt templates and mistyped /xxx do — pi sends the whole line on as a prompt.",
+	`Newest ${MAX_HISTORY_ENTRIES} kept, entries over ${MAX_ENTRY_BYTES / 1024} KiB skipped.`,
 ].join("\n");
 
 /**

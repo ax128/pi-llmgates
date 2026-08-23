@@ -135,10 +135,6 @@ export function readInputHistoryFile(path: string): InputHistoryFile | null {
 	};
 }
 
-export function readInputHistoryEntries(path: string): string[] {
-	return readInputHistoryFile(path)?.entries ?? [];
-}
-
 /**
  * Fold `text` into `entries` (newest first) and return the list to write, or `null`
  * when nothing needs writing: blank, over the per-entry cap, or already at the head.

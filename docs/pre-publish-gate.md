@@ -135,7 +135,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
 - [ ] `pi install /tmp/llg-pkg` 成功
 - [ ] `pi` 能正常进入 TUI（起不来通常就是 `packages` 里混进了 `.tgz` 路径）
 - [ ] 扩展加载无 startup 报错（注意终端与 pi 日志）
-- [ ] `/llmgates`、`/balance` 等命令是**原名**而不是 `llmgates:1` / `llmgates:2`（带后缀 = 装了两份，见 §3.1）
+- [ ] 七个命令（`/llmgates` `/llmgates-reload` `/endpoint` `/endpoint-setting` `/balance` `/input-history` `/calls`）都在，且是**原名**而不是 `llmgates:1` / `calls:2`（带后缀 = 装了两份，见 §3.1）
 
 ### 3.1 本地 `.tgz` 与 registry 安装
 
@@ -147,7 +147,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
 | `pi install .` | 源码目录，**不能**代替 §3 |
 | `pi install -l …` | 仅当前项目；与全局安装路径不同，但包内容相同 |
 
-**同一扩展不要装两份。** registry 版与本地解包目录同时在 `packages` 里时，pi 不会报错，而是把两份都加载并给命令加后缀消歧——6 个命令变成 `llmgates:1`…`calls:2`，原名 `/llmgates` 反而不存在，provider 也会重复注册。验证前先 `pi uninstall npm:@llmgates_api/pi-llmgates-provider`。
+**同一扩展不要装两份。** registry 版与本地解包目录同时在 `packages` 里时，pi 不会报错，而是把两份都加载并给命令加后缀消歧——**7 个命令**（`llmgates`、`llmgates-reload`、`endpoint`、`endpoint-setting`、`balance`、`input-history` 来自 `dist/index.js`，`calls` 来自 `dist/tps.js`）全部变成 `llmgates:1`…`calls:2`，原名 `/llmgates` 反而不存在，provider 也会重复注册。验证前先 `pi uninstall npm:@llmgates_api/pi-llmgates-provider`。
 
 发版前用 `.tgz` 验证扩展文件与 `files` 白名单即可；publish 后 registry tarball 内容应与 bump 后 `npm pack` 一致。
 
@@ -320,13 +320,9 @@ ln -s "$PWD/node_modules/@earendil-works/pi-coding-agent" <pkgdir>/node_modules/
 
 ## 6. 门禁通过后再发布
 
-门禁与 [npm-package.md § Agent 标准发布对话](./npm-package.md#agent-标准发布对话下次照此执行) 的衔接：
+本页到此结束，**发布流程本身只有一处权威描述**：[npm-package.md § Agent 标准发布对话](./npm-package.md#agent-标准发布对话下次照此执行)（A 准备 → B 要认证链接 → C publish → D 给安装命令）。这里只定义两者之间的**衔接契约**，不复述步骤。
 
-1. **本页 §2–§5 全部通过**（含 `.gate/pre-publish-pass.json` 与对话回执）
-2. 升版本与定版发布说明（见 [npm-package.md §3.2](./npm-package.md#32-升版本)）：`package.json`、`package-lock.json`、`README.md`、`README.en.md`、`docs/npm-package.md`、`CHANGELOG.md`
-3. `npm run check`（升版本后若**仅**改上述文件，可省略重复 check，但推荐再跑一次）
-4. commit + push + tag
-5. `node ./scripts/npm-publish-auth-link.mjs` → 等 OTP → `./scripts/publish-npm.sh --otp=...`
+契约一句话：**本页 §2–§5 全部通过**（`.gate/pre-publish-pass.json` + 对话回执）之后，才允许进入 npm 手册的 §A。
 
 **bump 与 re-pack 规则：**
 
@@ -340,13 +336,19 @@ ln -s "$PWD/node_modules/@earendil-works/pi-coding-agent" <pkgdir>/node_modules/
 
 ## 7. 决策简表
 
+发布相关请求的**唯一决策表**（原 `npm-package.md` §5 的行已并入此处，那里只留指针）。
+
 | 用户 / 维护者说 | 正确动作 |
 | --- | --- |
-| 「合并了，发布吧」 | 先 §2–§4，回执 PASS，再 npm 手册 |
+| 「装一下 / 试试」 | [npm-package.md §1](./npm-package.md#1-安装终端用户--验证发布)；**勿** publish |
+| 「更新到最新」 | [npm-package.md §2](./npm-package.md#2-更新用户侧) |
+| 「合并了，发布吧」 | 先本页 §2–§4，回执 PASS，再走 [npm-package.md § Agent 标准发布对话](./npm-package.md#agent-标准发布对话下次照此执行) A→B→C→D |
 | 「check 过了，直接 publish」 | **拒绝跳步**；check ≠ 本地 npm 包 + pi 验证；且 `publish-npm.sh` 需 `.gate/pre-publish-pass.json` |
-| 「pi install . 测过了」 | **不够**；发版须 `npm pack` 后装 `.tgz` |
+| 「pi install . 测过了」 | **不够**；发版须 `npm pack` 后装 `.tgz`（解包成目录再 `pi install <目录>`，见 §3） |
 | 「热修，来不及测」 | 至少 §2–§3 + smoke；书面记录风险 |
 | 「只改 README」 | §2–§3 即可，可跳过 §4.2 专项 |
+| 报 EOTP / 要认证链接 | `node ./scripts/npm-publish-auth-link.mjs`，把打印出的链接发给用户，等回复 |
+| 用户回了验证码 | `./scripts/publish-npm.sh --otp=...`（**不要**裸 `npm publish`），成功后立刻给安装命令 |
 
 ---
 
