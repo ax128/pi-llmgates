@@ -18,6 +18,7 @@ Reference implementation: [@router-for-me/pi-cliproxyapi-provider](https://pi.de
 - [Adding and managing instances](#adding-and-managing-instances)
 - [Models and inference endpoints](#models-and-inference-endpoints)
 - [Usage and cost](#usage-and-cost)
+- [Input history](#input-history)
 - [Configuration](#configuration)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
@@ -33,6 +34,7 @@ Reference implementation: [@router-for-me/pi-cliproxyapi-provider](https://pi.de
 - **Per-model endpoint routing** — the gateway's own `inference_endpoint` / `web_chat_endpoint` wins; models that declare nothing go to OpenAI Chat Completions, and any model can be overridden to `messages` / `responses`. Image/video generation models are not registered.
 - **Balance lookup** — `/balance` probes each instance's quota, and reports *not available* rather than `0` when the gateway exposes no usable endpoint.
 - **Usage and cost tracking** — TUI status line plus `/calls` breakdown, covering the parent session and both sync and async subagents; cost is estimated from upstream retail rates.
+- **Persistent input history** — what ↑↓ walks through survives across pi processes (on by default, one file per working directory); `/input-history` manages the switch, the scope and clearing it.
 
 ## Quick start
 
@@ -87,6 +89,10 @@ pi -e npm:@llmgates_api/pi-llmgates-provider
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | Switch or clear the inference endpoint of **one** model |
 | `/endpoint-setting` | Interactive multi-select to switch endpoints in bulk across instances |
 | `/calls` | Per-model usage and cost breakdown for this turn or this session |
+| `/input-history` | Show the input-history switch, scope, file path and how much is stored |
+| `/input-history on\|off` | Enable or disable persistent input history (writes `config.json`, effective immediately in this pi process) |
+| `/input-history scope <cwd\|global>` | Switch scope: one file per working directory (default) or one shared by all of them |
+| `/input-history clear` | Delete the current scope's history file and empty this process's in-memory list |
 | `/llmgates list` | List instance ID, scheme, base URL and display name (never the key) |
 | `/llmgates remove <id>` | Delete an instance along with its registry / auth / endpoint-override records |
 | `/llmgates help` | Show usage and known limitations |
@@ -367,6 +373,34 @@ The cost shown in the TUI and `/calls` is an **estimate based on upstream retail
 
 With `pricingAutoUpdate` enabled, every catalog refresh syncs retail model prices from [LiteLLM](https://github.com/BerriAI/litellm) in the background (without blocking the list): missing models are fetched immediately, otherwise the data refreshes every 24h. On a failed sync, the cache and the static rules are kept (`LLMGATES_DEBUG=1` for details). Auto-sync **only writes `rates`** and **never touches `overrides`**. `rates` entries outside the catalog survive a refresh. Every refresh re-reads the file from disk, so hand edits need no restart. The static rules in `extensions/model-pricing.ts` are the offline fallback. After a successful sync, the `cost` field of already-registered models is patched in memory — no extra catalog request.
 
+## Input history
+
+pi's editor already walks through what you typed this session with ↑↓ (capped at 100 entries), but it lives **in memory only**: quitting pi, `/reload`, `/new` and `/resume` all wipe it, and it does not distinguish working directories. This extension adds exactly one thing — it **stores that list on disk** and feeds it back into pi's history on the next start. The ↑↓ triggering rules, draft protection, de-duplication and the 100-entry cap all stay pi's own.
+
+**On by default, scoped to the current working directory.**
+
+| Scope | File | Meaning |
+| --- | --- | --- |
+| `cwd` (default) | `~/.pi/agent/llmgates/input-history/--<encoded cwd>--.json` | One file per working directory, the same granularity pi uses for its own session files |
+| `global` | `~/.pi/agent/llmgates/input-history/global.json` | **One file shared by every working directory** of this pi user. It is the only option that introduces cross-project visibility, so it is an explicit opt-in and discloses itself once when first enabled |
+
+### What is recorded
+
+- Only prompts **actually typed in the TUI** (the `input` event with an interactive source).
+- **Not recorded**: slash commands (`/model`, `/endpoint`, `/input-history`, …), `!bash` / `!!bash`, messages from rpc clients or injected by extensions, and pi's replay of an older session's history.
+- Leaving `!bash` out is a deliberate security trade: `!export TOKEN=…` or `!curl -H "Authorization: Bearer …"` — the inputs most likely to carry a secret — structurally can never reach this file.
+- There are exactly two caps: the **newest 100 entries** and **8 KiB per entry** (UTF-8). An entry over 8 KiB is skipped whole rather than truncated (a half prompt resurrected by ↑ and submitted is a real hazard); it still works with ↑ for the rest of the session.
+- On disk it is an MRU list: re-submitting an entry that is already stored **moves it to the front** instead of adding a copy, so habitual prompts ("continue", "run the tests") cannot fill all 100 slots.
+
+### Known limitations
+
+- Slash commands and `!bash` never reach the persisted history, so **after a restart ↑ walks through fewer entries than it did inside the session**.
+- Several pi processes running in the same scope cannot see each other's in-memory history; they converge on the next start's prefill. The merge on disk is complete (cross-process file lock plus read-modify-write).
+- `/input-history off` and `/input-history clear` **only affect the current pi process**: another pi still running in the same scope recreates the file on its next prompt (with the new entries only).
+- A history file that fails to parse is treated as empty and is overwritten wholesale by the next write. **It is not a backup — do not hand-write anything into it.**
+- The prefill goes through pi's custom-editor API: an extension that calls `setEditorComponent` **after** this one (a vim-mode extension, say) replaces our editor and the **prefill silently stops working** (recording is unaffected). That is inherent to pi's extension API.
+- There is no per-entry delete. A secret that made it to disk can only be removed with `/input-history clear`.
+
 ## Configuration
 
 Gateway URLs and API keys can **only** be configured through `/login`; they are never read from environment variables or config files.
@@ -377,32 +411,40 @@ Config files live under `~/.pi/agent/llmgates/` (older flat files under `~/.pi/a
 
 | File | Contents |
 | --- | --- |
-| `config.json` | Extension-level switches; currently just `pricingAutoUpdate` |
+| `config.json` | Extension-level switches: `pricingAutoUpdate`, `inputHistory`, `inputHistoryScope` |
 | `2api.json` | Instance registry (ID, display name, scheme, base URL — **no keys**) |
 | `2api-models/<instanceId>.json` | Per-instance endpoint overrides, see [Editing the override file by hand](#editing-the-override-file-by-hand) |
 | `pricing.json` | Editable model prices and the LiteLLM sync cache, see [Pricing data](#pricing-data) |
+| `input-history/*.json` | Persisted input history, one file per scope, see [Input history](#input-history) |
 
-`config.json`:
+`config.json` (the values below are the **defaults**, in effect whenever the file or a key is missing):
 
 ```json
 {
-  "pricingAutoUpdate": true
+  "pricingAutoUpdate": true,
+  "inputHistory": true,
+  "inputHistoryScope": "cwd"
 }
 ```
 
-Setting `"pricingAutoUpdate": false` or `LLMGATES_PRICING_AUTO_UPDATE=0` restricts pricing to local/manual values.
+- Setting `"pricingAutoUpdate": false` or `LLMGATES_PRICING_AUTO_UPDATE=0` restricts pricing to local/manual values.
+- `inputHistory` / `inputHistoryScope` are described under [Input history](#input-history). Prefer `/input-history` for changing them — it merges into the file and keeps every other key. A hand edit needs a `/reload` to take effect.
 
 ### Environment variables
 
 | Variable | Effect |
 | --- | --- |
 | `LLMGATES_PRICING_AUTO_UPDATE` | Overrides `pricingAutoUpdate` (default `true`; `0` / `false` disables) |
+| `LLMGATES_INPUT_HISTORY` | Overrides `inputHistory` (default `true`; `0` / `false` turns persistent input history off — the simplest kill switch) |
+| `LLMGATES_INPUT_HISTORY_SCOPE` | Overrides `inputHistoryScope`: `cwd` (default) or `global` |
 | `LLMGATES_DEBUG` | `1` / `true` / `yes` enables debug logging |
 | `LLMGATES_BLOCK_PRIVATE_URLS` | `1` / `true` / `yes` rejects private / link-local gateway addresses given as **IP literals** (loopback still allowed); hostnames such as `gateway.local` are not subject to this rule |
 | `LLMGATES_TPS_SUBAGENT` | Enabled by default; `0` / `false` / `no` turns off the subagent async bypass and the meta scan |
 | `PI_OFFLINE` | `1` / `true` / `yes` skips network catalog refreshes |
 
-All of these parse the same way: `1` / `true` / `yes` / `on` is on, `0` / `false` / `no` / `off` is off, and any other value counts as unset (falling back to the respective default).
+All of these parse the same way: `1` / `true` / `yes` / `on` is on, `0` / `false` / `no` / `off` is off, and any other value counts as unset (falling back to the respective default). `LLMGATES_INPUT_HISTORY_SCOPE` only accepts `cwd` / `global`; anything else likewise counts as unset.
+
+While one of these is in effect, `/input-history on` / `off` / `scope` **refuses to run** and asks you to unset it first — otherwise the config file would say one thing while the environment kept overruling it.
 
 ## Security
 
@@ -416,6 +458,11 @@ All of these parse the same way: `1` / `true` / `yes` / `on` is on, `0` / `false
 - Startup is cache-first; cache-only, offline and freshness-window skips use the routing/thinking metadata straight from the cache. A session start can trigger one background refresh, but there is no periodic refresh timer; a failure warns and keeps the old catalog/cache.
 - A normal catalog refresh publishes new models only when both the network mapping and the cache write succeed; a network or cache write failure keeps the previous in-memory and on-disk values. A failed cache write right after login is the exception: the login is not undone, the session uses the validated catalog, and the disk keeps the old cache.
 - Config files are written with mode `0600` and replaced atomically.
+- Input history files are `0600` in a `0700` directory, the same level as `auth.json`. ⚠️ POSIX permission bits offer no real protection on Windows; rely on the access control of the user profile directory there.
+- Input history is scoped to `cwd` by default: pi already writes every user message into a per-cwd session file (`~/.pi/agent/sessions/`), so the incremental risk of having this on by default is **aggregation** — turning scattered input into one readable list — not "input starts hitting the disk". `global` is the only option that adds **cross-project visibility**, which is why it is an explicit opt-in that discloses itself once.
+- Slash commands and `!bash` **structurally never enter** the input history file (see [Input history](#input-history)).
+- Input history does no secret filtering or automatic redaction: incomplete redaction is worse than none, because it suggests safety that is not there. There is no per-entry delete either.
+- Three ways out: `/input-history off`, `/input-history clear`, `LLMGATES_INPUT_HISTORY=0`. After uninstalling the extension, `rm -rf ~/.pi/agent/llmgates/input-history/` wipes it completely.
 - **Unsupported / unsafe:** configuring this extension's provider `apiKey` through a `~/.pi/agent/models.json` overlay (pi may re-enable config-value syntax). Do not do this.
 
 ## Troubleshooting

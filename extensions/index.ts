@@ -13,6 +13,7 @@ import {
 	registerEndpointCommand,
 } from "./endpoint.js";
 import { registerEndpointSettingCommand } from "./endpoint-setting.js";
+import { registerInputHistory } from "./input-history.js";
 import { registerCatalogReloadCommand } from "./llmgates-reload.js";
 import {
 	registerCompatGateways,
@@ -38,6 +39,19 @@ export default function (pi: ExtensionAPI): void {
 	} catch (error) {
 		logWarn(
 			`Legacy config migration failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	/**
+	 * Registered before the gateway wiring below and guarded on its own: input
+	 * history has nothing to do with gateways, so an unparseable 2api.json must not
+	 * take it down with the providers.
+	 */
+	try {
+		registerInputHistory(pi, agentDir);
+	} catch (error) {
+		logWarn(
+			`Input history registration failed: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
 
