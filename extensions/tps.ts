@@ -26,7 +26,7 @@ import {
 	selectFreshSubagentRecords,
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
-import { extractCompactionUsage } from "./tps-usage-inlets.js";
+import { extractCompactionUsage, extractToolResultUsage } from "./tps-usage-inlets.js";
 import {
 	cloneModelUsageStats,
 	formatTpsStatusLine,
@@ -519,6 +519,16 @@ export default function (pi: ExtensionAPI) {
 		const records = extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId);
 		if (records.length > 0) {
 			ingestSubagentRecords(records);
+		}
+		// Inlet D: any other tool that follows pi's `result.usage` convention. Its switch
+		// is checked here rather than at session_start so that turning it off leaves the
+		// subagent / task parsing above running — both are zero-IO parses of a payload
+		// that already arrived, so there is no subscription to tear down either way.
+		if (envFlag("LLMGATES_TPS_TOOL_USAGE") !== false) {
+			const toolUsageRecords = extractToolResultUsage(event.toolName, event.result, event.toolCallId);
+			if (toolUsageRecords.length > 0) {
+				ingestSubagentRecords(toolUsageRecords);
+			}
 		}
 		scheduleSubagentMetaScan();
 	});

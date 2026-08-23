@@ -63,7 +63,7 @@
 | `extensions/tps-stats.ts` | 状态行与 per-model 明细格式化 |
 | `extensions/tps-subagent.ts` | 子代理用量解析（tool / meta / async event） |
 | `extensions/tps-subagent-bridge.ts` | pi-subagents 事件桥接（async/foreground-complete） |
-| `extensions/tps-usage-inlets.ts` | 补齐 pi 自身口径的用量入口解析（压缩 / 分支摘要条目） |
+| `extensions/tps-usage-inlets.ts` | 补齐 pi 自身口径的用量入口解析（工具结果顶层 `usage`、压缩 / 分支摘要条目）与工具名排除集 |
 
 ## 脚本
 

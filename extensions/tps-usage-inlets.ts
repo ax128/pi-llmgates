@@ -5,7 +5,9 @@
  * `getSessionStats()` sums three sources (`agent-session.js:2482-2514`): assistant
  * message usage, tool-result message usage, and `compaction` / `branch_summary` entry
  * usage. `tps.ts` has always covered the first, and `tps-subagent.ts` covers the
- * pi-subagents world on top of it; the parsers here cover the other two.
+ * pi-subagents world on top of it; the parsers here cover the other two —
+ * `extractToolResultUsage` for any tool that follows pi's `result.usage` convention,
+ * `extractCompactionUsage` for the summarization entries.
  *
  * Every parser is pure and never throws — pi's `ExtensionRunner.emit` does catch handler
  * errors (`runner.js:565-595`), but it reports them to the user afterwards, so throwing
@@ -18,8 +20,120 @@
  */
 
 import { isPlainObject } from "./util.js";
-import { resolveUsageCostUsd } from "./tps-stats.js";
-import { usageCountersToRecord, type SubagentUsageRecord } from "./tps-subagent.js";
+import { resolveUsageCostUsd, usageModelLabel } from "./tps-stats.js";
+import {
+	SUBAGENT_TOOL_NAMES,
+	usageCountersToRecord,
+	type SubagentUsageRecord,
+} from "./tps-subagent.js";
+
+/**
+ * pi-subagents' management tools. What they return is data about **already finished**
+ * runs, so counting them would double up with the async-complete / `status.json` /
+ * `_meta.json` path. Long-standing invariant — do not delete: `tps-subagent.ts:17-21`
+ * and `test/tps-subagent.test.ts` ("SUBAGENT_TOOL_NAMES excludes wait/supervisor/intercom").
+ *
+ * 0.54.0's `subagent_wait` happens to carry no top-level `usage` today
+ * (`src/runs/background/subagent-wait.ts:316-324`), but that is their choice to change,
+ * and the failure mode if they do is silent double counting.
+ */
+const PI_SUBAGENTS_MANAGEMENT_TOOL_NAMES = ["subagent_wait", "subagent_supervisor", "intercom"] as const;
+
+/**
+ * `@tintinweb/pi-subagents` tool names. Its spend is claimed from its own completion
+ * events, not from tool results: the two overlap (the tool result pools every agent's
+ * usage since the last drain, the event carries one agent's lifetime usage), so counting
+ * both would double up — and only the event side is on by default.
+ *
+ * That event bridge is not implemented yet (its preconditions cannot be checked on a
+ * machine without the package installed), so while these names are excluded and nobody
+ * claims them, a user who has manually turned on the package's `reportUsage` will be
+ * **under**-counted. Under-counting is the safe direction; double counting is not.
+ */
+export const TINTINWEB_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"] as const;
+
+/**
+ * Tool names whose usage another inlet already claims, or whose usage would double-count
+ * if anyone claimed it. All lowercase — matching is case-insensitive, the way inlet B
+ * already matches (`tps-subagent.ts:605`).
+ *
+ * Derived from the upstream constants on purpose. To add a third-party source, register
+ * it in the ownership table (design doc §3.3) and then add the name to the constant
+ * above — never as a literal in this Set, or the two lists drift apart silently.
+ */
+export const TOOL_USAGE_CLAIMED_ELSEWHERE: ReadonlySet<string> = new Set(
+	[
+		...SUBAGENT_TOOL_NAMES, // inlet B claims these
+		...PI_SUBAGENTS_MANAGEMENT_TOOL_NAMES, // deliberately unclaimed
+		...TINTINWEB_TOOL_NAMES, // reserved for the tintinweb event bridge
+	].map((name) => name.toLowerCase()),
+);
+
+/**
+ * Parse the top-level `usage` a tool may hang off its result.
+ *
+ * This is pi's own convention, not any one package's: `finalizeExecutedToolCall` puts
+ * `result.usage` on the toolResult message pi persists and folds into `/cost`
+ * (`pi-agent-core/dist/agent-loop.js:521-539` — the object the `tool_execution_end`
+ * event carries and the object pi stores are the same one). So every current and future
+ * plugin that follows the convention is covered by this one inlet.
+ *
+ * `ToolExecutionEndEvent.result` is typed `any` and `usage` is not in the type at all
+ * (`types.d.ts:583-589`), which is why every field here is checked at runtime.
+ *
+ * Deliberately **not** covered: nested `details.results[]` usage — that is inlet B/C's
+ * territory. This reads the top level only.
+ */
+export function extractToolResultUsage(
+	toolName: string,
+	result: unknown,
+	toolCallId: string,
+): SubagentUsageRecord[] {
+	try {
+		if (typeof toolName !== "string" || TOOL_USAGE_CLAIMED_ELSEWHERE.has(toolName.trim().toLowerCase())) {
+			return [];
+		}
+		if (!isPlainObject(result)) {
+			return [];
+		}
+		const usage = result.usage;
+		if (!isPlainObject(usage)) {
+			return [];
+		}
+		// pi guarantees one toolCallId per execution, which is what makes this a safe
+		// dedup key. No id, no key — drop it rather than risk a collision.
+		const id = typeof toolCallId === "string" ? toolCallId.trim() : "";
+		if (!id) {
+			return [];
+		}
+
+		// The model id here is an arbitrary third-party string, so it is a pricing key
+		// only when the tool actually supplied one; `usageModelLabel` is display only.
+		const modelId = typeof result.model === "string" ? result.model.trim() : "";
+		const provider = typeof result.provider === "string" ? result.provider : undefined;
+		const model = modelId ? { id: modelId, provider } : undefined;
+
+		const record = usageCountersToRecord(
+			`toolusage:${id}`,
+			modelId ? usageModelLabel(provider, modelId) : `tool/${toolName.trim() || "unknown"}`,
+			{
+				input: usage.input,
+				output: usage.output,
+				cacheRead: usage.cacheRead,
+				cacheWrite: usage.cacheWrite,
+				// A pooled tool result may aggregate several LLM calls with no count to
+				// report; usageCountersToRecord then records 1, matching the subagent
+				// convention. Tokens and cost stay right, calls stays conservative.
+				turns: usage.turns,
+				// Flattened here for the same reason as the compaction inlet below.
+				cost: resolveUsageCostUsd(usage, model),
+			},
+		);
+		return record ? [record] : [];
+	} catch {
+		return [];
+	}
+}
 
 /**
  * Parse the `usage` off a `compaction` / `branch_summary` session entry.

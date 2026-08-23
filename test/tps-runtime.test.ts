@@ -658,3 +658,204 @@ describe("tps runtime compaction inlet", () => {
 		rmSync(cwd, { recursive: true, force: true });
 	});
 });
+
+describe("tps runtime tool-usage inlet", () => {
+	const TOOL_RESULT = {
+		toolName: "delegate",
+		toolCallId: "call-tool-usage",
+		result: {
+			content: [],
+			model: "gpt-5.6-luna",
+			provider: "llmgates",
+			usage: { input: 8_000, output: 400, cacheRead: 0, cacheWrite: 0, totalTokens: 8_400 },
+		},
+	};
+
+	async function withEnv(name: string, value: string | undefined, run: () => Promise<void>) {
+		const previous = process.env[name];
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+		try {
+			await run();
+		} finally {
+			if (previous === undefined) delete process.env[name];
+			else process.env[name] = previous;
+		}
+	}
+
+	it("counts a generic tool result once per toolCallId", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-tool-usage-"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			runtime.emitNow("before_agent_start");
+			runtime.emitNow("tool_execution_end", TOOL_RESULT);
+			// A redelivery of the same call must not add a second row.
+			runtime.emitNow("tool_execution_end", TOOL_RESULT);
+			runtime.emitNow("agent_settled");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This session");
+			await calls.handler("", runtime.ctx);
+
+			const rows = (runtime.selections[0] ?? []).filter((line) => line.startsWith("llmgates/gpt-5.6-luna"));
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toContain("1 call");
+			expect(rows[0]).toContain("in 8.0k");
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("LLMGATES_TPS_TOOL_USAGE=0 drops inlet D without touching inlet B", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-tool-usage-off-"));
+		await withEnv("LLMGATES_TPS_TOOL_USAGE", "0", async () => {
+			const runtime = createRuntime(cwd);
+			try {
+				await runtime.emit("session_start");
+				runtime.emitNow("before_agent_start");
+				runtime.emitNow("tool_execution_end", TOOL_RESULT);
+				// The subagent / task parsing lives in the same handler and must survive.
+				runtime.emitNow("tool_execution_end", {
+					toolName: "subagent",
+					toolCallId: "call-b",
+					result: {
+						details: {
+							results: [
+								{ agent: "worker", index: 0, model: "llmgates/worker-model", usage: { turns: 3, input: 70, output: 7 } },
+							],
+						},
+					},
+				});
+				runtime.emitNow("agent_settled");
+				await new Promise((resolve) => setTimeout(resolve, 0));
+
+				const calls = runtime.commands.get("calls")!;
+				runtime.scopeChoices.push("This session");
+				await calls.handler("", runtime.ctx);
+
+				const rows = runtime.selections[0] ?? [];
+				expect(rows.some((line) => line.startsWith("llmgates/gpt-5.6-luna"))).toBe(false);
+				expect(rows.some((line) => line.startsWith("llmgates/worker-model"))).toBe(true);
+			} finally {
+				await runtime.emit("session_shutdown");
+			}
+		});
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("does not double-count a subagent result across inlets B and D", async () => {
+		// A `subagent` result carrying both per-child details and a top-level usage must
+		// be claimed by B alone — D's exclusion set is what keeps that true.
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-tool-usage-overlap-"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			runtime.emitNow("before_agent_start");
+			runtime.emitNow("tool_execution_end", {
+				toolName: "subagent",
+				toolCallId: "call-overlap",
+				result: {
+					model: "gpt-5.6-luna",
+					provider: "llmgates",
+					usage: { input: 999_999, output: 999_999, totalTokens: 1_999_998 },
+					details: {
+						results: [
+							{ agent: "worker", index: 0, model: "llmgates/worker-model", usage: { turns: 2, input: 50, output: 5 } },
+						],
+					},
+				},
+			});
+			runtime.emitNow("agent_settled");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This session");
+			await calls.handler("", runtime.ctx);
+
+			const rows = runtime.selections[0] ?? [];
+			expect(rows.some((line) => line.startsWith("llmgates/worker-model"))).toBe(true);
+			expect(rows.some((line) => line.startsWith("llmgates/gpt-5.6-luna"))).toBe(false);
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("adds up A, B, C, D and E in one turn without overlap", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-all-inlets-"));
+		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const runtime = createRuntime(cwd);
+		const ctx = runtime.createContext("all", {
+			model: { id: "gpt-5.6-luna", provider: "llmgates" },
+		} as Partial<ExtensionContext>);
+		try {
+			await runtime.emit("session_start", {}, ctx);
+			runtime.emitNow("before_agent_start", {}, ctx);
+
+			// C: a pi-subagents meta artifact picked up by the scan.
+			const meta = join(artifactsDir, "eeee-5555_scout_0_meta.json");
+			writeFileSync(meta, JSON.stringify({
+				model: "llmgates/scout-model",
+				usage: { turns: 1, input: 60, output: 6, cost: 0 },
+			}));
+			const artifactTime = (Date.now() + 1_000) / 1_000;
+			utimesSync(meta, artifactTime, artifactTime);
+			runtime.emitEvent("subagent:foreground-complete", { sessionId: "session-1", runId: "EEEE-5555" });
+
+			// D and E arrive out of order relative to A and B on purpose.
+			runtime.emitNow("session_compact", {
+				compactionEntry: {
+					id: "entry-mixed",
+					type: "compaction",
+					summary: "…",
+					usage: { input: 4_000, output: 100, totalTokens: 4_100 },
+				},
+			}, ctx);
+			runtime.emitNow("tool_execution_end", TOOL_RESULT, ctx);
+			runtime.emitNow("message_end", {
+				message: {
+					role: "assistant",
+					provider: "llmgates",
+					model: "parent-model",
+					usage: { input: 10, output: 5, totalTokens: 15 },
+				},
+			}, ctx);
+			runtime.emitNow("tool_execution_end", {
+				toolName: "subagent",
+				toolCallId: "call-mixed-b",
+				result: {
+					details: {
+						results: [
+							{ agent: "worker", index: 0, model: "llmgates/worker-model", usage: { turns: 2, input: 50, output: 5 } },
+						],
+					},
+				},
+			}, ctx);
+
+			await new Promise((resolve) => setTimeout(resolve, 400));
+			await runtime.emit("agent_settled", {}, ctx);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This session");
+			await calls.handler("", ctx);
+
+			const rows = runtime.selections[0] ?? [];
+			const row = (prefix: string) => rows.filter((line) => line.startsWith(prefix));
+			expect(row("llmgates/parent-model")).toHaveLength(1); // A
+			expect(row("llmgates/worker-model")).toHaveLength(1); // B
+			expect(row("llmgates/scout-model")).toHaveLength(1); // C
+			expect(row("llmgates/gpt-5.6-luna")).toHaveLength(1); // D
+			expect(row("compact/gpt-5.6-luna")).toHaveLength(1); // E
+			expect(row("llmgates/gpt-5.6-luna")[0]).toContain("in 8.0k");
+			expect(row("compact/gpt-5.6-luna")[0]).toContain("in 4.0k");
+		} finally {
+			await runtime.emit("session_shutdown", {}, ctx);
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});

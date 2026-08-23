@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { extractCompactionUsage } from "../extensions/tps-usage-inlets.js";
+import {
+	extractCompactionUsage,
+	extractToolResultUsage,
+	TINTINWEB_TOOL_NAMES,
+	TOOL_USAGE_CLAIMED_ELSEWHERE,
+} from "../extensions/tps-usage-inlets.js";
+import { parseMetaSourceKeyGranularity, SUBAGENT_TOOL_NAMES } from "../extensions/tps-subagent.js";
 
 const MODEL = { id: "gpt-5.6-luna", provider: "llmgates" };
 
@@ -157,5 +163,143 @@ describe("extractCompactionUsage", () => {
 				MODEL,
 			),
 		).toBeNull();
+	});
+});
+
+describe("extractToolResultUsage", () => {
+	const USAGE = {
+		input: 12_000,
+		output: 900,
+		cacheRead: 300,
+		cacheWrite: 0,
+		totalTokens: 13_200,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.31 },
+	};
+
+	it("counts a top-level usage under its toolCallId", () => {
+		const [record, ...rest] = extractToolResultUsage(
+			"delegate",
+			{ content: [], details: {}, model: "gpt-5.6-luna", provider: "llmgates", usage: USAGE },
+			"call-1",
+		);
+		expect(rest).toEqual([]);
+		expect(record.sourceKey).toBe("toolusage:call-1");
+		expect(record.modelLabel).toBe("llmgates/gpt-5.6-luna");
+		expect(record.input).toBe(12_000);
+		expect(record.output).toBe(900);
+		expect(record.cacheRead).toBe(300);
+		expect(record.costUsd).toBeCloseTo(0.31, 5);
+		// A pooled result with no turn count is one conservative billable unit.
+		expect(record.calls).toBe(1);
+		expect(
+			extractToolResultUsage("delegate", { usage: { ...USAGE, turns: 4 } }, "call-turns")[0].calls,
+		).toBe(4);
+	});
+
+	it("labels an unidentified model by tool without pricing it", () => {
+		// A `tool/{name}` label is a display string, never a pricing key — feeding it to
+		// the pricing table would land on DEFAULT_MODEL_COST and invent money.
+		const [record] = extractToolResultUsage(
+			"fusion",
+			{ usage: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1_000_000 } },
+			"call-2",
+		);
+		expect(record.modelLabel).toBe("tool/fusion");
+		expect(record.costUsd).toBe(0);
+		expect(record.input).toBe(1_000_000);
+	});
+
+	it("declines every tool another inlet already claims", () => {
+		for (const name of ["subagent", "task", "Agent", "get_subagent_result", "steer_subagent"]) {
+			expect(extractToolResultUsage(name, { usage: USAGE }, "call-3")).toEqual([]);
+		}
+		// Case and padding are normalized the way inlet B normalizes them.
+		for (const name of ["SUBAGENT", "Task", "AGENT", " agent ", "\tGet_Subagent_Result\n"]) {
+			expect(extractToolResultUsage(name, { usage: USAGE }, "call-4")).toEqual([]);
+		}
+	});
+
+	it("keeps the pi-subagents management tools unclaimed (mirror of the inlet B invariant)", () => {
+		// Their results describe already-finished runs; counting them would double up
+		// with the async-complete / status.json path that inlet C owns.
+		for (const name of ["subagent_wait", "subagent_supervisor", "intercom"]) {
+			expect(TOOL_USAGE_CLAIMED_ELSEWHERE.has(name)).toBe(true);
+			expect(SUBAGENT_TOOL_NAMES.has(name)).toBe(false);
+			expect(extractToolResultUsage(name, { usage: USAGE }, "call-5")).toEqual([]);
+		}
+	});
+
+	it("derives the exclusion set from the upstream constants", () => {
+		// Not a tautology: this fails if anyone replaces the derivation with literals, or
+		// drops the toLowerCase() that makes the lookup case-insensitive.
+		for (const name of [...SUBAGENT_TOOL_NAMES, ...TINTINWEB_TOOL_NAMES]) {
+			expect(TOOL_USAGE_CLAIMED_ELSEWHERE.has(name.toLowerCase())).toBe(true);
+		}
+		expect([...TOOL_USAGE_CLAIMED_ELSEWHERE].every((name) => name === name.toLowerCase())).toBe(true);
+	});
+
+	it("returns nothing when there is no attributable usage", () => {
+		expect(extractToolResultUsage("delegate", { usage: USAGE }, "")).toEqual([]);
+		expect(extractToolResultUsage("delegate", { usage: USAGE }, "   ")).toEqual([]);
+		expect(extractToolResultUsage("delegate", undefined, "call-6")).toEqual([]);
+		expect(extractToolResultUsage("delegate", "nope", "call-6")).toEqual([]);
+		expect(extractToolResultUsage("delegate", { usage: 42 }, "call-6")).toEqual([]);
+		expect(extractToolResultUsage("delegate", { content: [] }, "call-6")).toEqual([]);
+		expect(
+			extractToolResultUsage(
+				"delegate",
+				{ usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } },
+				"call-6",
+			),
+		).toEqual([]);
+		// Nested per-child usage stays with inlets B/C; only the top level is read here.
+		expect(
+			extractToolResultUsage("delegate", { details: { results: [{ usage: USAGE }] } }, "call-6"),
+		).toEqual([]);
+	});
+
+	it("leaves the tool result it was handed untouched", () => {
+		// event.result is the very object pi persists as toolResultMessage.usage, and
+		// tool_execution_end fires before pi builds that message.
+		const result = {
+			model: "gpt-5.6-luna",
+			provider: "llmgates",
+			usage: {
+				input: 1_000_000,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 1_000_000,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		};
+		const snapshot = JSON.stringify(result);
+		expect(extractToolResultUsage("delegate", result, "call-7")[0].costUsd).toBeCloseTo(1, 5);
+		expect(JSON.stringify(result)).toBe(snapshot);
+	});
+
+	it("never throws on a hostile payload", () => {
+		expect(
+			extractToolResultUsage("delegate", {
+				get usage() {
+					throw new Error("boom");
+				},
+			}, "call-8"),
+		).toEqual([]);
+		expect(extractToolResultUsage(undefined as unknown as string, { usage: USAGE }, "call-8")).toEqual([]);
+	});
+
+	it("keeps its namespace clear of the other sourceKey prefixes", () => {
+		const [record] = extractToolResultUsage("delegate", { usage: USAGE }, "abc");
+		// Inlet B's fallback keys for the same toolCallId are `tool:abc:{index}` and
+		// `tool:abc:aggregate`; a shared prefix would make a later suffix change silently
+		// double-count.
+		expect(record.sourceKey).toBe("toolusage:abc");
+		expect(record.sourceKey).not.toBe("tool:abc:0");
+		expect(record.sourceKey).not.toBe("tool:abc:aggregate");
+		// Not a pi-subagents run key, so it takes no part in meta cross-granularity dedup.
+		expect(parseMetaSourceKeyGranularity(record.sourceKey)).toBeNull();
+		expect(parseMetaSourceKeyGranularity("compact:entry-1")).toBeNull();
+		expect(parseMetaSourceKeyGranularity("branch:entry-1")).toBeNull();
 	});
 });

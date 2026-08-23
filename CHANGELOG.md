@@ -20,7 +20,9 @@
 - **`llmgates/config.json` 新增 `inputHistory` 与 `inputHistoryScope` 两个键**，并有了第一个写入口：`/input-history` 会把改动**合并**进文件（保留 `pricingAutoUpdate` 与任何未知键）。配置文件解析失败时**拒绝写入**并报错，绝不用一份「干净」的配置覆盖掉用户手上的内容。
 - **补上 pi 漏复制的 `autocompleteMaxVisible`。** `setCustomEditorComponent` 会把 paddingX、autocomplete provider 和 app 级快捷键复制到扩展提供的编辑器上，却漏了这一项，而 pi 重新应用该值的两处都发生在扩展绑定之前。于是在 `settings.json` 里把补全条数调成 12 的用户，装上任何换编辑器的扩展后都会回落到 pi 默认的 5。现在安装时读一次全局 `settings.json` 并作为构造参数传入。
 - **上下文压缩与分支摘要的用量现在计入 `/calls` 与状态行。** 压缩走 `completeSimple()` 直连、结果落成 `compaction` / `branch_summary` 会话条目而非 assistant 消息，所以此前 `message_end` 看不到它——pi 自己的 `/cost` 一直在算这笔钱，我们不算。现在它单独占 `compact/<模型>` 一行：自动压缩、手动 `/compact`、上下文溢出恢复压缩与分支摘要都覆盖。**这会让会话总额上升**（既有各行的数值不变），长会话尤其明显。由其他扩展代管的压缩（pi 标记为 `fromHook`）计入 `compact/unknown`，且只认它自报的费用——它用的是哪个模型我们看不到，不会按会话模型的费率估价；完全不上报用量的仍无从统计。
+- **任何按 pi 约定在工具结果顶层挂 `usage` 的工具，其用量现在也计入 `/calls` 与状态行。** 这是 pi 自己的约定（`toolResult.usage` 会被折进 pi 的 `/cost`），不绑定任何具体扩展，现有与未来的插件只要遵守就自动受益。结果自报模型时按 `<provider>/<模型>` 分行（与父模型同名时并入同一行），未自报模型时记为 `tool/<工具名>` 且费用记 0——没有可信定价依据就不估价；自报了但不在定价表里的模型 id 仍会落到默认费率。已被子代理路径认领、或计了会与之重复的工具名一律排除（`subagent`、`task`、`subagent_wait`、`subagent_supervisor`、`intercom`，以及 `@tintinweb/pi-subagents` 的 `Agent` / `get_subagent_result` / `steer_subagent`）。两处刻意的少算：`@tintinweb` 那三个当前是「排除但无人接手」的中间态，开了该扩展默认关闭的 `reportUsage` 会少算；一条工具结果聚合多次 LLM 调用而不上报次数时 calls 记 1（token 与费用不受影响）。少算是安全方向，重复计不是。同样是**只增不改**：既有各行数值不变，会话总额可能上升。
 - **新环境变量 `LLMGATES_TPS_COMPACTION`。** 默认启用；设为 `0` / `false` / `no` 时不统计压缩 / 分支摘要条目，且不影响父模型、子代理与 meta 扫描三条既有路径。
+- **新环境变量 `LLMGATES_TPS_TOOL_USAGE`。** 默认启用；设为 `0` / `false` / `no` 时不统计工具结果顶层 `usage`，同一 handler 里 `subagent` / Cursor `Task` 的解析不受影响。
 
 ## [0.3.2] — 2026-08-20
 
