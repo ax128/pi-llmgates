@@ -200,7 +200,7 @@ Only currency-denominated fields are read (`balance` / `remaining` / `remaining_
 - If `auth.json` is missing entirely or temporarily corrupt (a manual credential reset, a sync tool mid-write), that cleanup round is skipped so instances are not wrongly deleted; cleanup resumes once the file is readable again.
 - After `/llmgates remove <id>`, the instance's models disappear immediately; because of pi extension API limits, `/logout` may still briefly list the removed ID until `/reload`.
 - Orphan auth keys in `auth.json` with no matching registry record cannot be handled by `/llmgates remove`; delete the corresponding ID entry from `~/.pi/agent/auth.json` manually.
-- If `~/.pi/agent/llmgates/2api.json` cannot be parsed (a hand-editing mistake, a duplicate instance ID, …), the extension registers **no providers and no commands** — including the 「LLMGates 网关」 entry in `/login` — and pi shows no hint at all. The startup log prints the exact reason (with the file name); fix or delete the file and run `/reload` to recover.
+- If `~/.pi/agent/llmgates/2api.json` cannot be parsed (a hand-editing mistake, a duplicate instance ID, …), the extension registers **no providers and no gateway commands** — including the 「LLMGates 网关」 entry in `/login` — and pi shows no hint at all. The startup log prints the exact reason (with the file name); fix or delete the file and run `/reload` to recover. (`/input-history` has nothing to do with gateways and stays available.)
 
 ## Models and inference endpoints
 

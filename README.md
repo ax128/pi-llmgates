@@ -198,7 +198,7 @@ pi
 - 若 `auth.json` 整体缺失或暂时损坏（如手动重置凭证、同步工具改写中途），本轮清理会被跳过以防止误删全部实例；文件恢复可读后清理自动继续。
 - `/llmgates remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能短暂列出已删除的 ID，执行 `/reload` 后会完成清理。
 - 若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/llmgates remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
-- 若 `~/.pi/agent/llmgates/2api.json` 无法解析（手工编辑出错、重复实例 ID 等），扩展**不注册任何 provider 与命令**——包括 `/login` 里的「LLMGates 网关」入口，pi 里看不到任何提示。启动日志会打印具体原因（含文件名），修好或删除该文件后 `/reload` 即可恢复。
+- 若 `~/.pi/agent/llmgates/2api.json` 无法解析（手工编辑出错、重复实例 ID 等），扩展**不注册任何 provider 与网关命令**——包括 `/login` 里的「LLMGates 网关」入口，pi 里看不到任何提示。启动日志会打印具体原因（含文件名），修好或删除该文件后 `/reload` 即可恢复。（与网关无关的 `/input-history` 不受影响，仍然可用。）
 
 ## 模型与推理出口
 

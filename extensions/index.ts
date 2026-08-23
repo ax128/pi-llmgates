@@ -69,7 +69,7 @@ export default function (pi: ExtensionAPI): void {
 	} catch (error) {
 		logWarn(
 			`${error instanceof Error ? error.message : String(error)}. ` +
-				"No gateway and no command was registered; fix the reported problem and run /reload.",
+				"No gateway and no gateway command was registered; fix the reported problem and run /reload.",
 		);
 		return;
 	}

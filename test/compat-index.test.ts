@@ -16,7 +16,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 
 import registerExtension from "../extensions/index.js";
 
-type EventHandler = (event: unknown) => unknown;
+type EventHandler = (event: unknown, ctx: unknown) => unknown;
 type CommandHandler = (
 	args: string,
 	ctx: {
@@ -54,9 +54,11 @@ function createPi() {
 		providers,
 		registrations,
 		commands,
-		async emit(event: string, payload: unknown = {}) {
+		// pi always hands handlers an (event, ctx) pair; the ctx is non-tui here so
+		// terminal-only wiring stays out of these gateway lifecycle assertions.
+		async emit(event: string, payload: unknown = {}, ctx: unknown = { mode: "rpc", cwd: "/tmp", hasUI: false }) {
 			await Promise.all(
-				(handlers.get(event) ?? []).map((handler) => handler(payload)),
+				(handlers.get(event) ?? []).map((handler) => handler(payload, ctx)),
 			);
 		},
 		async runCommand(name: string, args = "") {
@@ -121,6 +123,7 @@ describe("extension registration and lifecycle", () => {
 				"balance",
 				"endpoint",
 				"endpoint-setting",
+				"input-history",
 				"llmgates",
 				"llmgates-reload",
 			]);
@@ -138,7 +141,7 @@ describe("extension registration and lifecycle", () => {
 		}
 	});
 
-	it("registers nothing and warns when the instance registry is malformed", () => {
+	it("registers no gateway and no gateway command when the registry is malformed", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		agentDirState.value = agentDir;
 		const runtime = createPi();
@@ -150,7 +153,10 @@ describe("extension registration and lifecycle", () => {
 			registerExtension(runtime.pi);
 
 			expect([...runtime.providers.keys()]).toEqual([]);
-			expect([...runtime.commands.keys()]).toEqual([]);
+			// /input-history is registered before the gateway wiring and guarded
+			// separately: it has nothing to do with gateways, so a broken registry
+			// must not take it down too.
+			expect([...runtime.commands.keys()]).toEqual(["input-history"]);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(
 				/compat initialization/i,
 			);
