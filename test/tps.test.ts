@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { resolveModelCostRates } from "../extensions/model-pricing.js";
 import {
+	estimateCostFromRates,
+	resolveUsageCostUsd,
 	safeEstimateUsageCostUsd,
 	formatCostUsd,
 	formatElapsed,
@@ -157,6 +159,133 @@ describe("tps stats cost", () => {
 		mergeModelUsageStats(sessionStats, turnStats);
 		expect(totalModelCalls(sessionStats)).toBe(1);
 		expect(formatUsageScopeTitle("session", sessionStats)).toContain("cost $0.0075");
+	});
+});
+
+describe("shared usage cost resolution", () => {
+	// `gpt-5.6-luna` is priced at $1 / 1M input by the static table, so 1M input tokens
+	// is exactly $1 — the same fixture the assistant-message estimate above leans on.
+	const TOKENS = {
+		input: 1_000_000,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 1_000_000,
+	};
+
+	it("walks the four-step ladder: flat number, cost.total, pricing table, then zero", () => {
+		expect(resolveUsageCostUsd({ ...TOKENS, cost: 0.25 }, { id: "gpt-5.6-luna" })).toBe(0.25);
+		expect(
+			resolveUsageCostUsd(
+				{ ...TOKENS, cost: { input: 0.4, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.4 } },
+				{ id: "gpt-5.6-luna" },
+			),
+		).toBe(0.4);
+		expect(
+			resolveUsageCostUsd({ ...TOKENS, cost: 0 }, { id: "gpt-5.6-luna", provider: "llmgates" }),
+		).toBeCloseTo(1, 5);
+	});
+
+	it("records zero cost — never default rates — when no model id is available", () => {
+		// G8: tokens still count, money does not get invented for an unknown source.
+		expect(resolveUsageCostUsd({ ...TOKENS, cost: 0 }, undefined)).toBe(0);
+		expect(resolveUsageCostUsd({ ...TOKENS, cost: 0 }, {})).toBe(0);
+		expect(resolveUsageCostUsd({ ...TOKENS, cost: 0 }, { id: "   " })).toBe(0);
+	});
+
+	it("never writes into the caller's usage payload", () => {
+		// calculateCost assigns into `usage.cost` in place. The tool-result payload we read
+		// on tool_execution_end is the very object pi persists as toolResultMessage.usage,
+		// and the compaction entry is already appended to the session — writing an estimate
+		// into either would change pi's own /cost totals.
+		const toolResultUsage = {
+			...TOKENS,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		expect(resolveUsageCostUsd(toolResultUsage, { id: "gpt-5.6-luna" })).toBeCloseTo(1, 5);
+		expect(toolResultUsage.cost).toEqual({
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			total: 0,
+		});
+		expect(Object.keys(toolResultUsage).sort()).toEqual(
+			["cacheRead", "cacheWrite", "cost", "input", "output", "totalTokens"].sort(),
+		);
+
+		const compactionEntryUsage = {
+			input: 500,
+			output: 250,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 750,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		estimateCostFromRates(compactionEntryUsage, "gpt-5.6-luna", "llmgates");
+		expect(compactionEntryUsage.cost).toEqual({
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			total: 0,
+		});
+	});
+
+	it("tolerates every malformed cost shape without throwing", () => {
+		for (const cost of [undefined, 0, -1, "1.5", null, [], Number.NaN]) {
+			const usage = { ...TOKENS, cost } as unknown;
+			expect(resolveUsageCostUsd(usage, { id: "gpt-5.6-luna" })).toBeCloseTo(1, 5);
+			expect(resolveUsageCostUsd(usage, undefined)).toBe(0);
+		}
+		expect(resolveUsageCostUsd(undefined, { id: "gpt-5.6-luna" })).toBe(0);
+		expect(resolveUsageCostUsd("nope", { id: "gpt-5.6-luna" })).toBe(0);
+		expect(resolveUsageCostUsd([], { id: "gpt-5.6-luna" })).toBe(0);
+		expect(estimateCostFromRates(null, "gpt-5.6-luna", undefined)).toBe(0);
+	});
+
+	it("keeps a non-numeric cacheWrite1h from turning the estimate into NaN", () => {
+		// calculateCost does `usage.cacheWrite - (usage.cacheWrite1h ?? 0)`; a string or an
+		// object there poisons every downstream term.
+		const estimated = estimateCostFromRates(
+			{ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: "oops", totalTokens: 1_000_000 },
+			"gpt-5.6-luna",
+			"llmgates",
+		);
+		expect(Number.isNaN(estimated)).toBe(false);
+		expect(estimated).toBeCloseTo(1, 5);
+	});
+
+	it("keeps safeEstimateUsageCostUsd on the same numbers after the extraction", () => {
+		// Pin the number rather than compare the two calls: after the extraction
+		// `safeEstimateUsageCostUsd(m) === estimateCostFromRates(m.usage, ...)` holds by
+		// construction and would pass no matter how the extraction broke. gpt-5.6-luna is
+		// $1 / $6 / $0.1 / $1.25 per 1M, so this fixture is 1_234_567 + 4_321 * 6 +
+		// 9_876 * 0.1 + 5_432 * 1.25, all over 1e6.
+		const message = {
+			role: "assistant",
+			provider: "llmgates",
+			model: "gpt-5.6-luna",
+			usage: {
+				input: 1_234_567,
+				output: 4_321,
+				cacheRead: 9_876,
+				cacheWrite: 5_432,
+				totalTokens: 1_254_196,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		} as AssistantMessage;
+		expect(safeEstimateUsageCostUsd(message)).toBeCloseTo(1.2682706, 9);
+		// And it is still the shared helper doing the work.
+		expect(safeEstimateUsageCostUsd(message)).toBe(
+			estimateCostFromRates(message.usage, "gpt-5.6-luna", "llmgates"),
+		);
+		// A reported positive total still short-circuits the estimate.
+		const reported = {
+			...message,
+			usage: { ...message.usage, cost: { ...message.usage.cost, total: 7 } },
+		} as AssistantMessage;
+		expect(safeEstimateUsageCostUsd(reported)).toBe(7);
 	});
 });
 

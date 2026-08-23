@@ -135,11 +135,104 @@ export function preprocessAssistantMessage(message: unknown): AssistantMessage |
 	} as AssistantMessage;
 }
 
+function positiveFinite(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
+ * Estimate cost from the pricing table for an explicit model id. Never throws — returns
+ * 0 when the usage payload or the pricing lookup yields nothing usable.
+ *
+ * `calculateCost` writes its result **into** `usage.cost` in place (pi-ai
+ * `dist/models.js:371-390` assigns `usage.cost.input/output/cacheRead/cacheWrite/total`
+ * and then returns `usage.cost`). So this must build a fresh `Usage` with a brand-new
+ * all-zero `cost` before calling it. Handing it a caller-owned payload — a tool result's
+ * `usage`, a session entry's `usage` — would write our estimate into the very object pi
+ * persists and folds into `/cost`, and would throw outright when `cost` is absent or a
+ * primitive (ESM strict mode).
+ *
+ * `cacheWrite1h` is normalized for the same reason the token counters are: `calculateCost`
+ * reads `usage.cacheWrite1h ?? 0` and `usage.cacheWrite - longWrite`, so a non-numeric
+ * value in a third-party payload silently turns the whole cost into `NaN`.
+ */
+export function estimateCostFromRates(
+	usage: unknown,
+	modelId: string,
+	provider: string | undefined,
+): number {
+	try {
+		if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
+			return 0;
+		}
+		const raw = usage as Record<string, unknown>;
+		const normalizedUsage: Usage = {
+			input: normalizeTokenCount(raw.input),
+			output: normalizeTokenCount(raw.output),
+			cacheRead: normalizeTokenCount(raw.cacheRead),
+			cacheWrite: normalizeTokenCount(raw.cacheWrite),
+			cacheWrite1h: normalizeTokenCount(raw.cacheWrite1h),
+			reasoning: normalizeTokenCount(raw.reasoning),
+			totalTokens: normalizeTokenCount(raw.totalTokens),
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const stubModel = {
+			cost: resolveModelCostRates(modelId, provider),
+		} as Model<Api>;
+		return positiveFinite(calculateCost(stubModel, normalizedUsage).total) ?? 0;
+	} catch {
+		return 0;
+	}
+}
+
+/**
+ * Resolve a usage payload's cost in USD, accepting both shapes we meet in the wild:
+ * pi-ai's `cost` object (`{input, output, cacheRead, cacheWrite, total}`) and
+ * pi-subagents' plain number. Never throws; never mutates `usage`.
+ *
+ * `model` is the **pricing key, not a display label** — the two must stay separate.
+ * Passing `undefined` is how a caller says "no trustworthy pricing basis": cost is then
+ * 0 and only tokens are counted, instead of inventing money from default rates.
+ *
+ * Caveat worth knowing when wiring a new caller: `resolveModelCostRates` never returns
+ * zero rates — an unmatched id falls back to `DEFAULT_MODEL_COST`. For assistant messages
+ * the id comes from pi itself and is a real model id, but ids lifted out of third-party
+ * payloads are arbitrary strings, and a non-empty one that matches no pricing rule will
+ * be priced at the default rate. Pass `undefined` rather than a label you cannot vouch for.
+ */
+export function resolveUsageCostUsd(
+	usage: unknown,
+	model: { id?: string; provider?: string } | undefined,
+): number {
+	try {
+		if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
+			return 0;
+		}
+		const cost = (usage as Record<string, unknown>).cost;
+		const flat = positiveFinite(cost);
+		if (flat !== null) {
+			return flat;
+		}
+		if (cost && typeof cost === "object" && !Array.isArray(cost)) {
+			const total = positiveFinite((cost as Record<string, unknown>).total);
+			if (total !== null) {
+				return total;
+			}
+		}
+		const modelId = model?.id?.trim();
+		if (!modelId) {
+			return 0;
+		}
+		return estimateCostFromRates(usage, modelId, model?.provider);
+	} catch {
+		return 0;
+	}
+}
+
 /** Never throws — returns 0 when pricing or usage data is invalid. */
 export function safeEstimateUsageCostUsd(message: AssistantMessage): number {
 	try {
-		const reported = message.usage?.cost?.total;
-		if (typeof reported === "number" && Number.isFinite(reported) && reported > 0) {
+		const reported = positiveFinite(message.usage?.cost?.total);
+		if (reported !== null) {
 			return reported;
 		}
 
@@ -149,21 +242,7 @@ export function safeEstimateUsageCostUsd(message: AssistantMessage): number {
 		}
 
 		const { provider, modelId } = parseModelLabel(assistantMessageLabel(message));
-		const normalizedUsage: Usage = {
-			input: normalizeTokenCount(usage.input),
-			output: normalizeTokenCount(usage.output),
-			cacheRead: normalizeTokenCount(usage.cacheRead),
-			cacheWrite: normalizeTokenCount(usage.cacheWrite),
-			cacheWrite1h: usage.cacheWrite1h,
-			reasoning: usage.reasoning,
-			totalTokens: normalizeTokenCount(usage.totalTokens),
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
-		const stubModel = {
-			cost: resolveModelCostRates(modelId, provider),
-		} as Model<Api>;
-		const total = calculateCost(stubModel, normalizedUsage).total;
-		return typeof total === "number" && Number.isFinite(total) && total > 0 ? total : 0;
+		return estimateCostFromRates(usage, modelId, provider);
 	} catch {
 		return 0;
 	}
