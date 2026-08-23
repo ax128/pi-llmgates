@@ -17,7 +17,10 @@ function createRuntime(cwd: string, sessionFile?: string) {
 	const statuses: Array<{ context: string; value: string | undefined }> = [];
 	const notifications: Array<{ context: string; message: string }> = [];
 	const eventHandlers = new Map<string, Set<(data: unknown) => void>>();
-	function createContext(context: string): ExtensionContext {
+	function createContext(
+		context: string,
+		overrides: Partial<ExtensionContext> = {},
+	): ExtensionContext {
 		return {
 			hasUI: true,
 			mode: "tui",
@@ -40,6 +43,7 @@ function createRuntime(cwd: string, sessionFile?: string) {
 					return undefined;
 				},
 			},
+			...overrides,
 		} as unknown as ExtensionContext;
 	}
 	const ctx = createContext("default");
@@ -507,5 +511,150 @@ describe("tps runtime subagent ordering", () => {
 			await runtime.emit("session_shutdown");
 			rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("tps runtime compaction inlet", () => {
+	const COMPACT_ENTRY = {
+		id: "entry-compact-1",
+		type: "compaction",
+		summary: "…",
+		usage: { input: 4_000, output: 900, cacheRead: 0, cacheWrite: 0, totalTokens: 4_900 },
+	};
+
+	async function withEnv(name: string, value: string | undefined, run: () => Promise<void>) {
+		const previous = process.env[name];
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+		try {
+			await run();
+		} finally {
+			if (previous === undefined) delete process.env[name];
+			else process.env[name] = previous;
+		}
+	}
+
+	it("counts a compaction once and labels it with the session model", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-compaction-"));
+		const runtime = createRuntime(cwd);
+		const ctx = runtime.createContext("compact", {
+			model: { id: "gpt-5.6-luna", provider: "llmgates" },
+		} as Partial<ExtensionContext>);
+		try {
+			await runtime.emit("session_start", {}, ctx);
+			runtime.emitNow("before_agent_start", {}, ctx);
+			runtime.emitNow("session_compact", { compactionEntry: COMPACT_ENTRY }, ctx);
+			// A redelivery of the same entry must not add a second row.
+			runtime.emitNow("session_compact", { compactionEntry: COMPACT_ENTRY }, ctx);
+			runtime.emitNow("session_tree", {
+				summaryEntry: {
+					id: "entry-branch-1",
+					type: "branch_summary",
+					summary: "…",
+					usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150 },
+				},
+			}, ctx);
+			// No summary produced by this navigation — nothing to count, and no throw.
+			runtime.emitNow("session_tree", {}, ctx);
+			runtime.emitNow("agent_settled", {}, ctx);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This session");
+			await calls.handler("", ctx);
+
+			const rows = runtime.selections[0] ?? [];
+			const compactRows = rows.filter((line) => line.startsWith("compact/gpt-5.6-luna"));
+			expect(compactRows).toHaveLength(1);
+			// One compaction + one branch summary, each worth a single call.
+			expect(compactRows[0]).toContain("2 calls");
+			expect(compactRows[0]).toContain("in 4.1k");
+		} finally {
+			await runtime.emit("session_shutdown", {}, ctx);
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("stays out of headless sessions", async () => {
+		// session_start arms sessionActive unconditionally, so without the guard on the
+		// handler a headless compaction would land in sessionStats — and a non-zero
+		// sessionStats suppresses the "interactive session only" line that /calls owes
+		// an rpc caller.
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-compaction-headless-"));
+		const runtime = createRuntime(cwd);
+		for (const mode of ["rpc", "json", "print"] as const) {
+			const ctx = runtime.createContext(mode, {
+				mode,
+				// pi binds no uiContext for json / print — only rpc keeps a channel.
+				hasUI: mode === "rpc",
+				model: { id: "gpt-5.6-luna", provider: "llmgates" },
+			} as Partial<ExtensionContext>);
+			await runtime.emit("session_start", {}, ctx);
+			runtime.emitNow("session_compact", { compactionEntry: COMPACT_ENTRY }, ctx);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const before = runtime.notifications.length;
+			await runtime.commands.get("calls")!.handler("", ctx);
+			const message = runtime.notifications.slice(before).map((n) => n.message).join("\n");
+			if (mode === "rpc") {
+				expect(message).toContain("Usage is tracked in the interactive session only.");
+				expect(message).not.toContain("compact/");
+			} else {
+				// No UI channel at all, so silence is the correct answer.
+				expect(runtime.notifications).toHaveLength(before);
+			}
+			await runtime.emit("session_shutdown", {}, ctx);
+		}
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("LLMGATES_TPS_COMPACTION=0 drops the compaction inlet and nothing else", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-compaction-off-"));
+		await withEnv("LLMGATES_TPS_COMPACTION", "0", async () => {
+			const runtime = createRuntime(cwd);
+			const ctx = runtime.createContext("off", {
+				model: { id: "gpt-5.6-luna", provider: "llmgates" },
+			} as Partial<ExtensionContext>);
+			try {
+				await runtime.emit("session_start", {}, ctx);
+				runtime.emitNow("before_agent_start", {}, ctx);
+				runtime.emitNow("session_compact", { compactionEntry: COMPACT_ENTRY }, ctx);
+				// Entry A still counts…
+				runtime.emitNow("message_end", {
+					message: {
+						role: "assistant",
+						provider: "llmgates",
+						model: "gpt-5.6-luna",
+						usage: { input: 10, output: 5, totalTokens: 15 },
+					},
+				}, ctx);
+				// …and so does entry B.
+				runtime.emitNow("tool_execution_end", {
+					toolName: "subagent",
+					toolCallId: "call-b",
+					result: {
+						details: {
+							results: [
+								{ agent: "worker", index: 0, model: "llmgates/worker-model", usage: { turns: 3, input: 70, output: 7 } },
+							],
+						},
+					},
+				}, ctx);
+				runtime.emitNow("agent_settled", {}, ctx);
+				await new Promise((resolve) => setTimeout(resolve, 0));
+
+				const calls = runtime.commands.get("calls")!;
+				runtime.scopeChoices.push("This session");
+				await calls.handler("", ctx);
+
+				const rows = runtime.selections[0] ?? [];
+				expect(rows.some((line) => line.startsWith("compact/"))).toBe(false);
+				expect(rows.some((line) => line.startsWith("llmgates/gpt-5.6-luna"))).toBe(true);
+				expect(rows.some((line) => line.startsWith("llmgates/worker-model"))).toBe(true);
+			} finally {
+				await runtime.emit("session_shutdown", {}, ctx);
+			}
+		});
+		rmSync(cwd, { recursive: true, force: true });
 	});
 });

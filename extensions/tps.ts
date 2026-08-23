@@ -26,6 +26,7 @@ import {
 	selectFreshSubagentRecords,
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
+import { extractCompactionUsage } from "./tps-usage-inlets.js";
 import {
 	cloneModelUsageStats,
 	formatTpsStatusLine,
@@ -520,6 +521,40 @@ export default function (pi: ExtensionAPI) {
 			ingestSubagentRecords(records);
 		}
 		scheduleSubagentMetaScan();
+	});
+
+	/**
+	 * Compaction and branch summaries are LLM calls pi bills to the session (they land as
+	 * their own entries, `session-manager.js:803-818` / `:1053-1071`) but that
+	 * `message_end` never sees — they go through `completeSimple()`, not the agent loop.
+	 *
+	 * The `isPrimaryUiSession` guard is not inherited from anywhere and is not optional:
+	 * `session_start` sets `sessionActive` unconditionally, so a headless session would
+	 * otherwise record a compaction into `sessionStats` and make the non-TUI `/calls`
+	 * swallow its own "Usage is tracked in the interactive session only." line.
+	 */
+	function recordCompactionEntry(
+		entry: unknown,
+		kind: "compact" | "branch",
+		ctx: ExtensionContext,
+	): void {
+		if (!isPrimaryUiSession(ctx)) return;
+		if (envFlag("LLMGATES_TPS_COMPACTION") === false) return;
+		const record = extractCompactionUsage(entry, kind, ctx.model);
+		if (record) {
+			// Manual /compact fires outside a turn and automatic compaction inside one;
+			// ingestSubagentRecords picks the turn or session bucket on its own.
+			ingestSubagentRecords([record]);
+		}
+	}
+
+	pi.on("session_compact", (event, ctx) => {
+		recordCompactionEntry(event.compactionEntry, "compact", ctx);
+	});
+
+	pi.on("session_tree", (event, ctx) => {
+		// summaryEntry is absent when the navigation produced no summary.
+		recordCompactionEntry(event.summaryEntry, "branch", ctx);
 	});
 
 	pi.on("message_end", (event, ctx) => {
