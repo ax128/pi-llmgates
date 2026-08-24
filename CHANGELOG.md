@@ -24,6 +24,10 @@
 - **新环境变量 `LLMGATES_TPS_COMPACTION`。** 默认启用；设为 `0` / `false` / `no` 时不统计压缩 / 分支摘要条目，且不影响父模型、子代理与 meta 扫描三条既有路径。
 - **新环境变量 `LLMGATES_TPS_TOOL_USAGE`。** 默认启用；设为 `0` / `false` / `no` 时不统计工具结果顶层 `usage`，同一 handler 里 `subagent` / Cursor `Task` 的解析不受影响。
 
+### 修复
+
+- **`/input-history help` 不再把「斜杠命令一律不落盘」说死。** 实际行为是：pi 内置命令与扩展注册的命令确实不进历史文件，但 `/skill:<名字>`、prompt template 调用和打错的 `/xxx` 会——pi 把整行当 prompt 送出去，所以按 prompt 记录。两份 README 在合并前就已收窄到这个口径，只有命令内的帮助文案漏改；对着它判断「敏感内容会不会落盘」的用户会被误导。
+
 ## [0.3.2] — 2026-08-20
 
 ### 新增
@@ -194,6 +198,7 @@
 
 0.1.x 的历史未回补，请查阅 git log 与各 `v0.1.*` tag。
 
+[Unreleased]: https://github.com/ax128/pi-llmgates/compare/v0.3.2...HEAD
 [0.3.2]: https://github.com/ax128/pi-llmgates/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/ax128/pi-llmgates/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ax128/pi-llmgates/compare/v0.2.13...v0.3.0

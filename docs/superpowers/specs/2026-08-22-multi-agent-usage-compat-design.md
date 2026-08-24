@@ -1,7 +1,7 @@
 # 多代理生态用量统计兼容方案
 
-**状态：** 待实施（方案，rev 3）
-**日期：** 2026-08-22（rev 2 / rev 3：2026-08-23 两轮复核后修正）
+**状态：** **P0 已实施**（2026-08-23）——P0-a `ece1469`、P0-b `9bca2d8`、P0-c `93c1f93`。入口 F（§4.3）与 P2（§9）**未实施**，仍为方案。
+**日期：** 2026-08-22（rev 2 / rev 3：2026-08-23 两轮复核后修正；rev 4：2026-08-24 落地后结案）
 **关联模块：** `extensions/tps.ts`（新增订阅）、`extensions/tps-stats.ts`（**唯一被改动的既有实现**，§6.1 的定价提取）、`extensions/tps-subagent.ts` / `extensions/tps-subagent-bridge.ts`（只读复用）、新增 `extensions/tps-usage-inlets.ts`
 **外部依赖：** 全部可选。未安装对应包时不订阅、不产生 IO
 **核对基线：** pi 0.81.1（`package.json` 锁定版本，`@earendil-works/pi-agent-core@0.81.1` 为其嵌套依赖）；pi-subagents 0.54.0；本仓行号以 commit `9afe18d` 为准
@@ -625,13 +625,13 @@ npx vitest run test/tps-usage-inlets.test.ts test/tps.test.ts test/tps-subagent.
 
 rev 2 的「P0 / P0.5」不是两个里程碑（编号本身就说明了这点），rev 3 合并为一个 P0、内部按提交顺序分 a/b/c：
 
-| 阶段 | 内容 | 影响面 |
-| --- | --- | --- |
-| **P0-a** | §6.1 共享定价助手：`estimateCostFromRates` + `resolveUsageCostUsd`，含 `safeEstimateUsageCostUsd` 的等价提取 + 测试 2–2d | **本方案唯一触到既有在用路径的改动**，行为等价，由 `test/tps.test.ts` 既有定价用例回归 |
-| **P0-b** | 入口 E + 测试 6–9c | 只增不改：**既有行的数值不变，会话总额上升** |
-| **P0-c** | 入口 D + 排除集（含 §4.1 三类来源派生）+ 测试 1、3–5c | 同上 |
-| **P1**（默认不排期） | 入口 F + 测试 10–14b、15、16。**§4.3 的五项前置条件全部满足、并在装有该包的环境上抓到实跑 fixture 之后**才升为 P1 | 只增不改；既有行数值不变 |
-| **P2**（需单独决策） | ① 用 `resolveUsageCostUsd` 回填**既有** subagent 记录的 cost（**会改变已展示的费用数字**）② 嵌套 runId 递归（rev 2 的「入口 G」，收益已自证有限，降级见 §10） | 改变既有数值，须单列 CHANGELOG |
+| 阶段 | 内容 | 影响面 | 状态 |
+| --- | --- | --- | --- |
+| **P0-a** | §6.1 共享定价助手：`estimateCostFromRates` + `resolveUsageCostUsd`，含 `safeEstimateUsageCostUsd` 的等价提取 + 测试 2–2d | **本方案唯一触到既有在用路径的改动**，行为等价，由 `test/tps.test.ts` 既有定价用例回归 | ✅ `ece1469`（`tps-stats.ts`） |
+| **P0-b** | 入口 E + 测试 6–9c | 只增不改：**既有行的数值不变，会话总额上升** | ✅ `9bca2d8`（`tps-usage-inlets.ts` + `tps.ts` 的 `session_compact` / `session_tree`） |
+| **P0-c** | 入口 D + 排除集（含 §4.1 三类来源派生）+ 测试 1、3–5c | 同上 | ✅ `93c1f93`（`tps.ts` 的 `tool_execution_end` 分支 + `TOOL_USAGE_CLAIMED_ELSEWHERE`） |
+| **P1**（默认不排期） | 入口 F + 测试 10–14b、15、16。**§4.3 的五项前置条件全部满足、并在装有该包的环境上抓到实跑 fixture 之后**才升为 P1 | 只增不改；既有行数值不变 | ⬜ 未排期 |
+| **P2**（需单独决策） | ① 用 `resolveUsageCostUsd` 回填**既有** subagent 记录的 cost（**会改变已展示的费用数字**）② 嵌套 runId 递归（rev 2 的「入口 G」，收益已自证有限，降级见 §10） | 改变既有数值，须单列 CHANGELOG | ⬜ 未决策，见下 |
 
 > **顺序：** a 必须最先（b/c 都依赖它）。b 先于 c：E 命中所有人且证据链全部可在本机复核，D 依赖一条运行时字段（类型里没有，见 §1.1），先让「新入口 → 单管道 → 去重闸」这条链路在最稳的场景上跑起来。b 与 c 互不依赖，也可并做。
 >
@@ -639,11 +639,17 @@ rev 2 的「P0 / P0.5」不是两个里程碑（编号本身就说明了这点�
 
 **发布前必做（沿用现有约定）：**
 
-- README 中英双份同步「统计范围」小节（`README.md:337` 起、`README.en.md:339` 起的对应段落）
-- README 中英双份的环境变量表补三行（在 `README.md:400` 的 `LLMGATES_TPS_SUBAGENT` 行之后、`README.en.md` 对应位置）——rev 1 漏了这条
-- `docs/README.md` 索引补 `extensions/tps-usage-inlets.ts` 行
-- CHANGELOG 记录新增入口与三个新环境变量
-- 走 [pre-publish-gate](../../pre-publish-gate.md)：其中 §4 功能验证至少覆盖「长会话触发一次自动压缩后 `/calls` 出现 `compact/*` 行」
+- [x] README 中英双份同步「统计范围」小节（`README.md` / `README.en.md` 的「统计范围」/「What is counted」）
+- [x] README 中英双份的环境变量表补**两**行（`LLMGATES_TPS_COMPACTION` / `LLMGATES_TPS_TOOL_USAGE`；`LLMGATES_TPS_SUBAGENT` 本就在表里——rev 1/2/3 写的「三行」是把它一并数进去了）
+- [x] `docs/README.md` 索引补 `extensions/tps-usage-inlets.ts` 行
+- [x] CHANGELOG 记录新增入口与两个新环境变量（`[Unreleased]`，随下一版发布）
+- [ ] 走 [pre-publish-gate](../../pre-publish-gate.md)：其中 §4 功能验证至少覆盖「长会话触发一次自动压缩后 `/calls` 出现 `compact/*` 行」——**这是 P0 唯一未消化的收尾项，发版前必做**
+
+**P2① 的现状（2026-08-24 复核补记）：** 它修的缺口是真实存在且已可定位的——子代理只拿到 token 兜底时 cost 恒为 0
+（`tps-subagent.ts:250` 的 `mapTokenUsageToUsage`、`:1064` 的 session.jsonl 兜底都显式写 `cost: 0`），而记录里已经带着
+`modelLabel`（真实模型 id），定价依据其实是齐的。仍不排期的理由不变：它会改变**已展示**的费用数字，且第三方 payload 里的
+model id 是任意字符串，落 `DEFAULT_MODEL_COST` 就违背 G8「不造钱」。做之前需要一份真实 async 子代理的 fixture 来确认
+`modelLabel` 的可信度。该少算已在两份 README 的「统计范围」如实披露。
 
 ---
 

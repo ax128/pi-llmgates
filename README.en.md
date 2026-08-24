@@ -89,10 +89,11 @@ pi -e npm:@llmgates_api/pi-llmgates-provider
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | Switch or clear the inference endpoint of **one** model |
 | `/endpoint-setting` | Interactive multi-select to switch endpoints in bulk across instances |
 | `/calls` | Per-model usage and cost breakdown for this turn or this session |
-| `/input-history` | Show the input-history switch, scope, file path and how much is stored |
+| `/input-history [status]` | Show the input-history switch, scope, file path and how much is stored |
 | `/input-history on\|off` | Enable or disable persistent input history (writes `config.json`, effective immediately in this pi process) |
 | `/input-history scope <cwd\|global>` | Switch scope: one file per working directory (default) or one shared by all of them |
 | `/input-history clear` | Delete the current scope's history file and empty this process's in-memory list |
+| `/input-history help` | Show usage and a summary of what gets recorded |
 | `/llmgates list` | List instance ID, scheme, base URL and display name (never the key) |
 | `/llmgates remove <id>` | Delete an instance along with its registry / auth / endpoint-override records |
 | `/llmgates help` | Show usage and known limitations |
@@ -244,6 +245,8 @@ The extension applies the **same fixed level map to every** model selectable in 
 
 Every model has `reasoning: true`, so the selector always exposes the levels above. If upstream does not support a level or returns 400, lower it or switch model yourself; the extension does not clamp or remap on your behalf. **Transport-layer compat** is still inherited from pi-ai's exact metadata (Anthropic `forceAdaptiveThinking`, `supportsTemperature: false`, …), which only affects request shape, never the effort string. Restoring from the disk cache also rewrites to the universal map above (a remap from an old cache is not preserved).
 
+On top of that, **Moonshot / Kimi** models routed through a gateway lose pi-ai's URL-based compat detection, so the extension supplies that transport compat itself — keyed on the vendor (`moonshotai` / `moonshot` / `kimi-coding`, …) or on an id starting with `kimi-` / `moonshot`. The load-bearing field is `supportsDeveloperRole: false`; without it Moonshot answers `tokenization failed`. This too **only affects request shape**: it changes neither the endpoint choice nor the effort string, so it does not contradict "the protocol is never guessed from the scheme or the model name" above. A Kimi model routed to `messages` shares none of those fields and is deliberately left unstamped.
+
 **User-level fine-tuning (pi's own hook):** override a single model's thinking levels through `providers.<instance-id>.modelOverrides` in `~/.pi/agent/models.json` (top level, merge semantics — only the keys you write are overridden):
 
 ```jsonc
@@ -348,9 +351,11 @@ The TUI extension status line shows:
 - Synchronous pi `subagent` / Cursor `Task` tool results and `_meta.json` summaries feed the same counter; scanned directories are `.pi/subagents/artifacts` (pi-subagents ≥ 0.49), the legacy `.pi-subagents/artifacts`, and `subagent-artifacts/` next to the session file.
 - async / background subagents are collected through the `subagent:async-complete` / `subagent:foreground-complete` event bypass (falling back to `status.json` / the child `session.jsonl` when the event carries no tokens).
 - The `sessionId` in those events may be a bare ID, the full session file path, or its basename (pi-subagents identifies a session with `getSessionFile() ?? getSessionId()`); all three identity forms are matched.
+- A subagent row carries a **cost** only when the upstream reported money: the first of `usage.cost`, the sum of `modelAttempts[].usage.cost`, and `totalCost.costUsd` that has a value is taken as-is. When only tokens came through (`tokens` / `totalTokens`), or the child's `session.jsonl` had to be scanned as a last resort, **the tokens are counted and the cost is recorded as 0** rather than estimated at the parent model's rate. A subagent row with a low cost in `/calls` is therefore expected, not a lost token count.
 - Any tool that follows pi's convention of hanging a top-level `usage` on its result is counted — this is not tied to any one extension. A result that names its own model gets a `<provider>/<model>` row, merging with the parent model's row when the name matches; one that names no model lands under `tool/<toolName>` with a cost of 0. **A model id that is named but matches no pricing rule is still billed at the default rate** (`resolveModelCostRates` never returns zero rates). Tool names already claimed by the subagent path, or whose usage would double-count, are excluded: `subagent`, `task`, `subagent_wait`, `subagent_supervisor`, `intercom`, plus `@tintinweb/pi-subagents`' `Agent` / `get_subagent_result` / `steer_subagent`.
 - Two deliberate under-counts come with that. The three `@tintinweb/pi-subagents` names are currently **excluded with nobody claiming them** — the event inlet that would is not scheduled — so if you have manually enabled that package's `reportUsage` (off by default), its usage is not counted. And a tool result that pools several LLM calls without reporting a count is recorded as 1 call; its tokens and cost are unaffected. Under-counting is the safe direction; double counting is not.
 - The LLM call behind a context compaction or a branch summary is counted under a `compact/<model>` row (pi bills it to the session too; we used to miss it). Automatic compaction, manual `/compact`, overflow-recovery compaction and branch summaries are all covered. A compaction owned by another extension (pi flags it `fromHook`) lands under `compact/unknown` and is charged only the cost it reports itself — the model it ran on is invisible to us, so its tokens are never priced at the session model's rate; one that reports no usage at all still cannot be counted.
+- **Structurally out of reach** (not a bug, and there is no switch for it): extensions that spin up a sub-session inside their own process without hanging a `usage` off a tool result the way pi's convention asks — dynamic-workflows, piolium, pi-goal-x and the like. Their messages never join the parent message stream, so pi's own `/cost` misses them too. The same goes for extensions such as `pi-vision` that call a model directly and write their own session entries, and for pi-subagents grandchildren at depth ≥ 2. A third-party extension that wants to be counted only has to put a top-level `usage` on its tool result — that lands in pi's `/cost` and here at the same time.
 - Set `LLMGATES_TPS_SUBAGENT=0` to turn off the subagent bypass and the meta scan (the parent model and synchronous `subagent` / Cursor `Task` tool results are still counted).
 - Set `LLMGATES_TPS_COMPACTION=0` to stop counting compaction / branch-summary entries.
 - Set `LLMGATES_TPS_TOOL_USAGE=0` to stop counting generic tool-result usage (`subagent` / Cursor `Task` are still counted).
@@ -453,7 +458,7 @@ Config files live under `~/.pi/agent/llmgates/` (older flat files under `~/.pi/a
 
 All of these parse the same way: `1` / `true` / `yes` / `on` is on, `0` / `false` / `no` / `off` is off, and any other value counts as unset (falling back to the respective default). `LLMGATES_INPUT_HISTORY_SCOPE` only accepts `cwd` / `global`; anything else likewise counts as unset.
 
-While one of these is in effect, `/input-history on` / `off` / `scope` **refuses to run** and asks you to unset it first — otherwise the config file would say one thing while the environment kept overruling it.
+When one of these is **actually in effect** — a recognized value that really outranks `config.json` — the subcommand it governs **refuses to run** and asks you to unset it first, otherwise the config file would say one thing while the environment kept overruling it. The refusal is **per setting**: with only `LLMGATES_INPUT_HISTORY_SCOPE` set, `scope` is refused while `on` / `off` still work, and vice versa; an unrecognized value (say `LLMGATES_INPUT_HISTORY=maybe`) already falls back to the config/default and refuses nothing.
 
 ## Security
 

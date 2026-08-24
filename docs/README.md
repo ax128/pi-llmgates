@@ -17,23 +17,30 @@
 | [pre-publish-gate.md](./pre-publish-gate.md) | **发布前门禁**：`npm run gate` → 解包 tarball 后 `pi install <目录>` → pi 功能验证 → `gate-record-pass.sh`；`publish-npm.sh` 硬校验 |
 | [npm-package.md](./npm-package.md) | npm 安装、更新、升版本、发布与 `.env` 密钥 |
 
-## 审计与后续优化
-
-| 文档 | 说明 |
-| --- | --- |
-| [2026-08-23-input-history-design.md](./superpowers/specs/2026-08-23-input-history-design.md) | 输入历史持久化（`/input-history`）设计方案（rev 2）。**已实施**：记录走 `pi.on("input")`、预填走 `ctx.ui.setEditorComponent()` 装饰器，落盘 `~/.pi/agent/llmgates/input-history/`；含 pi 侧三个坑（会话重放、包装 submit 路径、工厂抛错清空输入框）的取证与规避。§6 为实施记录，§6.1 记录合并前复核推翻的两条判断（历史何时清空、工厂兜底是否真的兜得住）与修订 |
-| [2026-08-22-multi-agent-usage-compat-design.md](./superpowers/specs/2026-08-22-multi-agent-usage-compat-design.md) | 多代理生态用量统计兼容方案（rev 3）。2026-08-22 逐包审查 pi.dev 生态（pi-subagents / @tintinweb/pi-subagents / pi-background-tasks / dynamic-workflows / piolium / pi-goal-x / pi-vision / 压缩类）后，补齐 pi 自身口径中我们缺失的两类来源（工具结果 `usage`、压缩条目 `usage`）。**P0 分三步实施**：§6.1 共享定价助手、§4.2 入口 E（压缩 / 分支摘要）、§4.1 入口 D（通用工具结果）；入口 F（第三方完成事件）按 §9 默认不排期。含 §3.2 命名空间登记表、§3.3 归属表与 §5 逐条双计论证 |
-| [2026-08-18-audit-remediation-plan.md](./superpowers/specs/2026-08-18-audit-remediation-plan.md) | 2026-08-18 全仓审计的后续优化方案（rev 4）。**已归档**：批次 1–6 全部实施完成（PR #45–#50），2026-08-20 已逐条对照代码复核。仍然有效的只有「批次 7 — 长期考虑」与「明确不做的事」两节，其余为实施记录。审计原始汇总从未落盘本仓，文首「关于问题编号」小节已结案——它不再是任何工作的前置门禁 |
-
 ## 设计与实现（内部）
 
-以下文档为实施时的设计记录（历史存档），可作为实现背景参考；部分细节已被后续演进修正，与代码冲突时以代码及其注释为准。
+实施时的设计记录，可作为实现背景参考。**与代码冲突时一律以代码及其注释为准**——每份文档的抬头都注明了它的状态与已知偏差。
+
+### 已实施，但仍带未落地的后续项
+
+| 文档 | 说明 | 未落地的部分 |
+| --- | --- | --- |
+| [2026-08-23-input-history-design.md](./superpowers/specs/2026-08-23-input-history-design.md) | 输入历史持久化（`/input-history`）设计方案（rev 2）。记录走 `pi.on("input")`、预填走 `ctx.ui.setEditorComponent()` 装饰器，落盘 `~/.pi/agent/llmgates/input-history/`；含 pi 侧三个坑（会话重放、包装 submit 路径、工厂抛错清空输入框）的取证与规避。§6 为实施记录，§6.1 记录合并前复核的四条修订——其中前两条推翻了本文的原始判断（pi 的历史何时清空、由此掩盖的「进程内历史寿命变短」代价） | §6.2：`pre-publish-gate.md` §4.2 的输入历史清单**尚未在真实 pi 上跑过**，属发版门禁范围 |
+| [2026-08-22-multi-agent-usage-compat-design.md](./superpowers/specs/2026-08-22-multi-agent-usage-compat-design.md) | 多代理生态用量统计兼容方案（rev 3/4）。2026-08-22 逐包审查 pi.dev 生态（pi-subagents / @tintinweb/pi-subagents / pi-background-tasks / dynamic-workflows / piolium / pi-goal-x / pi-vision / 压缩类）后，补齐 pi 自身口径中我们缺失的两类来源。**P0 三步已全部实施**：§6.1 共享定价助手（`ece1469`）、§4.2 入口 E 压缩 / 分支摘要（`9bca2d8`）、§4.1 入口 D 通用工具结果（`93c1f93`）。含 §3.2 命名空间登记表、§3.3 归属表与 §5 逐条双计论证 | §4.3 入口 F（`@tintinweb` 完成事件）默认不排期；§9 P2① 回填既有 subagent 记录的 cost 需单独决策；§9 的压缩功能验证仍待在门禁里跑 |
+
+### 纯历史存档（无待办）
 
 | 文档 | 说明 |
 | --- | --- |
-| [blocking-and-liveness-hardening-design.md](./superpowers/specs/2026-08-04-blocking-and-liveness-hardening-design.md) | 锁 compromise、定价同步取消、有界 idle 等待、并发 reload、扫描上限与句柄 unref |
+| [blocking-and-liveness-hardening-design.md](./superpowers/specs/2026-08-04-blocking-and-liveness-hardening-design.md) | 锁 compromise、定价同步取消、有界 idle 等待、并发 reload、扫描上限与句柄 unref。文首两条修订注记录了 lock 站点数量等已偏移的细节 |
 | [runtime-lifecycle-usage-races-design.md](./superpowers/specs/2026-07-27-runtime-lifecycle-usage-races-design.md) | 运行时生命周期与用量竞态修复 |
 | [subagent-usage-tps-design.md](./superpowers/specs/2026-07-24-subagent-usage-tps-design.md) | TPS 子代理全路径用量采集（含 async 旁路） |
+
+## 长期方向与明确不做的事
+
+| 文档 | 说明 |
+| --- | --- |
+| [2026-08-18-audit-followups.md](./superpowers/specs/2026-08-18-audit-followups.md) | 2026-08-18 全仓审计的存续结论。批次 1–6 的 28 个条目已全部实施（PR #45–#50），实施记录正文已裁剪掉；本文只剩三条长期方向（CI + provenance 发布、私网拦截子网化、定价漂移检查）、十条「明确不做的事」，以及编号 L6 的结案说明 |
 
 ## 源码入口
 

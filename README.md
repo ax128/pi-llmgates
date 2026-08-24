@@ -87,10 +87,11 @@ pi -e npm:@llmgates_api/pi-llmgates-provider
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | 切换或清除**一个**模型的推理出口 |
 | `/endpoint-setting` | 交互式多选，批量切换任意实例模型的推理出口 |
 | `/calls` | 查看本轮或本会话的 per-model 用量与费用明细 |
-| `/input-history` | 查看输入历史的开关、作用域、文件路径与已存条数 |
+| `/input-history [status]` | 查看输入历史的开关、作用域、文件路径与已存条数 |
 | `/input-history on\|off` | 开启 / 关闭输入历史持久化（写入 `config.json`，当前 pi 进程立即生效） |
 | `/input-history scope <cwd\|global>` | 切换作用域：每个工作目录一份（默认）或全部目录共用一份 |
 | `/input-history clear` | 删除当前作用域的历史文件，并清空当前进程的内存历史 |
+| `/input-history help` | 显示用法与「记录什么」的摘要 |
 | `/llmgates list` | 列出实例 ID、scheme、base URL 和 display name（不显示密钥） |
 | `/llmgates remove <id>` | 删除指定实例及其 registry / auth / endpoint override 记录 |
 | `/llmgates help` | 显示用法与已知限制 |
@@ -242,6 +243,8 @@ pi
 
 所有模型 `reasoning: true`，选择器始终暴露上述档位。上游不支持某档或返回 400 时由用户自行降档或换模型；插件不代为 clamp / 映射。仍会从 pi-ai 精确 metadata 继承 **传输层 compat**（如 Anthropic `forceAdaptiveThinking`、`supportsTemperature: false`），这只影响请求形状，不改变 effort 字符串。磁盘缓存恢复时也会重写为上述 universal map（不保留旧缓存里的 remap）。
 
+经网关路由的 **Moonshot / Kimi** 模型会丢掉 pi-ai 基于 URL 的 compat 识别，因此扩展按 vendor（`moonshotai` / `moonshot` / `kimi-coding` …）或 `kimi-` / `moonshot` 开头的 id 自行补一份传输层 compat，其中起作用的关键字段是 `supportsDeveloperRole: false`——缺了它 Moonshot 会报 `tokenization failed`。这同样**只影响请求形状**：不改 endpoint 选择、不改 effort 字符串，因此与上文「不按 scheme 或模型名猜协议」并不冲突；路由到 `messages` 的 Kimi 模型不共享这些字段，刻意不打这份 metadata。
+
 **用户级微调（pi 原生钩子）**：在 `~/.pi/agent/models.json` 用 `providers.<实例 ID>.modelOverrides` 覆盖单个模型的思考等级（最顶层，合并语义，只覆盖你写的 key）：
 
 ```jsonc
@@ -346,9 +349,11 @@ TUI 扩展状态行：
 - 同步 pi `subagent` / Cursor `Task` 工具结果与 `_meta.json` 汇总计入同一计数器；扫描 `.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧版 `.pi-subagents/artifacts` 及会话文件旁的 `subagent-artifacts/`。
 - async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 事件旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。
 - 事件里的 `sessionId` 可能是裸 ID、会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。
+- 子代理的**费用**只在上游报了金额时才有：按 `usage.cost` → `modelAttempts[].usage.cost` 之和 → `totalCost.costUsd` 的顺序取第一个有值的，原样采用；只报到 token（`tokens` / `totalTokens`）、或只能靠扫子会话 `session.jsonl` 兜底时，**token 照记、费用记 0**，不按父模型的费率倒推。所以 `/calls` 里子代理行的费用偏低是预期行为，不代表 token 漏算。
 - 任何按 pi 约定在工具结果顶层挂 `usage` 的工具（不限于某个具体扩展），其用量都会计入。结果自报模型时按 `<provider>/<模型>` 分行——与父模型同名时并入同一行；未自报模型时记为 `tool/<工具名>` 且费用记 0，**但自报了一个不在定价表里的模型 id 时会落到默认费率**（`resolveModelCostRates` 永不返回 0）。已被子代理路径认领或计了会重复的工具名不在此列：`subagent`、`task`、`subagent_wait`、`subagent_supervisor`、`intercom`，以及 `@tintinweb/pi-subagents` 的 `Agent` / `get_subagent_result` / `steer_subagent`。
 - 上一条有两处刻意的少算：`@tintinweb/pi-subagents` 的三个工具名当前是**排除但无人接手**的中间态（接手它的事件入口未排期），若你手动开启了该扩展默认关闭的 `reportUsage`，这部分用量不会被统计；另外，一条工具结果可能聚合多次 LLM 调用却不上报次数，此时 calls 记 1，token 与费用不受影响。少算是安全方向，重复计不是。
 - 上下文压缩与分支摘要那次 LLM 调用计入 `compact/<模型>` 一行（pi 自己也算这笔，我们此前漏计）。自动压缩、手动 `/compact`、上下文溢出恢复压缩与分支摘要都覆盖。由其他扩展代管的压缩（pi 标记为 `fromHook`）计入 `compact/unknown`，且只认它自报的费用——它用的是哪个模型我们看不到，不会按会话模型的费率估价；完全不上报用量的仍无从统计。
+- **结构性统计不到的**（不是 bug，也没有开关）：在自己进程内起子会话、又不按 pi 约定挂 `usage` 的扩展（dynamic-workflows、piolium、pi-goal-x 一类）——它们的消息不进父会话消息流，pi 自己的 `/cost` 同样看不到；`pi-vision` 这类直连模型并自建会话条目的扩展；以及 pi-subagents 深度 ≥ 2 的孙代理。第三方扩展想被统计，按 pi 约定在工具结果顶层挂一个 `usage` 即可，会同时进 pi 的 `/cost` 与这里。
 - 设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与同步 `subagent` / Cursor `Task` 工具结果仍统计）。
 - 设 `LLMGATES_TPS_COMPACTION=0` 可关闭压缩 / 分支摘要统计。
 - 设 `LLMGATES_TPS_TOOL_USAGE=0` 可关闭通用工具结果用量统计（`subagent` / Cursor `Task` 仍统计）。
@@ -451,7 +456,7 @@ pi 的输入框本来就支持用 ↑↓ 翻看敲过的内容（上限 100 条�
 
 上述开关统一解析：`1` / `true` / `yes` / `on` 为开，`0` / `false` / `no` / `off` 为关，其余值视为未设置（回落到各自默认）。`LLMGATES_INPUT_HISTORY_SCOPE` 只认 `cwd` / `global`，其余值同样视为未设置。
 
-环境变量生效时，`/input-history on` / `off` / `scope` 会**拒绝执行**并提示先 `unset`——否则会出现「写了 config、但 env 仍然优先」的自相矛盾。
+环境变量**真正生效时**（值可识别、且确实压过了 `config.json`），它管的那条子命令会**拒绝执行**并提示先 `unset`——否则会出现「写了 config、但 env 仍然优先」的自相矛盾。拦截是**逐项**的：只设 `LLMGATES_INPUT_HISTORY_SCOPE` 时 `scope` 被拦、`on` / `off` 照常可用，反之亦然；值无法识别时（如 `LLMGATES_INPUT_HISTORY=maybe`）该变量本就回落到 config / 默认，不拦。
 
 ## 安全
 

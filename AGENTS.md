@@ -7,6 +7,8 @@
 Pi coding agent 扩展包：`@llmgates_api/pi-llmgates-provider`。  
 并行接入多个 OpenAI 兼容网关（NewAPI / Sub2API / CLIProxyAPI / 通用）：从各网关 `/v1/models` 拉模型、
 注册为独立的 native Provider，并提供出口切换、额度查询与 TPS 统计。
+另有一个与网关无关、默认开启的功能：输入历史跨进程持久化（`/input-history`），它单独注册、
+不受网关注册失败连坐（`extensions/index.ts`）。
 
 用户文档：[README.md](./README.md)  
 设计索引：[docs/README.md](./docs/README.md)
@@ -18,15 +20,13 @@ Pi coding agent 扩展包：`@llmgates_api/pi-llmgates-provider`。
 
 完整手册：**[docs/npm-package.md](./docs/npm-package.md)**（开头「Agent 标准发布对话」）。
 
-固定节奏：
+**步骤不在本文重复**（一处权威，改流程时只改一处）。这里只钉死三件最容易做错的事：
 
-1. **门禁** → `npm run gate` → 解包 tarball 后 `pi install <目录>`（**不要** `pi install ./*.tgz`，pi 会拒绝启动，见门禁 §3）→ §4 功能清单 → `gate-record-pass.sh` + §5 PASS 回执  
-2. 升版本 → `npm run check` → push 代码 / tag  
-3. 运行 `node ./scripts/npm-publish-auth-link.mjs`  
-4. **把打印出的 `https://www.npmjs.com/login/...` 链接发给用户**  
-5. 等用户回复 OTP / 验证码  
-6. `./scripts/publish-npm.sh --otp=<回复>`（内部校验 gate；bump 后自动 re-pack）  
-7. **发布成功后立刻给出安装示例命令**（latest / 钉版本 / `-l` / git tag）
+- 解包 tarball 后 `pi install <目录>`，**不要** `pi install ./*.tgz`——pi 会记进 `packages` 并从此拒绝启动（门禁 §3 有恢复办法）。
+- 发布**无法由 Agent 独立完成**：跑 `npm-publish-auth-link.mjs` 拿到 `https://www.npmjs.com/login/...` 后必须**把链接发给用户、等对方回 OTP**，再 `./scripts/publish-npm.sh --otp=<回复>`。
+- 发布成功后**立刻**给出安装示例命令（latest / 钉版本 / `-l`）。
+
+遇到「发布 / 安装 / 更新 / 要认证链接」类请求时的完整分支，见门禁 [§7 决策简表](./docs/pre-publish-gate.md#7-决策简表)。
 
 密钥：只在本地 `.env` 的 `NPM_TOKEN`；禁止提交或粘贴 token。**不要**预先 `set -a && source .env`——探测脚本自带 `loadDotEnv()`，`publish-npm.sh` 只在 `npm publish` / `npm view` 时读取 token，check / build / pack 阶段不应看见它。
 
