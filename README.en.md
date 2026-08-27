@@ -439,6 +439,8 @@ That leaves exactly two cases: a **cold start** (`pi`) and **`/new`** — the tw
 Known costs and boundaries:
 
 - Each restore appends one `model_change` entry to the session. On pi 0.81–0.83 it also writes `defaultModel` in `settings.json` as a side effect (extension-side `setModel` persisted unconditionally in those versions); from 0.84 on it does not.
+- What gets recorded is an **explicit switch**. pi emits no `model_select` when it restores a session's own model, so the model an older session was on after `pi -c` is never recorded — going straight from there to `/new` lands on the last model you explicitly switched to, not on that one.
+- **Non-interactive runs are covered too**: `pi -p "..."` and RPC mode go through the same `session_start`, so scripts and CI get switched to the last used model as well. Pin the model with an explicit `--model`, or set `LLMGATES_RESTORE_LAST_MODEL=0`.
 - If the restored model is **not** in `enabledModels`, the next Ctrl+P jumps to the scope's *second* entry (pi starts from index 0 when the current model is not in the list, so the first is skipped); Ctrl+N jumps to the last one.
 - With several pi processes open it is last-switch-wins: the file is replaced atomically as a whole, there is no read-modify-write to lose, so no lock is needed and no process can eat another's record.
 - Recording keeps running even when restoring is turned off — otherwise turning it back on would have nothing to restore. The file holds a provider id and a model id, nothing else.

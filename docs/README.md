@@ -64,6 +64,7 @@
 | `extensions/llmgates-reload.ts` | `/llmgates-reload` 强制刷新全部实例 catalog |
 | `extensions/input-history.ts` | `/input-history` 命令、`input` 记录 handler 与编辑器预填装饰器 |
 | `extensions/input-history-store.ts` | 输入历史落盘（cwd→文件名编码、MRU 去重、100 条 / 8 KiB 上限） |
+| `extensions/last-model.ts` | 记录 `model_select` 并在新会话恢复上次模型（`llmgates/last-model.json`） |
 | `extensions/login-ui.ts` | 登录文案、网关类型选项与错误中文化 |
 | `extensions/util.ts` | 原子写、文件锁、envFlag、legacy 配置迁移 |
 | `extensions/tps.ts` | TUI 统计与 `/calls` 命令 |

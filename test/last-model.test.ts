@@ -1,9 +1,12 @@
 import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	hasCliModelSelection,
+	hasConversationEntries,
 	lastModelFilePath,
 	readLastModel,
 	registerLastModelRestore,
@@ -11,10 +14,12 @@ import {
 	writeLastModel,
 	type LastModelRestoreDeps,
 } from "../extensions/last-model.js";
-import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
+import { withTempAgentDir, writeJson } from "./helpers/temp-agent-dir.js";
 
 const SAVED = { provider: "vip", modelId: "glm-5.3" };
 const SAVED_MODEL_SHAPE = { provider: SAVED.provider, id: SAVED.modelId };
+/** Where a scope parked pi: the model the restore has to move away from. */
+const CURRENT = { provider: "cpa1", modelId: "gemini-3.7-flash-high" };
 
 function model(provider: string, id: string): Model<Api> {
 	return {
@@ -45,13 +50,53 @@ function makeDeps(overrides: Partial<LastModelRestoreDeps> = {}): {
 			provider === SAVED.provider && modelId === SAVED.modelId
 				? saved
 				: undefined,
-		getCurrentModel: () => model("cpa1", "gemini-3.7-flash-high"),
+		getCurrentModel: () => model(CURRENT.provider, CURRENT.modelId),
 		setModel,
 		hasSessionEntries: () => false,
 		argv: [],
 		...overrides,
 	};
 	return { deps, setModel };
+}
+
+function fakePi(): {
+	pi: ExtensionAPI;
+	handlers: Map<string, (event: unknown, ctx: unknown) => unknown>;
+	setModel: ReturnType<typeof vi.fn>;
+} {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const setModel = vi.fn(async () => true);
+	const pi = {
+		on: vi.fn((event: string, handler: (e: unknown, c: unknown) => unknown) => {
+			handlers.set(event, handler);
+		}),
+		setModel,
+	} as unknown as ExtensionAPI;
+	return { pi, handlers, setModel };
+}
+
+/**
+ * A session in exactly the state pi hands to `session_start` on a cold start or
+ * `/new`: `createAgentSession` stamps a model change and a thinking level change
+ * onto every brand-new session before the extension runtime binds, so the branch
+ * is never empty there.
+ */
+function freshPiSession(cwd: string): SessionManager {
+	const session = SessionManager.inMemory(cwd);
+	session.appendModelChange(CURRENT.provider, CURRENT.modelId);
+	session.appendThinkingLevelChange("off");
+	return session;
+}
+
+/** The handler reads the real process.argv; pin it so vitest's own flags cannot leak in. */
+async function withArgv(argv: string[], run: () => Promise<void>): Promise<void> {
+	const original = process.argv;
+	process.argv = ["node", "pi", ...argv];
+	try {
+		await run();
+	} finally {
+		process.argv = original;
+	}
 }
 
 describe("hasCliModelSelection", () => {
@@ -188,22 +233,6 @@ describe("last-model.json", () => {
 });
 
 describe("model_select recording", () => {
-	function fakePi(): {
-		pi: ExtensionAPI;
-		handlers: Map<string, (event: unknown, ctx: unknown) => unknown>;
-	} {
-		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
-		const pi = {
-			on: vi.fn(
-				(event: string, handler: (e: unknown, c: unknown) => unknown) => {
-					handlers.set(event, handler);
-				},
-			),
-			setModel: vi.fn(async () => true),
-		} as unknown as ExtensionAPI;
-		return { pi, handlers };
-	}
-
 	it("stores whichever model pi switched to, including session-only switches", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
@@ -259,14 +288,7 @@ describe("model_select recording", () => {
 
 describe("registerLastModelRestore", () => {
 	it("subscribes to session_start and never throws out of the handler", async () => {
-		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
-		const pi = {
-			on: vi.fn((event: string, handler: (e: unknown, c: unknown) => unknown) => {
-				handlers.set(event, handler);
-			}),
-			setModel: vi.fn(async () => true),
-		} as unknown as ExtensionAPI;
-
+		const { pi, handlers, setModel } = fakePi();
 		registerLastModelRestore(pi, "/nonexistent-agent-dir");
 		const handler = handlers.get("session_start");
 		expect(handler).toBeDefined();
@@ -294,6 +316,137 @@ describe("registerLastModelRestore", () => {
 		await expect(
 			handler?.({ type: "session_start", reason: "startup" }, hostileCtx),
 		).resolves.toBeUndefined();
-		expect(pi.setModel).not.toHaveBeenCalled();
+		expect(setModel).not.toHaveBeenCalled();
+	});
+});
+
+describe("hasConversationEntries", () => {
+	it("does not mistake pi's own new-session stamp for a restored conversation", () => {
+		const session = freshPiSession(process.cwd());
+		// Counting entries instead would report "restored" on every cold start and
+		// on every /new, and nothing would ever be restored.
+		expect(session.getBranch()).toHaveLength(2);
+		expect(hasConversationEntries(session.getBranch())).toBe(false);
+
+		session.appendMessage({ role: "user", content: "hi", timestamp: 0 });
+		expect(hasConversationEntries(session.getBranch())).toBe(true);
+	});
+});
+
+/**
+ * The wiring, against a real SessionManager rather than an injected predicate:
+ * every dep in `restoreLastModel` is mockable, so only these pin the handler to
+ * what pi actually hands it.
+ */
+describe("session_start against a real session", () => {
+	function ctxFor(session: SessionManager, cwd: string) {
+		const saved = model(SAVED.provider, SAVED.modelId);
+		return {
+			cwd,
+			isProjectTrusted: () => true,
+			model: model(CURRENT.provider, CURRENT.modelId),
+			modelRegistry: {
+				find: (provider: string, modelId: string) =>
+					provider === SAVED.provider && modelId === SAVED.modelId
+						? saved
+						: undefined,
+			},
+			sessionManager: session,
+		};
+	}
+
+	async function startSession(
+		agentDir: string,
+		reason: string,
+		session: SessionManager,
+	): Promise<ReturnType<typeof fakePi>> {
+		const fake = fakePi();
+		registerLastModelRestore(fake.pi, agentDir);
+		await withArgv([], async () => {
+			await fake.handlers.get("session_start")?.(
+				{ type: "session_start", reason },
+				ctxFor(session, agentDir),
+			);
+		});
+		return fake;
+	}
+
+	it("restores on a cold start, whose session pi has already stamped", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeLastModel(agentDir, SAVED);
+			const { setModel } = await startSession(
+				agentDir,
+				"startup",
+				freshPiSession(agentDir),
+			);
+			expect(setModel).toHaveBeenCalledTimes(1);
+			expect(setModel.mock.calls[0]?.[0]).toMatchObject(SAVED_MODEL_SHAPE);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("restores on /new as well", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeLastModel(agentDir, SAVED);
+			const { setModel } = await startSession(
+				agentDir,
+				"new",
+				freshPiSession(agentDir),
+			);
+			expect(setModel).toHaveBeenCalledTimes(1);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("leaves a session that carries a conversation alone (pi -c)", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeLastModel(agentDir, SAVED);
+			const session = freshPiSession(agentDir);
+			session.appendMessage({ role: "user", content: "hi", timestamp: 0 });
+			const { setModel } = await startSession(agentDir, "startup", session);
+			expect(setModel).not.toHaveBeenCalled();
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("seeds from pi's pinned default when nothing has been recorded yet", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			// No last-model.json: the seed has to come from pi's own SettingsManager,
+			// reading the global settings.json under the same agent dir.
+			writeJson(join(agentDir, "settings.json"), {
+				defaultProvider: SAVED.provider,
+				defaultModel: SAVED.modelId,
+			});
+			const { setModel } = await startSession(
+				agentDir,
+				"startup",
+				freshPiSession(agentDir),
+			);
+			expect(setModel).toHaveBeenCalledTimes(1);
+			expect(setModel.mock.calls[0]?.[0]).toMatchObject(SAVED_MODEL_SHAPE);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("does nothing with neither a record nor a pinned default", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const { setModel } = await startSession(
+				agentDir,
+				"startup",
+				freshPiSession(agentDir),
+			);
+			expect(setModel).not.toHaveBeenCalled();
+		} finally {
+			cleanup();
+		}
 	});
 });

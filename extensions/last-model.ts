@@ -28,8 +28,8 @@
  *
  * Restoring deliberately does nothing when
  * - the start is not fresh (`resume` / `fork` / `reload`) or the session already
- *   carries entries (`pi -c`) — pi restores that session's own model there, and
- *   that is the better answer,
+ *   carries a conversation (`pi -c`) — pi restores that session's own model
+ *   there, and that is the better answer,
  * - `--model` / `--models` is on the command line — an explicit per-run choice
  *   outranks a remembered one,
  * - the saved model is gone, has no configured auth, or is already selected.
@@ -124,13 +124,40 @@ export interface LastModelRestoreDeps {
 	findModel(provider: string, modelId: string): Model<Api> | undefined;
 	getCurrentModel(): Model<Api> | undefined;
 	setModel(model: Model<Api>): Promise<boolean>;
-	/** True once the session carries entries, i.e. pi restored a conversation. */
+	/** True once the session carries a conversation, i.e. pi restored one. */
 	hasSessionEntries(): boolean;
 	argv: readonly string[];
 }
 
 /** The two reasons that produce an empty session pi had to pick a model for. */
 const FRESH_START_REASONS: ReadonlySet<string> = new Set(["startup", "new"]);
+
+/**
+ * The entry types pi projects back into conversation messages
+ * (`sessionEntryToContextMessages`).
+ *
+ * A plain entry count is NOT a substitute: creating a session appends
+ * `model_change` + `thinking_level_change` before the extension runtime binds
+ * (`core/sdk.js`), so on every cold start and every `/new` the branch already
+ * holds two entries by the time `session_start` fires. Counting them would make
+ * a fresh session indistinguishable from a restored one and disable restoring
+ * entirely. pi's own startup criterion is `buildSessionContext().messages.length
+ * > 0` — `ReadonlySessionManager` does not expose that, so the same question is
+ * asked of the branch directly.
+ */
+const CONVERSATION_ENTRY_TYPES: ReadonlySet<string> = new Set([
+	"message",
+	"custom_message",
+	"compaction",
+	"branch_summary",
+]);
+
+/** Mirrors pi's `hasExistingSession`. Exported so a real session can pin it. */
+export function hasConversationEntries(
+	entries: readonly { type: string }[],
+): boolean {
+	return entries.some((entry) => CONVERSATION_ENTRY_TYPES.has(entry.type));
+}
 
 /**
  * Mirrors pi's own argument parser (`cli/args.ts`): a model flag only takes
@@ -193,6 +220,12 @@ function logDebug(message: string): void {
  * what pi's own startup compares against. Reached through the namespace so a
  * peer version without the export degrades to "no seed" instead of failing the
  * whole extension at import time.
+ *
+ * Cost of borrowing pi's loader: it takes a `proper-lockfile` lock on each
+ * settings.json it reads and spins synchronously for up to ~200 ms when another
+ * pi holds one, then throws ELOCKED. That runs on the session-start path, so it
+ * is reached only when nothing has been recorded yet, and the caller degrades a
+ * throw to "no seed" rather than propagating it.
  */
 function readPinnedDefaultModel(
 	cwd: string,
@@ -271,7 +304,8 @@ export function registerLastModelRestore(
 					ctx.modelRegistry.find(provider, modelId),
 				getCurrentModel: () => ctx.model,
 				setModel: (model) => pi.setModel(model),
-				hasSessionEntries: () => ctx.sessionManager.getBranch().length > 0,
+				hasSessionEntries: () =>
+					hasConversationEntries(ctx.sessionManager.getBranch()),
 				argv: process.argv.slice(2),
 			});
 			logDebug(`last model restore (${event.reason}): ${outcome}`);
