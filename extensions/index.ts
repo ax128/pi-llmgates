@@ -14,6 +14,7 @@ import {
 } from "./endpoint.js";
 import { registerEndpointSettingCommand } from "./endpoint-setting.js";
 import { registerInputHistory } from "./input-history.js";
+import { registerLastModelRestore } from "./last-model.js";
 import { registerCatalogReloadCommand } from "./llmgates-reload.js";
 import {
 	registerCompatGateways,
@@ -52,6 +53,19 @@ export default function (pi: ExtensionAPI): void {
 	} catch (error) {
 		logWarn(
 			`Input history registration failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	/**
+	 * Guarded on its own for the same reason: restoring the last used model is
+	 * independent of both the gateways and the editor, so neither a broken
+	 * 2api.json nor a failed editor hook may take it down.
+	 */
+	try {
+		registerLastModelRestore(pi, agentDir);
+	} catch (error) {
+		logWarn(
+			`Last model restore registration failed: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
 

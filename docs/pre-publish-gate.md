@@ -214,6 +214,24 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
 - [ ] `settings.json` 里设 `autocompleteMaxVisible: 12` 时，装上扩展后补全下拉仍是 12 条
 - [ ] 输入框始终在：`/reload`、`/new`、`/resume`、`/tree` 之后编辑器都还能正常输入
 
+**恢复上次使用的模型（`restoreLastModel`）**
+
+默认开启。单测只覆盖到「会话是否已有对话内容」这一层判定（pi 建新会话时会先写 `model_change` +
+`thinking_level_change` 两条条目，误把它们当「已有会话」会让恢复永远不触发，`last-model.test.ts` 已钉住），
+而**启动时的模型优先级只能在真机上验**——白名单顶掉保存模型这件事没有任何离线替身。
+改动 `last-model.ts`、`connection.ts` 的配置读写或任何 `session_start` / `setModel` 相关代码时必测。
+全程开 `LLMGATES_DEBUG=1`，逐条对判定分支：
+
+- [ ] `settings.json` 里配好 `enabledModels`（或用 `/scoped-models` 存一份），在 `/model` 里切到**白名单外**的模型 → 完全退出后重开 `pi`，**回到该模型**（分支 `restored`），而不是白名单第 1 条
+- [ ] 同一条件下 `/new` 开新会话，同样回到该模型（分支 `restored`）
+- [ ] `pi -c` / `/resume` 打开一个**有消息**的老会话：**不介入**（分支 `session-restored` 或 `not-fresh-start`），模型仍是该会话自己的
+- [ ] 打开过但没发过消息的会话用 `pi -c`：与冷启动同等对待（分支 `restored` / `already-selected`），不是「一律不碰」
+- [ ] `pi --model <provider>/<id>` 与 `pi --models <pattern>`：**不介入**（分支 `cli-model`）
+- [ ] `LLMGATES_RESTORE_LAST_MODEL=0`（或 `"restoreLastModel": false`）后重开：启动模型与装扩展前一致；**但 `~/.pi/agent/llmgates/last-model.json` 仍在更新**
+- [ ] 删掉 `last-model.json`、`settings.json` 里留着 `defaultProvider` / `defaultModel`：冷启动回到那份钉住的默认（种子路径，分支 `restored`）
+- [ ] 上次的模型对应实例已 `/logout` 或已下架：不报错、保持 pi 自己的选择（分支 `model-unavailable` / `no-auth`）
+- [ ] `~/.pi/agent/llmgates/last-model.json` 写成半截 JSON：启动不报错，按「没有记录」处理
+
 **安全 / HTTP**
 
 - [ ] 非 HTTPS 远程网关被拒绝（若涉及 URL 校验）

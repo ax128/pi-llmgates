@@ -74,6 +74,7 @@ describe("extension entrypoints", () => {
 		expect(entrypoint).toMatch(/registerEndpointSettingCommand/);
 		expect(entrypoint).toMatch(/registerCatalogReloadCommand/);
 		expect(entrypoint).toMatch(/registerBalanceCommand/);
+		expect(entrypoint).toMatch(/registerLastModelRestore/);
 		expect(entrypoint).toMatch(/model_select/);
 	});
 
@@ -91,7 +92,8 @@ describe("extension entrypoints", () => {
 			expect(commands.has("balance")).toBe(true);
 			expect(commands.has("llmgates")).toBe(true);
 			expect(providerIds(providers)).toEqual([BOOTSTRAP_PROVIDER_ID]);
-			expect(events.get("model_select")).toBe(1); // reconciliation mounted
+			// Two mounts: endpoint reconciliation and last-model recording.
+			expect(events.get("model_select")).toBe(2);
 			expect(events.get("session_start")).toBeGreaterThanOrEqual(1);
 		} finally {
 			cleanup();
@@ -261,13 +263,17 @@ describe("extension entrypoints", () => {
 		writeFileSync(join(agentDir, "llmgates/2api.json"), "{ not json", {
 			mode: 0o600,
 		});
-		const { pi, commands, providers } = fakePi();
+		const { pi, commands, providers, events } = fakePi();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			expect(() => extensionFactory(pi)).not.toThrow();
 			expect(providers).toHaveLength(0);
 			expect(commands.has("endpoint")).toBe(false);
 			expect(warn).toHaveBeenCalled();
+			// last-model (and input-history) register before gateways, so a broken
+			// 2api.json must not take them down.
+			expect(events.get("model_select")).toBe(1);
+			expect(events.get("session_start")).toBeGreaterThanOrEqual(1);
 		} finally {
 			warn.mockRestore();
 			cleanup();

@@ -6,12 +6,14 @@ import {
 	loadValidatedConfigFile,
 	normalizeAndValidateBaseUrl,
 	resolvePricingAutoUpdate,
+	resolveRestoreLastModel,
 } from "../extensions/connection.js";
 import { withTempAgentDir, writeJson } from "./helpers/temp-agent-dir.js";
 
 const envKeys = [
 	"LLMGATES_BLOCK_PRIVATE_URLS",
 	"LLMGATES_PRICING_AUTO_UPDATE",
+	"LLMGATES_RESTORE_LAST_MODEL",
 ] as const;
 
 afterEach(() => {
@@ -138,6 +140,33 @@ describe("llmgates/config.json", () => {
 			});
 			process.env.LLMGATES_PRICING_AUTO_UPDATE = "1";
 			expect(resolvePricingAutoUpdate(agentDir)).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("honours restoreLastModel from file, env, and default", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			expect(resolveRestoreLastModel(agentDir)).toBe(true);
+
+			writeJson(join(agentDir, "llmgates/config.json"), {
+				restoreLastModel: false,
+			});
+			expect(resolveRestoreLastModel(agentDir)).toBe(false);
+
+			process.env.LLMGATES_RESTORE_LAST_MODEL = "1";
+			expect(resolveRestoreLastModel(agentDir)).toBe(true);
+			delete process.env.LLMGATES_RESTORE_LAST_MODEL;
+
+			writeJson(join(agentDir, "llmgates/config.json"), {
+				restoreLastModel: "no",
+			});
+			expect(() => loadValidatedConfigFile(agentDir)).toThrow(
+				/restoreLastModel/,
+			);
+			// A malformed file must not silently disable the restore either.
+			expect(resolveRestoreLastModel(agentDir)).toBe(true);
 		} finally {
 			cleanup();
 		}

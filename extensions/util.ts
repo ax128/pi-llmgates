@@ -28,6 +28,7 @@ export const SECRET_DIR_MODE = 0o700;
 export const LLMGATES_CONFIG_FILE = "llmgates/config.json";
 export const LLMGATES_COMPAT_CONFIG_FILE = "llmgates/2api.json";
 export const LLMGATES_PRICING_FILE = "llmgates/pricing.json";
+export const LLMGATES_LAST_MODEL_FILE = "llmgates/last-model.json";
 
 const LEGACY_FILE_MOVES: ReadonlyArray<readonly [string, string]> = [
 	["llmgates.json", LLMGATES_CONFIG_FILE],

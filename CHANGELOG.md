@@ -6,6 +6,20 @@
 
 > 0.2.11 及更早的条目是在 0.2.11 发布后，依据 git 历史与各版本 tag 回补的；只收录对使用者可见的变更，纯内部重构与测试补强不单列。
 
+## [未发布]
+
+### 新增
+
+- **新会话现在会回到上次使用的模型（默认开启）。** pi 自己不存这件事：0.84 起 `/model` 回车选中与 Ctrl+P/Ctrl+N 循环都是 `persist: false`，`settings.json` 里的 `defaultProvider` / `defaultModel` 只有按 Ctrl+S「set as default」才会写（0.81–0.83 每次切换都写，所以老版本上那份文件看着像「上次用的」）。而启动时 pi 想用的正是这个默认值——**但只在没配模型白名单时**：一旦有 `enabledModels`（`/scoped-models` 保存的那份）或命令行带 `--models`，pi 改成「保存的模型在白名单里才用，不在就退回白名单第一条」，且没有开关能调这个优先级。于是每次重开 pi 都要重新选一遍。
+  - 本版监听 `model_select` 把每次切到的模型记进 `~/.pi/agent/llmgates/last-model.json`（全局一份、文件 `0600`，只有 provider id 与模型 id 两个字段），并在新会话建立后改回那一个。本地还没有记录时退回读 pi 的 `defaultProvider` / `defaultModel`——白名单同样会顶掉那份显式默认。
+  - **只在冷启动与 `/new` 生效**（以及没发过消息的空会话，`pi -c` 打开也一样）。进程内 `/resume` / `/tree` 分叉 / `/reload` 按 `reason` 跳过。CLI 打开会话时 reason 仍是 `startup`，有对话内容的老会话按内容跳过，不认 `-c` 这个旗标。
+  - 命令行带 `--model` / `--models` 时不介入：单次运行的显式指定优先于「上次用的」。上次的模型已下架、无凭证或当前就是它时也不动。
+  - 记的是**显式切换**（`/model`、Ctrl+P、扩展 `setModel`；`source: "restore"` 不计入）。恢复自己触发的 `model_select` 不回写文件，避免盖掉别的 pi 刚记下的切换。`pi -p` 与 RPC 等非交互运行同样会被恢复，脚本里要钉死模型请显式带 `--model`。
+  - 代价：真正发生恢复时会话多一条 `model_change` 条目（在 0.81–0.83 上还会顺带写一次 `settings.json` 的 `defaultModel`）；若恢复出的模型不在 `enabledModels` 里，之后第一次按 Ctrl+P 会跳到白名单第 2 条（pi 在当前模型不在列表里时从索引 0 往后走）。
+  - 同机多个 pi 时是「最后一次切换胜出」：整份原子覆盖、无读-改-写，因此不加锁也不会互相吃掉内容。记录始终进行（即使恢复被关掉），否则重新打开开关时没有可恢复的东西。
+  - `LLMGATES_DEBUG=1` 会打印每次启动走了哪条分支。
+- **`llmgates/config.json` 新增 `restoreLastModel` 键与 `LLMGATES_RESTORE_LAST_MODEL` 环境变量。** 默认 `true`；设为 `false` / `0` 后启动行为与 pi 原样一致。该键在每次会话开始时重读，改完下次启动即生效。
+
 ## [0.4.0] — 2026-08-24
 
 ### 新增
