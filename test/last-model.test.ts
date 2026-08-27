@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -205,6 +205,7 @@ describe("last-model.json", () => {
 			expect(readLastModel(agentDir)).toBeUndefined();
 			writeLastModel(agentDir, SAVED);
 			expect(readLastModel(agentDir)).toEqual(SAVED);
+			expect(statSync(lastModelFilePath(agentDir)).mode & 0o777).toBe(0o600);
 		} finally {
 			cleanup();
 		}
@@ -265,6 +266,50 @@ describe("model_select recording", () => {
 				provider: "cpa1",
 				modelId: "claude-sonnet-5",
 			});
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("keeps recording when restoring is turned off", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeJson(join(agentDir, "llmgates/config.json"), {
+				restoreLastModel: false,
+			});
+			const { pi, handlers } = fakePi();
+			registerLastModelRestore(pi, agentDir);
+			handlers.get("model_select")?.(
+				{
+					type: "model_select",
+					model: model(SAVED.provider, SAVED.modelId),
+					previousModel: undefined,
+					source: "set",
+				},
+				undefined,
+			);
+			expect(readLastModel(agentDir)).toEqual(SAVED);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("does not record a session-restore event as last used", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeLastModel(agentDir, SAVED);
+			const { pi, handlers } = fakePi();
+			registerLastModelRestore(pi, agentDir);
+			handlers.get("model_select")?.(
+				{
+					type: "model_select",
+					model: model("cpa1", "claude-sonnet-5"),
+					previousModel: undefined,
+					source: "restore",
+				},
+				undefined,
+			);
+			expect(readLastModel(agentDir)).toEqual(SAVED);
 		} finally {
 			cleanup();
 		}
@@ -431,6 +476,38 @@ describe("session_start against a real session", () => {
 			);
 			expect(setModel).toHaveBeenCalledTimes(1);
 			expect(setModel.mock.calls[0]?.[0]).toMatchObject(SAVED_MODEL_SHAPE);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("does not let a restore-triggered model_select clobber a newer last-model write", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeLastModel(agentDir, SAVED);
+			const { pi, handlers, setModel } = fakePi();
+			registerLastModelRestore(pi, agentDir);
+			const other = { provider: "cpa1", modelId: "claude-sonnet-5" };
+			setModel.mockImplementation(async (next: Model<Api>) => {
+				writeLastModel(agentDir, other);
+				await handlers.get("model_select")?.(
+					{
+						type: "model_select",
+						model: next,
+						previousModel: undefined,
+						source: "set",
+					},
+					undefined,
+				);
+				return true;
+			});
+			await withArgv([], async () => {
+				await handlers.get("session_start")?.(
+					{ type: "session_start", reason: "startup" },
+					ctxFor(freshPiSession(agentDir), agentDir),
+				);
+			});
+			expect(readLastModel(agentDir)).toEqual(other);
 		} finally {
 			cleanup();
 		}

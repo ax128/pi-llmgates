@@ -224,7 +224,8 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
 
 - [ ] `settings.json` 里配好 `enabledModels`（或用 `/scoped-models` 存一份），在 `/model` 里切到**白名单外**的模型 → 完全退出后重开 `pi`，**回到该模型**（分支 `restored`），而不是白名单第 1 条
 - [ ] 同一条件下 `/new` 开新会话，同样回到该模型（分支 `restored`）
-- [ ] `pi -c` / `/resume` 打开一个有消息的老会话：**不介入**（分支 `session-restored` 或 `not-fresh-start`），模型仍是该会话自己的
+- [ ] `pi -c` / `/resume` 打开一个**有消息**的老会话：**不介入**（分支 `session-restored` 或 `not-fresh-start`），模型仍是该会话自己的
+- [ ] 打开过但没发过消息的会话用 `pi -c`：与冷启动同等对待（分支 `restored` / `already-selected`），不是「一律不碰」
 - [ ] `pi --model <provider>/<id>` 与 `pi --models <pattern>`：**不介入**（分支 `cli-model`）
 - [ ] `LLMGATES_RESTORE_LAST_MODEL=0`（或 `"restoreLastModel": false`）后重开：启动模型与装扩展前一致；**但 `~/.pi/agent/llmgates/last-model.json` 仍在更新**
 - [ ] 删掉 `last-model.json`、`settings.json` 里留着 `defaultProvider` / `defaultModel`：冷启动回到那份钉住的默认（种子路径，分支 `restored`）

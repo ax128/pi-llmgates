@@ -263,13 +263,17 @@ describe("extension entrypoints", () => {
 		writeFileSync(join(agentDir, "llmgates/2api.json"), "{ not json", {
 			mode: 0o600,
 		});
-		const { pi, commands, providers } = fakePi();
+		const { pi, commands, providers, events } = fakePi();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			expect(() => extensionFactory(pi)).not.toThrow();
 			expect(providers).toHaveLength(0);
 			expect(commands.has("endpoint")).toBe(false);
 			expect(warn).toHaveBeenCalled();
+			// last-model (and input-history) register before gateways, so a broken
+			// 2api.json must not take them down.
+			expect(events.get("model_select")).toBe(1);
+			expect(events.get("session_start")).toBeGreaterThanOrEqual(1);
 		} finally {
 			warn.mockRestore();
 			cleanup();

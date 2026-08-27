@@ -27,9 +27,12 @@
  * restored start.
  *
  * Restoring deliberately does nothing when
- * - the start is not fresh (`resume` / `fork` / `reload`) or the session already
- *   carries a conversation (`pi -c`) — pi restores that session's own model
- *   there, and that is the better answer,
+ * - the start is not fresh (`resume` / `fork` / `reload`) — those reasons are
+ *   in-process session swaps, and pi already has the right model,
+ * - the session already carries a conversation — including `pi -c` / `--session`
+ *   opening an old chat. CLI continue still arrives as `reason: "startup"`, so
+ *   the skip is the conversation, not the flag. An empty continued session is
+ *   treated like a cold start: pi itself would not restore a model from stamps,
  * - `--model` / `--models` is on the command line — an explicit per-run choice
  *   outranks a remembered one,
  * - the saved model is gone, has no configured auth, or is already selected.
@@ -76,6 +79,8 @@ export interface SavedModelRef {
  */
 interface ModelSelectLikeEvent {
 	model?: Model<Api>;
+	/** `"set"` / `"cycle"` today; `"restore"` is in the type union for later pi. */
+	source?: string;
 }
 
 export function lastModelFilePath(agentDir: string): string {
@@ -263,8 +268,14 @@ export function registerLastModelRestore(
 	 * a start is corrected, and flipping it back on should not need a switch
 	 * first to have something to restore. The file holds a provider id and a
 	 * model id, nothing else.
+	 *
+	 * `restoring` is the same re-entrancy latch the endpoint reconciler uses:
+	 * `pi.setModel` emits `model_select` with source `"set"`, and writing that
+	 * back would clobber another process's more recent switch.
 	 */
+	let restoring = false;
 	pi.on("model_select", (event: ModelSelectLikeEvent) => {
+		if (restoring || event.source === "restore") return;
 		const model = event.model;
 		if (!model?.provider || !model.id) return;
 		try {
@@ -303,7 +314,14 @@ export function registerLastModelRestore(
 				findModel: (provider, modelId) =>
 					ctx.modelRegistry.find(provider, modelId),
 				getCurrentModel: () => ctx.model,
-				setModel: (model) => pi.setModel(model),
+				setModel: async (model) => {
+					restoring = true;
+					try {
+						return await pi.setModel(model);
+					} finally {
+						restoring = false;
+					}
+				},
 				hasSessionEntries: () =>
 					hasConversationEntries(ctx.sessionManager.getBranch()),
 				argv: process.argv.slice(2),

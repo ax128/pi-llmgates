@@ -203,7 +203,7 @@ Only currency-denominated fields are read (`balance` / `remaining` / `remaining_
 - If `auth.json` is missing entirely or temporarily corrupt (a manual credential reset, a sync tool mid-write), that cleanup round is skipped so instances are not wrongly deleted; cleanup resumes once the file is readable again.
 - After `/llmgates remove <id>`, the instance's models disappear immediately; because of pi extension API limits, `/logout` may still briefly list the removed ID until `/reload`.
 - Orphan auth keys in `auth.json` with no matching registry record cannot be handled by `/llmgates remove`; delete the corresponding ID entry from `~/.pi/agent/auth.json` manually.
-- If `~/.pi/agent/llmgates/2api.json` cannot be parsed (a hand-editing mistake, a duplicate instance ID, …), the extension registers **no providers and no gateway commands** — including the 「LLMGates 网关」 entry in `/login` — and pi shows no hint at all. The startup log prints the exact reason (with the file name); fix or delete the file and run `/reload` to recover. (`/input-history` has nothing to do with gateways and stays available.)
+- If `~/.pi/agent/llmgates/2api.json` cannot be parsed (a hand-editing mistake, a duplicate instance ID, …), the extension registers **no providers and no gateway commands** — including the 「LLMGates 网关」 entry in `/login` — and pi shows no hint at all. The startup log prints the exact reason (with the file name); fix or delete the file and run `/reload` to recover. (`/input-history` and remembering the last used model have nothing to do with gateways and stay available.)
 
 ## Models and inference endpoints
 
@@ -430,16 +430,18 @@ This extension adds the two missing halves:
 
 | Case | Why |
 | --- | --- |
-| `pi -c` / `/resume` / a `/tree` fork / `/reload` | pi restores that session's own model there, which is the better answer |
+| `/resume` / a `/tree` fork / `/reload` | those actions arrive with a reason other than startup/new, so pi keeps the model |
+| the session already carries a conversation | including an old chat opened with `pi -c` / `--session`. CLI continue still arrives as `reason: "startup"`, so the skip is the conversation, not the `-c` flag |
 | `--model` / `--models` on the command line | an explicit per-run choice outranks a remembered one |
 | the saved model is gone, has no credentials, or is already selected | pi's own choice is left untouched |
 
-That leaves exactly two cases: a **cold start** (`pi`) and **`/new`** — the two that run the same startup selection and are the only ones a scope can override.
+That leaves a **cold start** (`pi`), **`/new`**, and an empty continued session (`pi -c` on a session that never sent a message) — pi itself would not restore a model from stamps there, so they are treated the same as a cold start.
 
 Known costs and boundaries:
 
 - Each restore appends one `model_change` entry to the session. On pi 0.81–0.83 it also writes `defaultModel` in `settings.json` as a side effect (extension-side `setModel` persisted unconditionally in those versions); from 0.84 on it does not.
-- What gets recorded is an **explicit switch**. pi emits no `model_select` when it restores a session's own model, so the model an older session was on after `pi -c` is never recorded — going straight from there to `/new` lands on the last model you explicitly switched to, not on that one.
+- What gets recorded is an **explicit switch**: `/model` with Enter, Ctrl+P cycling, extension `setModel`. pi currently emits no `model_select` when it restores a session's own model; a future `source: "restore"` event is ignored too. Going straight from an old session to `/new` lands on the last model you explicitly switched to, not on that one.
+- A restore-triggered `model_select` does not write `last-model.json` back, so it cannot clobber a newer switch recorded by another pi process.
 - **Non-interactive runs are covered too**: `pi -p "..."` and RPC mode go through the same `session_start`, so scripts and CI get switched to the last used model as well. Pin the model with an explicit `--model`, or set `LLMGATES_RESTORE_LAST_MODEL=0`.
 - If the restored model is **not** in `enabledModels`, the next Ctrl+P jumps to the scope's *second* entry (pi starts from index 0 when the current model is not in the list, so the first is skipped); Ctrl+N jumps to the last one.
 - With several pi processes open it is last-switch-wins: the file is replaced atomically as a whole, there is no read-modify-write to lose, so no lock is needed and no process can eat another's record.
