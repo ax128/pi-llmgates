@@ -227,6 +227,8 @@ export interface LLMGatesConfigFile {
 	inputHistory?: boolean;
 	/** Which history file interactive input is persisted to. Default "cwd". */
 	inputHistoryScope?: InputHistoryScope;
+	/** When true (default), start every fresh session on the model last used. */
+	restoreLastModel?: boolean;
 	[key: string]: unknown;
 }
 
@@ -262,6 +264,12 @@ export function loadValidatedConfigFile(agentDir: string): LLMGatesConfigFile {
 				`${CONFIG_FILE_NAME}.inputHistoryScope must be "cwd" or "global"`,
 			);
 		}
+		if (
+			config.restoreLastModel !== undefined &&
+			typeof config.restoreLastModel !== "boolean"
+		) {
+			throw new Error(`${CONFIG_FILE_NAME}.restoreLastModel must be a boolean`);
+		}
 		return config;
 	} catch (error) {
 		const err = error as NodeJS.ErrnoException;
@@ -282,6 +290,30 @@ export function resolvePricingAutoUpdate(agentDir: string): boolean {
 		const file = loadValidatedConfigFile(agentDir);
 		if (typeof file.pricingAutoUpdate === "boolean") {
 			return file.pricingAutoUpdate;
+		}
+	} catch {
+		// fall through to default
+	}
+	return true;
+}
+
+export const RESTORE_LAST_MODEL_ENV = "LLMGATES_RESTORE_LAST_MODEL";
+
+/**
+ * Env LLMGATES_RESTORE_LAST_MODEL overrides llmgates/config.json. Default: true.
+ *
+ * Same precedence as `resolvePricingAutoUpdate`, and the same tolerance for a
+ * malformed file: a hand edit must not be able to break session startup.
+ */
+export function resolveRestoreLastModel(agentDir: string): boolean {
+	const env = envFlag(RESTORE_LAST_MODEL_ENV);
+	if (env !== undefined) {
+		return env;
+	}
+	try {
+		const file = loadValidatedConfigFile(agentDir);
+		if (typeof file.restoreLastModel === "boolean") {
+			return file.restoreLastModel;
 		}
 	} catch {
 		// fall through to default

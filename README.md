@@ -17,6 +17,7 @@ Pi provider 扩展：并行接入多个 **OpenAI 兼容网关**——[NewAPI](ht
 - [模型与推理出口](#模型与推理出口)
 - [用量与费用](#用量与费用)
 - [输入历史](#输入历史)
+- [记住上次使用的模型](#记住上次使用的模型)
 - [配置](#配置)
 - [安全](#安全)
 - [故障排查](#故障排查)
@@ -33,6 +34,7 @@ Pi provider 扩展：并行接入多个 **OpenAI 兼容网关**——[NewAPI](ht
 - **额度查询**：`/balance` 按实例探测网关额度，网关不提供时明确显示「不可用」而非 0。
 - **用量与费用统计**：TUI 状态行 + `/calls` 明细，覆盖父会话与同步 / async 子代理，费用按上游零售价估算。
 - **输入历史持久化**：↑↓ 翻到的输入跨 pi 进程保留（默认开启，按工作目录隔离），`/input-history` 管理开关、作用域与清空。
+- **记住上次使用的模型**：新会话自动回到上次用的模型，不被 `/scoped-models` 白名单顶掉（默认开启）。
 
 ## 快速开始
 
@@ -411,6 +413,37 @@ pi 的输入框本来就支持用 ↑↓ 翻看敲过的内容（上限 100 条�
 - 预填走 pi 的自定义编辑器接口：若有别的扩展在本扩展**之后**也调用 `setEditorComponent`（例如 vim 模式类扩展），它会把我们顶掉，**预填静默失效**（记录不受影响）。这是 pi 扩展 API 的固有性质。
 - 不提供单条删除。密钥不慎落盘时只能 `/input-history clear` 整份清掉。
 
+## 记住上次使用的模型
+
+pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `defaultProvider` / `defaultModel` 是**显式设定的默认模型**：pi 0.84 起 `/model` 回车选中与 Ctrl+P/Ctrl+N 循环都是 `persist: false`（只改本次会话），只有在 `/model` 列表里按 **Ctrl+S**「set as default」才会写进去。（0.81–0.83 每次切换都写，所以那份文件在老版本上看起来像「上次用的」。）
+
+而启动时 pi 想用的正是这个 `defaultModel`——**但只在没配模型白名单时**。一旦 `settings.json` 里有 `enabledModels`（`/scoped-models` 保存的那份）或命令行带了 `--models`，pi 的启动逻辑改成：保存的模型**在白名单里才用**，不在就退回白名单**第一条**。pi 没有开关能调这个优先级。
+
+本扩展补上两件事：
+
+1. **记录**：监听 `model_select`，把每次真正切到的模型写进 `~/.pi/agent/llmgates/last-model.json`（全局一份，只有 provider id 与模型 id 两个字段）。`/model` 回车、Ctrl+P 循环、扩展切换都算。
+2. **恢复**：新会话建立后把模型改回那一个。本地还没有记录时（刚装上、刚清过），退回读 pi 的 `defaultProvider` / `defaultModel`——白名单同样会顶掉那份显式默认，所以这一步是同一个修复。
+
+**默认开启。** 以下情况**故意不介入**：
+
+| 情况 | 原因 |
+| --- | --- |
+| `pi -c` / `/resume` / `/tree` 分叉 / `/reload` | pi 会恢复该会话自己的模型，那个答案更准 |
+| 命令行带 `--model` / `--models` | 单次运行的显式指定优先于「上次用的」 |
+| 上次的模型已下架、无凭证，或当前就是它 | 保持 pi 自己的选择不动 |
+
+生效的只有两种：**冷启动**（`pi`）和 **`/new` 开新会话**——它们走的是同一套启动选择逻辑，也是唯二会被白名单顶掉的场景。
+
+已知代价与边界：
+
+- 每次真正发生恢复时，会话里多一条 `model_change` 条目。在 pi 0.81–0.83 上还会顺带把它写进 `settings.json` 的 `defaultModel`（那几版扩展侧 `setModel` 一律持久化）；0.84 起不会。
+- 若恢复出的模型**不在** `enabledModels` 里，之后第一次按 Ctrl+P 会跳到白名单第 2 条（pi 在当前模型不在列表里时从索引 0 开始往后走，第 1 条被跳过），Ctrl+N 则跳到最后一条。
+- 同机开多个 pi 时是「最后一次切换胜出」：文件整份原子覆盖，没有读-改-写，所以不需要锁，也不会互相吃掉内容。
+- 记录始终进行，即使恢复被关掉——否则重新打开开关时会没有可恢复的东西。文件里只有 provider id 与模型 id。
+- 关闭用 `"restoreLastModel": false` 或 `LLMGATES_RESTORE_LAST_MODEL=0`；关掉后启动行为与 pi 原样一致。
+
+`LLMGATES_DEBUG=1` 会打印每次启动的判定结果（`restored` / `already-selected` / `cli-model` / `session-restored` / `model-unavailable` …），用来确认到底走了哪条分支。
+
 ## 配置
 
 网关地址与 API Key **只能通过 `/login` 配置**，不从环境变量或配置文件读取。
@@ -421,11 +454,12 @@ pi 的输入框本来就支持用 ↑↓ 翻看敲过的内容（上限 100 条�
 
 | 文件 | 内容 |
 | --- | --- |
-| `config.json` | 扩展级开关：`pricingAutoUpdate`、`inputHistory`、`inputHistoryScope` |
+| `config.json` | 扩展级开关：`pricingAutoUpdate`、`inputHistory`、`inputHistoryScope`、`restoreLastModel` |
 | `2api.json` | 实例 registry（ID、显示名、scheme、base URL；**不含密钥**） |
 | `2api-models/<instanceId>.json` | 每个实例的出口覆盖，见 [手工编辑 override 文件](#手工编辑-override-文件) |
 | `pricing.json` | 可编辑的模型单价与 LiteLLM 同步缓存，见 [定价数据](#定价数据) |
 | `input-history/*.json` | 持久化的输入历史，每个作用域一份，见 [输入历史](#输入历史) |
+| `last-model.json` | 上次使用的模型（provider id + 模型 id），见 [记住上次使用的模型](#记住上次使用的模型) |
 
 `config.json`（下面写的是**默认值**，文件不存在或缺少某个键时即按此生效）：
 
@@ -433,12 +467,14 @@ pi 的输入框本来就支持用 ↑↓ 翻看敲过的内容（上限 100 条�
 {
   "pricingAutoUpdate": true,
   "inputHistory": true,
-  "inputHistoryScope": "cwd"
+  "inputHistoryScope": "cwd",
+  "restoreLastModel": true
 }
 ```
 
 - 设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
 - `inputHistory` / `inputHistoryScope` 见 [输入历史](#输入历史)，改这两个键请优先用 `/input-history`（会原地保留文件里的其他键）。手工编辑后需 `/reload` 生效。
+- 设为 `"restoreLastModel": false` 或 `LLMGATES_RESTORE_LAST_MODEL=0` 则不再恢复上次使用的模型，见 [记住上次使用的模型](#记住上次使用的模型)。这个键每次会话开始时重读，改完下次启动即生效。
 
 ### 环境变量
 
@@ -447,6 +483,7 @@ pi 的输入框本来就支持用 ↑↓ 翻看敲过的内容（上限 100 条�
 | `LLMGATES_PRICING_AUTO_UPDATE` | 覆盖 `pricingAutoUpdate`（默认 `true`；`0` / `false` 关闭） |
 | `LLMGATES_INPUT_HISTORY` | 覆盖 `inputHistory`（默认 `true`；`0` / `false` 关闭输入历史持久化，是最省事的总闸） |
 | `LLMGATES_INPUT_HISTORY_SCOPE` | 覆盖 `inputHistoryScope`：`cwd`（默认）或 `global` |
+| `LLMGATES_RESTORE_LAST_MODEL` | 覆盖 `restoreLastModel`（默认 `true`；`0` / `false` 关闭新会话恢复上次模型） |
 | `LLMGATES_DEBUG` | 设为 `1` / `true` / `yes` 时输出调试日志 |
 | `LLMGATES_BLOCK_PRIVATE_URLS` | 设为 `1` / `true` / `yes` 时拒绝 **IP 字面量** 形式的 private / link-local 网关地址（loopback 仍允许）；hostname（如 `gateway.local`）不受此规则约束 |
 | `LLMGATES_TPS_SUBAGENT` | 默认启用；设为 `0` / `false` / `no` 时关闭子代理 async 旁路与 meta 扫描 |
