@@ -225,7 +225,8 @@ function logDebug(message: string): void {
  * Seed only: once a switch has been recorded, the record wins and this is never
  * consulted again — including a Ctrl+S "set as default" pin and a project-level
  * `.pi/settings.json` pin. That is the documented trade of "last used beats
- * pinned"; `restoreLastModel: false` is how a pin is given the last word.
+ * pinned"; `restoreLastModel: false` hands the decision back to pi, which
+ * honors the pin only where no model scope shadows it.
  *
  * pi's `SettingsManager` rather than a hand-rolled read of settings.json: it
  * applies the global/project merge and the project trust gate, which is exactly

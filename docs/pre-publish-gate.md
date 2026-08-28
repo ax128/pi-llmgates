@@ -229,9 +229,10 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
 - [ ] `pi --model <provider>/<id>` 与 `pi --models <pattern>`：**不介入**（分支 `cli-model`）
 - [ ] `LLMGATES_RESTORE_LAST_MODEL=0`（或 `"restoreLastModel": false`）后重开：启动模型与装扩展前一致；**但 `~/.pi/agent/llmgates/last-model.json` 仍在更新**
 - [ ] 删掉 `last-model.json`、`settings.json` 里留着 `defaultProvider` / `defaultModel`：冷启动回到那份钉住的默认（种子路径，分支 `restored`）
-- [ ] **记录压过钉住的默认**（有意行为，README 已写）：`/model` 里按 Ctrl+S 钉一个模型，再 Ctrl+P 切到另一个 → 重开 `pi` 回到 Ctrl+P 那个；项目级 `<项目>/.pi/settings.json` 里手写的 `defaultModel` 同样被顶掉
+- [ ] **记录压过钉住的默认**（有意行为，README 已写）：`/model` 里按 Ctrl+S 钉一个模型，再 Ctrl+P 切到另一个 → 重开 `pi` 回到 Ctrl+P 那个；项目级 `<项目>/.pi/settings.json` 里手写的 `defaultModel` 同样被顶掉。**Ctrl+S 那半条需 pi ≥ 0.84**（0.81–0.83 的 `/model` 列表里没有「set as default」这个动作，且每次切换都会写 `defaultModel`；那几版的 Ctrl+S 绑的是 `/scoped-models` 的「保存白名单」`app.models.save`，别按错——按下去存的正是会顶掉 pin 的那份白名单），在老版本上只验项目级那半条
 - [ ] 上次的模型对应实例已 `/logout` 或已下架：不报错、保持 pi 自己的选择（分支 `model-unavailable` / `no-auth`）
-- [ ] 上次的模型还没进本地目录缓存（清掉 `~/.pi/agent/models.json` 里该实例的条目后立刻重开）：本次判 `model-unavailable` 不恢复，等后台刷新完再开一次即回到它
+- [ ] 上次的模型还没进本地目录缓存（清掉 `~/.pi/agent/models-store.json` 里该实例的条目后立刻重开）：本次判 `model-unavailable` 不恢复，等后台刷新完再开一次即回到它
+- [ ] **恢复的副作用**：让 pi 启动时落在不支持思考的模型上、而 `last-model.json` 记的是 reasoning 模型 → 恢复后会话里除 `model_change` 外还多一条 `thinking_level_change`（档位真的变了才有这条：旧模型不支持思考时取的是 `defaultThinkingLevel ?? "medium"`，把它显式设成 `off` 就复现不出来）；在 pi 0.81–0.83 上确认 `settings.json` 的 `defaultModel` 被写、`defaultThinkingLevel` 可能被改写（**0.84 起两者都不应再写**，README 已这么写但尚未真机核实）
 - [ ] `~/.pi/agent/llmgates/last-model.json` 写成半截 JSON：启动不报错，按「没有记录」处理
 
 **安全 / HTTP**

@@ -1,6 +1,6 @@
 import { existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -98,6 +98,17 @@ async function withArgv(argv: string[], run: () => Promise<void>): Promise<void>
 		process.argv = original;
 	}
 }
+
+/**
+ * `resolveRestoreLastModel` and `logDebug` read the real environment, so a value
+ * exported in the developer's shell would decide what these tests believe they
+ * are pinning. Cleared before every test rather than only after.
+ */
+const envKeys = ["LLMGATES_RESTORE_LAST_MODEL", "LLMGATES_DEBUG"] as const;
+
+beforeEach(() => {
+	for (const key of envKeys) delete process.env[key];
+});
 
 describe("hasCliModelSelection", () => {
 	it("matches pi's parser: only a flag with a value counts", () => {
@@ -400,21 +411,41 @@ describe("session_start against a real session", () => {
 		};
 	}
 
+	/**
+	 * Captures the handler's debug line too: "did not switch" on its own is a weak
+	 * assertion — an unrelated breakage (a record that failed to land, say) would
+	 * satisfy it just as well as the branch under test.
+	 */
 	async function startSession(
 		agentDir: string,
 		reason: string,
 		session: SessionManager,
 		argv: string[] = [],
-	): Promise<ReturnType<typeof fakePi>> {
+	): Promise<ReturnType<typeof fakePi> & { outcome: string | undefined }> {
 		const fake = fakePi();
 		registerLastModelRestore(fake.pi, agentDir);
-		await withArgv(argv, async () => {
-			await fake.handlers.get("session_start")?.(
-				{ type: "session_start", reason },
-				ctxFor(session, agentDir),
-			);
-		});
-		return fake;
+		const lines: string[] = [];
+		const info = vi
+			.spyOn(console, "info")
+			.mockImplementation((...args: unknown[]) => {
+				lines.push(args.map(String).join(" "));
+			});
+		process.env.LLMGATES_DEBUG = "1";
+		try {
+			await withArgv(argv, async () => {
+				await fake.handlers.get("session_start")?.(
+					{ type: "session_start", reason },
+					ctxFor(session, agentDir),
+				);
+			});
+		} finally {
+			delete process.env.LLMGATES_DEBUG;
+			info.mockRestore();
+		}
+		const outcome = lines
+			.join("\n")
+			.match(/last model restore \([^)]*\): (\S+)/u)?.[1];
+		return { ...fake, outcome };
 	}
 
 	it("restores on a cold start, whose session pi has already stamped", async () => {
@@ -539,12 +570,13 @@ describe("session_start against a real session", () => {
 			writeJson(join(agentDir, "llmgates/config.json"), {
 				restoreLastModel: false,
 			});
-			const { setModel } = await startSession(
+			const { setModel, outcome } = await startSession(
 				agentDir,
 				"startup",
 				freshPiSession(agentDir),
 			);
 			expect(setModel).not.toHaveBeenCalled();
+			expect(outcome).toBe("disabled");
 		} finally {
 			cleanup();
 		}
@@ -554,13 +586,14 @@ describe("session_start against a real session", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			writeLastModel(agentDir, SAVED);
-			const { setModel } = await startSession(
+			const { setModel, outcome } = await startSession(
 				agentDir,
 				"startup",
 				freshPiSession(agentDir),
 				["--model", "cpa1/claude-sonnet-5"],
 			);
 			expect(setModel).not.toHaveBeenCalled();
+			expect(outcome).toBe("cli-model");
 		} finally {
 			cleanup();
 		}
