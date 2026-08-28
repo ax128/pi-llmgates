@@ -426,7 +426,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 1. **记录**：监听 `model_select` 与 `thinking_level_select`，把每次真正切到的模型与思考档位写进 `~/.pi/agent/llmgates/last-model.json`（全局一份，三个字段：provider id、模型 id、思考档位）。`/model` 回车、Ctrl+P 循环、Shift+Tab 换档、扩展切换都算。
 2. **恢复**：新会话建立后把模型改回那一个，**再**把档位设回去。本地还没有记录时（刚装上、刚清过），退回读 pi 的 `defaultProvider` / `defaultModel` / `defaultThinkingLevel`——白名单同样会顶掉那份显式默认，所以这一步是同一个修复。
 
-**顺序是先模型、后档位，不能反。** pi 自己的 `setModel` 会先按「旧模型的档位」（旧模型不支持思考时取设置里的默认档）重新取一次档位、再夹到新模型的能力上限；档位若先设，会被我们自己这次切模型抹掉。**模型已经对了也照样把档位设回去**——启动档位来自 `defaultThinkingLevel`，白名单第一条进场时的那一夹已经把它改写过，「模型没变」并不代表档位没变。
+**顺序是先模型、后档位，不能反。** pi 自己的 `setModel` 会按自己的规则重推导档位并夹到新模型（0.81 从旧模型当前档 / 设置；0.84 从 per-model override 或 `defaultThinkingLevel`）；档位若先设，会被我们自己这次切模型抹掉。**模型已经对了也照样把档位设回去**——启动档位来自 `defaultThinkingLevel`，白名单第一条进场时的那一夹已经把它改写过，「模型没变」并不代表档位没变。
 
 **记录一旦存在，就压过 pi 里显式钉住的默认模型。** `settings.json` 的 `defaultProvider` / `defaultModel` / `defaultThinkingLevel` 只在还没有记录时被当作种子读一次；之后启动看的是记录。这包括 0.84 起在 `/model` 列表里按 **Ctrl+S**「set as default」钉的那一份——按完 Ctrl+S 再 Ctrl+P 切走，下次启动回到的是 Ctrl+P 那个，不是钉住的那个——也包括项目级 `<项目>/.pi/settings.json` 里手写的那一份（pi 会把项目设置合并到全局之上，本扩展有记录时不再参考）。要让钉住的默认说了算，就关掉本功能——但这只在**没配白名单**时成立：`settings.json` 里有 `enabledModels` 而钉住的模型不在其中时，pi 自己的启动也会退回白名单第一条（见上文），关掉本功能同样回不到那份 pin。
 
@@ -437,7 +437,8 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | `/resume` / `/tree` 分叉 / `/reload` | 这些动作的 `reason` 不是 startup/new，交给 pi |
 | 会话里已经有对话内容 | 含 `pi -c` / `--session` 打开的老会话。CLI 打开会话时 reason 仍是 `startup`，所以按有没有对话内容跳过，不认 `-c` 这个旗标 |
 | 命令行带 `--model` / `--models` | `--model` 是单次运行钉死的模型，优先于「上次用的」；`--models` 是本次运行临时换了一份白名单，一并不介入（长期存在 `settings.json` 里的 `enabledModels` 则照常恢复）。这一条连档位一起跳过 |
-| 上次的模型已下架、无凭证，或当前就是它 | 模型保持 pi 自己的选择不动。**档位仍然会设回去**——它是独立的偏好，而 pi 启动读的正是被那一夹改写过的键 |
+| 命令行带 `--thinking` | 模型照常恢复，档位不介入（`thinking=cli-thinking`）：这是本次运行钉死的档。`--model provider/id:high` 走上一行，模型和档都跳过 |
+| 上次的模型已下架、无凭证，或当前就是它 | 模型保持 pi 自己的选择不动。**档位仍然会设到此刻当前的那个模型上**（不是设到已下架的那个上）——它是独立的偏好，而 pi 启动读的正是被那一夹改写过的键 |
 | 记录里没有档位（0.5.0 及更早写的文件），或档位是 pi 不认识的值 | 只跳过档位那一步，模型照常恢复 |
 
 生效的只有：**冷启动**（`pi`）、**`/new` 开新会话**，以及没发过消息的空会话（`pi -c` 打开也一样）——pi 自己也不会从 stamp 恢复模型，和冷启动同等对待。
@@ -445,20 +446,20 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 已知代价与边界：
 
 - 每次真正发生恢复时，会话里多一条 `model_change` 条目；档位真的动了还会多一条 `thinking_level_change`（pi 切模型时会先按新模型能力重夹一次，我们再把记录里的档位设回去，两步都只在档位真的变化时才落条目）。在 pi 0.81–0.83 上还会顺带把模型写进 `settings.json` 的 `defaultModel`、并改写 `defaultThinkingLevel`（那几版扩展侧 `setModel` / `setThinkingLevel` 一律持久化）；0.84 起两者都由 `options.persist` 决定，扩展侧这两个调用都不传，所以都不写。
-- **记的是你要的档，不是当前生效的档。** pi 会把设进去的档位夹到当前模型的能力上限，所以在只支持到 `low` 的模型上恢复 `high` 会落成 `low`，而 `last-model.json` 里仍然是 `high`——换回吃得下 `high` 的模型时它就回来了。恢复自己触发的 `thinking_level_select` 不回写文件，正是为了让这一夹吃不掉你的档位。
-- `thinking_level_select` 事件上**没有 `source` 字段**（切模型时的自动重夹与你手动换档在事件层面分不出来），所以挡住自身回写靠的是恢复期间的内部闩，不是事件本身。
-- 本地一条记录都还没有时，只换档位、不切模型**不写文件**（没有模型可挂）——这一段由 pi 自己的 `defaultThinkingLevel` 兜住，下次启动走种子路径。
+- **恢复时记的是你要的档，不是夹完生效的档。** 启动恢复把 `high` 设到只支持 `low` 的模型上，会话里落成 `low`，而 `last-model.json` 仍是 `high`——这只挡住**恢复自己触发的那一夹**。会话里你切到上限更低的模型时，pi 的自动重夹会发 `thinking_level_select`，记录会改成夹后的值；再切回去不会凭空变回 `high`。
+- `thinking_level_select` 事件上**没有 `source` 字段**（切模型时的自动重夹与你手动换档在事件层面分不出来），所以挡住恢复期回写靠的是内部闩（一直持有到 `setModel` / `setThinkingLevel` 触发的事件微任务跑完），不是事件本身。
+- 本地还没有记录时，只换档位也会写文件：挂在**当前模型**上。0.84 起 Shift+Tab 是 `persist: false`，不能再靠 `defaultThinkingLevel` 兜下次启动。没有当前模型（没有 ctx）才不写。
 - 文件里的档位不认识（手工写错，或未来 pi 新增的档）时**只丢档位、不丢模型**：模型照常恢复，档位交回 pi。不原样透传是有意的——pi 对认不出的档位会夹到 `availableLevels[0]`，在多数模型上就是 `off`，一个笔误会静默把思考关掉。代价是 pi 将来新增的档位要等这里补上才认。
-- 上次的模型如果还不在本地目录缓存里（刚清过 `~/.pi/agent/models-store.json` 里该实例的条目，或它是上游刚加的），本次启动判为 `model-unavailable` 不恢复模型（档位照常恢复）；目录在后台刷新完成后，下次启动即可回到它。
-- 记的是**显式切换**：`/model` 回车、Ctrl+P 循环、Shift+Tab 换档、扩展 `setModel` / `setThinkingLevel`（**别的扩展**为某类任务临时换模型或换档也会被记下）。启动时用 `--model` / `--thinking` 指定的**不算**——pi 只在切换时发事件，档位在启动时被设成同一个值不触发事件，所以 CI 里的 `pi --model … -p …` 不会覆盖你手上的记录。pi 恢复会话自己的模型时目前不发 `model_select`；若将来发出 `source: "restore"`，也不计入。因此从老会话直接 `/new`，回到的是上一次显式切过的那一组。
+- 上次的模型如果还不在本地目录缓存里（刚清过 `~/.pi/agent/models-store.json` 里该实例的条目，或它是上游刚加的），本次启动判为 `model-unavailable` 不恢复模型（档位照常设到**当前**模型上）；目录在后台刷新完成后，下次启动即可回到它。
+- 记的是**显式切换**：`/model` 回车、Ctrl+P 循环、Shift+Tab 换档、扩展 `setModel` / `setThinkingLevel`（**别的扩展**为某类任务临时换模型或换档也会被记下）。启动时用 `--model` / `--thinking` 指定的**不算**——pi 只在切换时发事件，档位在启动时被设成同一个值不触发事件，所以 CI 里的 `pi --model … -p …` 不会覆盖你手上的记录。`--thinking` 还会让本次启动**不恢复档位**（模型仍恢复）。pi 恢复会话自己的模型时目前不发 `model_select`；若将来发出 `source: "restore"`，也不计入。因此从老会话直接 `/new`，回到的是上一次显式切过的那一组。
 - 恢复自己触发的 `model_select` / `thinking_level_select` 不回写 `last-model.json`，避免把别的 pi 刚记下的切换盖回去。
-- **非交互运行同样生效**：`pi -p "..."` 与 RPC 模式走的是同一个 `session_start`，脚本 / CI 里也会被切到上次用的模型与档位。要钉死就显式带 `--model`，或用 `LLMGATES_RESTORE_LAST_MODEL=0`。
+- **非交互运行同样生效**：`pi -p "..."` 与 RPC 模式走的是同一个 `session_start`，脚本 / CI 里也会被切到上次用的模型与档位。要钉死模型带 `--model`，要钉死档位带 `--thinking`，或用 `LLMGATES_RESTORE_LAST_MODEL=0`。
 - 若恢复出的模型**不在** `enabledModels` 里，之后第一次按 Ctrl+P 会跳到白名单第 2 条（pi 在当前模型不在列表里时从索引 0 开始往后走，第 1 条被跳过），Ctrl+N 则跳到最后一条。
-- 同机开多个 pi 时是「最后一次切换胜出」：文件整份原子覆盖，没有读-改-写，所以不需要锁，也不会互相吃掉内容。
+- 同机开多个 pi 时是「最后一次整份写入胜出」：每次写都是原子覆盖整份文件，但写之前会读出另一半字段（切模型要带上已记的档，换档要带上已记的模型），两个进程交错切模型和换档时，后写的那份可能带上过期的另一半。这是偏好文件的 last-writer-wins，不加锁。
 - 记录始终进行，即使恢复被关掉——否则重新打开开关时会没有可恢复的东西。文件里只有 provider id、模型 id 与思考档位。
 - 关闭用 `"restoreLastModel": false` 或 `LLMGATES_RESTORE_LAST_MODEL=0`；一个开关同时管模型与档位，不另加键。关掉后启动行为与 pi 原样一致。
 
-`LLMGATES_DEBUG=1` 会打印每次启动的判定结果，模型与档位各一段（`model=restored thinking=restored`、`model=already-selected thinking=restored`、`model=cli-model thinking=skipped` …），用来确认到底走了哪条分支。
+`LLMGATES_DEBUG=1` 会打印每次启动的判定结果，模型与档位各一段（`model=restored thinking=restored`、`model=already-selected thinking=restored`、`model=cli-model thinking=skipped`、`model=restored thinking=cli-thinking` …），用来确认到底走了哪条分支。
 
 ## 配置
 

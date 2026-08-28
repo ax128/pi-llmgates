@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	hasCliModelSelection,
+	hasCliThinkingSelection,
 	hasConversationEntries,
 	lastModelFilePath,
 	parseThinkingLevel,
@@ -140,6 +141,16 @@ describe("hasCliModelSelection", () => {
 	});
 });
 
+describe("hasCliThinkingSelection", () => {
+	it("matches pi's parser: only --thinking with a value counts", () => {
+		expect(hasCliThinkingSelection(["--thinking", "high"])).toBe(true);
+		expect(hasCliThinkingSelection(["--thinking"])).toBe(false);
+		expect(hasCliThinkingSelection(["--model", "vip/glm-5.3:high"])).toBe(false);
+		expect(hasCliThinkingSelection(["-c", "explain --thinking usage"])).toBe(false);
+		expect(hasCliThinkingSelection([])).toBe(false);
+	});
+});
+
 describe("parseThinkingLevel", () => {
 	it("accepts exactly the levels pi names", () => {
 		for (const level of [
@@ -240,6 +251,18 @@ describe("restoreLastModel", () => {
 			expect(setModel).not.toHaveBeenCalled();
 			expect(setThinkingLevel).not.toHaveBeenCalled();
 		}
+	});
+
+	it("restores the model but not the level when --thinking is on the command line", async () => {
+		const { deps, setModel, setThinkingLevel } = makeDeps({
+			argv: ["--thinking", "high"],
+		});
+		await expect(restoreLastModel("startup", deps)).resolves.toEqual({
+			model: "restored",
+			thinkingLevel: "cli-thinking",
+		});
+		expect(setModel).toHaveBeenCalledTimes(1);
+		expect(setThinkingLevel).not.toHaveBeenCalled();
 	});
 
 	it("does nothing when the setting is off", async () => {
@@ -592,10 +615,11 @@ describe("thinking_level_select recording", () => {
 	});
 
 	/**
-	 * Nothing to hang the level on, and no reason to invent a model for it: pi's
-	 * own `defaultThinkingLevel` still covers that start, through the seed.
+	 * Nothing to hang the level on only when the session has no current model.
+	 * 0.84's Shift+Tab does not persist `defaultThinkingLevel`, so a start that
+	 * never switched models still has to write.
 	 */
-	it("writes nothing while no model has been recorded", () => {
+	it("writes nothing while no model has been recorded and none is current", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			const { pi, handlers } = fakePi();
@@ -605,6 +629,21 @@ describe("thinking_level_select recording", () => {
 				undefined,
 			);
 			expect(existsSync(lastModelFilePath(agentDir))).toBe(false);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("hangs the level on the current model when nothing has been recorded yet", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const { pi, handlers } = fakePi();
+			registerLastModelRestore(pi, agentDir);
+			handlers.get("thinking_level_select")?.(
+				{ type: "thinking_level_select", level: SAVED_LEVEL },
+				{ model: model(SAVED.provider, SAVED.modelId) },
+			);
+			expect(readLastModel(agentDir)).toEqual(SAVED_RECORD);
 		} finally {
 			cleanup();
 		}
@@ -863,6 +902,33 @@ describe("session_start against a real session", () => {
 		}
 	});
 
+	it("still ignores a thinking_level_select queued after setThinkingLevel returns", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeLastModel(agentDir, SAVED_RECORD);
+			const { pi, handlers, setThinkingLevel } = fakePi();
+			registerLastModelRestore(pi, agentDir);
+			setThinkingLevel.mockImplementation(() => {
+				queueMicrotask(() => {
+					void handlers.get("thinking_level_select")?.(
+						{ type: "thinking_level_select", level: "off" },
+						undefined,
+					);
+				});
+			});
+			await withArgv([], async () => {
+				await handlers.get("session_start")?.(
+					{ type: "session_start", reason: "startup" },
+					ctxFor(freshPiSession(agentDir), agentDir),
+				);
+			});
+			expect(setThinkingLevel).toHaveBeenCalledWith(SAVED_LEVEL);
+			expect(readLastModel(agentDir)).toEqual(SAVED_RECORD);
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("does nothing with neither a record nor a pinned default", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
@@ -913,6 +979,24 @@ describe("session_start against a real session", () => {
 			expect(setModel).not.toHaveBeenCalled();
 			expect(setThinkingLevel).not.toHaveBeenCalled();
 			expect(outcome).toBe("cli-model");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("yields the level to --thinking on the real process.argv, but still restores the model", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeLastModel(agentDir, SAVED_RECORD);
+			const { setModel, setThinkingLevel, outcome, levelOutcome } =
+				await startSession(agentDir, "startup", freshPiSession(agentDir), [
+					"--thinking",
+					"off",
+				]);
+			expect(setModel).toHaveBeenCalledTimes(1);
+			expect(setThinkingLevel).not.toHaveBeenCalled();
+			expect(outcome).toBe("restored");
+			expect(levelOutcome).toBe("cli-thinking");
 		} finally {
 			cleanup();
 		}

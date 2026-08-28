@@ -232,17 +232,18 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
 - [ ] `pi -c` / `/resume` 打开一个**有消息**的老会话：**不介入**（`model=session-restored` 或 `model=not-fresh-start`，`thinking=skipped`），模型与档位仍是该会话自己的
 - [ ] 打开过但没发过消息的会话用 `pi -c`：与冷启动同等对待（`model=restored` / `model=already-selected`），不是「一律不碰」
 - [ ] `pi --model <provider>/<id>` 与 `pi --models <pattern>`：**不介入**（`model=cli-model thinking=skipped`——`--model` 连档位一起跳过）
+- [ ] `pi --thinking <level>`：模型照常恢复，档位不介入（`model=restored thinking=cli-thinking` 或 `model=already-selected thinking=cli-thinking`）
 - [ ] `LLMGATES_RESTORE_LAST_MODEL=0`（或 `"restoreLastModel": false`）后重开：启动模型与装扩展前一致；**但 `~/.pi/agent/llmgates/last-model.json` 仍在更新**
 - [ ] 删掉 `last-model.json`、`settings.json` 里留着 `defaultProvider` / `defaultModel`：冷启动回到那份钉住的默认（种子路径，`model=restored`）；`settings.json` 里再留一个 `defaultThinkingLevel`，档位也从这份种子回来（`thinking=restored`）
 - [ ] 🖐 **记录压过钉住的默认**（有意行为，README 已写）：`/model` 里按 Ctrl+S 钉一个模型，再 Ctrl+P 切到另一个 → 重开 `pi` 回到 Ctrl+P 那个；项目级 `<项目>/.pi/settings.json` 里手写的 `defaultModel` 同样被顶掉。**Ctrl+S 那半条需 pi ≥ 0.84**（0.81–0.83 的 `/model` 列表里没有「set as default」这个动作，且每次切换都会写 `defaultModel`；那几版的 Ctrl+S 绑的是 `/scoped-models` 的「保存白名单」`app.models.save`，别按错——按下去存的正是会顶掉 pin 的那份白名单），在老版本上只验项目级那半条
-- [ ] 上次的模型对应实例已 `/logout` 或已下架：不报错、模型保持 pi 自己的选择（`model=model-unavailable` / `model=no-auth`）；**档位仍然会设回去**（`thinking=restored`）
+- [ ] 上次的模型对应实例已 `/logout` 或已下架：不报错、模型保持 pi 自己的选择（`model=model-unavailable` / `model=no-auth`）；**档位设到此刻当前的模型上**（`thinking=restored`），不是设到已下架的那个上
 - [ ] 上次的模型还没进本地目录缓存（清掉 `~/.pi/agent/models-store.json` 里该实例的条目后立刻重开）：本次判 `model=model-unavailable` 不恢复模型，等后台刷新完再开一次即回到它
 - [ ] **档位跟着模型一起回来**：Shift+Tab（rpc 用 `set_thinking_level`）把档位换到一个非默认值、再切一个白名单外的模型 → 完全退出重开，`get_state` 里模型与 `thinkingLevel` **都**是上次那一组（`model=restored thinking=restored`）
 - [ ] **模型没变也要恢复档位**：让上次的模型正好等于 pi 启动会选中的那一个，只把档位调走 → 重开后判定 `model=already-selected thinking=restored`，档位真的回到记录里那一档
-- [ ] **档位被夹时记录不被改写**：把 `last-model.json` 的 `thinkingLevel` 手写成 `high`、让恢复落在上限只有 `low` 的模型上 → 生效的是 `low`，而文件里仍然是 `high`（夹后的值**不**回写）；再换回吃得下 `high` 的模型，档位回到 `high`
+- [ ] **档位被夹时记录不被改写**：把 `last-model.json` 的 `thinkingLevel` 手写成 `high`、让恢复落在上限只有 `low` 的模型上 → 生效的是 `low`，而文件里仍然是 `high`（夹后的值**不**回写）。再完全退出、把记录里的模型改成吃得下 `high` 的那个再开，档位回到 `high`。会话内 Ctrl+P 切到低上限模型会更新记录，不在本条范围内
 - [ ] **0.5.0 老文件兼容**：手工删掉 `last-model.json` 里的 `thinkingLevel` 键 → 模型照常恢复，判定 `thinking=no-saved-level`，档位交回 pi
 - [ ] **档位值不认识**：把 `thinkingLevel` 手写成 `ludicrous` → 同样 `thinking=no-saved-level`，思考**没有**被静默关成 `off`
-- [ ] **一条记录都没有时只换档位**：删掉 `last-model.json` 后只换档、不切模型 → 文件**不出现**（这一段由 pi 自己的 `defaultThinkingLevel` 兜住）
+- [ ] **一条记录都没有时只换档位**：删掉 `last-model.json` 后只换档、不切模型 → 文件**出现**，内容是当前模型 + 该档（rpc 用 `set_thinking_level`）；没有当前模型才不写
 - [ ] **恢复的副作用**：让 pi 启动时落在不支持思考的模型上、而 `last-model.json` 记的是 reasoning 模型 → 恢复后会话里除 `model_change` 外还多一条 `thinking_level_change`（档位真的变了才有这条）；在 pi 0.81–0.83 上确认 `settings.json` 的 `defaultModel` 被写、`defaultThinkingLevel` 被改写（**0.84 起两者都不写**——本功能的门禁在 pi 0.84.3 上实测：恢复到另一个模型后 `defaultModel` 纹丝不动，源码里 `setModel` / `setThinkingLevel` 都只在 `options.persist` 时才落盘，而扩展侧这两个调用都不传 options）。🖐 **`thinking_level_change` 那半条要有一个不支持思考的模型**——网关目录里全是 `reasoning: true` 时复现不出来，可跳过并在回执里注明
 - [ ] `~/.pi/agent/llmgates/last-model.json` 写成半截 JSON：启动不报错，按「没有记录」处理
 
@@ -330,7 +331,7 @@ node -e 'const cs=[{type:"get_state",id:"a"},{type:"cycle_model",id:"c"},{type:"
   let t=300; for(const c of cs){ setTimeout(()=>process.stdout.write(JSON.stringify(c)+"\n"), t); t+=2500 }
   setTimeout(()=>{}, t+3000)' \
   | PI_CODING_AGENT_DIR="$ISO" LLMGATES_DEBUG=1 timeout 60 pi --mode rpc >out.jsonl 2>&1
-grep "last model restore" out.jsonl      # model=restored/cli-model/session-restored/… thinking=restored/skipped/…
+grep "last model restore" out.jsonl      # model=restored/cli-model/session-restored/… thinking=restored/skipped/cli-thinking/…
 ```
 
 几个踩过的点：

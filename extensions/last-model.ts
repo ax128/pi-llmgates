@@ -34,9 +34,9 @@
  * level actually moves.
  *
  * The level is applied AFTER the model, never before: pi's own `setModel`
- * re-derives the level from the OUTGOING model (or from settings, when that one
- * had no thinking) and clamps it to the incoming one, so a level set first would
- * be overwritten by our own model switch.
+ * re-derives the level (0.81 from the outgoing model / settings; 0.84 from a
+ * per-model override or `defaultThinkingLevel`) and clamps it to the incoming
+ * one, so a level set first would be overwritten by our own model switch.
  *
  * Restoring deliberately does nothing when
  * - the start is not fresh (`resume` / `fork` / `reload`) — those reasons are
@@ -46,11 +46,14 @@
  *   the skip is the conversation, not the flag. An empty continued session is
  *   treated like a cold start: pi itself would not restore a model from stamps,
  * - `--model` / `--models` is on the command line — an explicit per-run choice
- *   outranks a remembered one,
+ *   outranks a remembered one (level included),
+ * - `--thinking` is on the command line — the model still restores, the level
+ *   does not: that flag is this run's thinking pin,
  * - the saved model is gone, has no configured auth, or is already selected —
- *   pi's own choice of model then stays. The thinking level is still put back in
- *   all three cases: it is a preference of its own, and pi's startup takes it
- *   from the very settings key that a re-clamp overwrites.
+ *   pi's own choice of model then stays. The thinking level is still put back
+ *   onto *whatever model is current* in all three cases: it is a preference of
+ *   its own, and pi's startup takes it from the very settings key that a
+ *   re-clamp overwrites.
  */
 
 import { readFileSync } from "node:fs";
@@ -89,6 +92,7 @@ export type LastModelOutcome =
  */
 export type ThinkingLevelOutcome =
 	| "skipped"
+	| "cli-thinking"
 	| "no-saved-level"
 	| "already-selected"
 	| "restored";
@@ -193,9 +197,12 @@ export function readLastModel(agentDir: string): SavedModelRef | undefined {
 }
 
 /**
- * Single-key file written whole, so no lock is needed: there is no
- * read-modify-write to lose, and with two pi processes open "last writer wins"
- * is exactly the semantics being stored.
+ * Each write replaces the file atomically, but both listeners first *read* the
+ * other field: `model_select` carries the stored level across, and
+ * `thinking_level_select` carries the stored model. Two pi processes that
+ * interleave a model switch and a level change can therefore lose one field —
+ * last writer wins for the whole record, not per key. That matches "last used"
+ * for a preference file; a lock would not merge the two updates either.
  *
  * `thinkingLevel` is omitted when undefined (JSON.stringify drops it), which is
  * what keeps a record written by an older build readable by both.
@@ -274,6 +281,31 @@ export function hasCliModelSelection(argv: readonly string[]): boolean {
 	return false;
 }
 
+/**
+ * Same scan for `--thinking`: a value must follow, and there is no short alias.
+ * `--model provider/id:high` is already covered by `hasCliModelSelection`.
+ */
+export function hasCliThinkingSelection(argv: readonly string[]): boolean {
+	for (let index = 0; index < argv.length; index += 1) {
+		const arg = argv[index];
+		if (arg === "--thinking" && index + 1 < argv.length) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/** Hang a thinking level on whatever model the event context currently holds. */
+function modelRefFromContext(ctx: unknown): SavedModelRef | undefined {
+	if (!ctx || typeof ctx !== "object") return undefined;
+	const model = (ctx as { model?: { provider?: unknown; id?: unknown } }).model;
+	if (typeof model?.provider !== "string" || typeof model.id !== "string") {
+		return undefined;
+	}
+	if (!model.provider.trim() || !model.id.trim()) return undefined;
+	return { provider: model.provider, modelId: model.id };
+}
+
 function skippedRestore(model: LastModelOutcome): LastModelRestoreResult {
 	return { model, thinkingLevel: "skipped" };
 }
@@ -302,7 +334,8 @@ async function restoreSavedModel(
  * startup takes the level from `defaultThinkingLevel`, which the scope's first
  * model has already re-clamped and overwritten by the time we get here, so an
  * unchanged model still needs its level put back. A model that could not be
- * restored is likewise better off on the level the user last chose.
+ * restored is likewise better off on the level the user last chose — applied to
+ * whichever model is current, not to the missing one.
  *
  * The set call is not conditional on the level being reachable: pi clamps to the
  * model's ceiling, so asking for "high" on a model that stops at "low" lands on
@@ -333,6 +366,9 @@ export async function restoreLastModel(
 	// Model first, level second — see the header: pi's own `setModel` re-derives
 	// the level, so anything set before it would not survive the switch.
 	const model = await restoreSavedModel(saved, deps);
+	if (hasCliThinkingSelection(deps.argv)) {
+		return { model, thinkingLevel: "cli-thinking" };
+	}
 	return { model, thinkingLevel: restoreSavedThinkingLevel(saved.thinkingLevel, deps) };
 }
 
@@ -419,9 +455,13 @@ export function registerLastModelRestore(
 	 * `restoring` is the same re-entrancy latch the endpoint reconciler uses:
 	 * `pi.setModel` emits `model_select` with source `"set"` — and, through its
 	 * own re-clamp, `thinking_level_select` — while `pi.setThinkingLevel` emits
-	 * the latter directly. Writing any of those back would clobber another
-	 * process's more recent switch, and would let a clamp overwrite the level the
-	 * user actually asked for.
+	 * the latter directly. pi fires `thinking_level_select` with `void emit()`,
+	 * so later handlers (and the continuation after emit's first `await`) run as
+	 * microtasks after `setThinkingLevel` returns. The latch is raised by the
+	 * set wrappers and dropped only on a queued microtask after restore finishes,
+	 * so those continuations still see it. Writing any of those events back would
+	 * clobber another process's more recent switch, and would let a restore clamp
+	 * overwrite the level the user actually asked for.
 	 */
 	let restoring = false;
 	pi.on("model_select", (event: ModelSelectLikeEvent) => {
@@ -451,18 +491,26 @@ export function registerLastModelRestore(
 	});
 
 	/**
-	 * The level half. With no model recorded yet there is nothing to hang the
-	 * level on, and nothing is written: pi's own `defaultThinkingLevel` still
-	 * covers that start, through the seed in `readPinnedDefaultModel`.
+	 * The level half. With no model recorded yet, hang the level on whatever
+	 * model the session is currently on: 0.84's Shift+Tab is `persist: false`, so
+	 * `defaultThinkingLevel` is not a fallback, and a start that never switched
+	 * models would otherwise lose the level. No current model (no ctx) still
+	 * writes nothing.
 	 */
-	pi.on("thinking_level_select", (event: ThinkingLevelSelectLikeEvent) => {
+	pi.on("thinking_level_select", (event: ThinkingLevelSelectLikeEvent, ctx) => {
 		if (restoring) return;
 		const level = parseThinkingLevel(event.level);
 		if (!level) return;
 		try {
 			const stored = readLastModel(agentDir);
-			if (!stored || stored.thinkingLevel === level) return;
-			writeLastModel(agentDir, { ...stored, thinkingLevel: level });
+			if (stored) {
+				if (stored.thinkingLevel === level) return;
+				writeLastModel(agentDir, { ...stored, thinkingLevel: level });
+				return;
+			}
+			const current = modelRefFromContext(ctx);
+			if (!current) return;
+			writeLastModel(agentDir, { ...current, thinkingLevel: level });
 		} catch (error) {
 			logDebug(`last thinking level not recorded: ${errorSummary(error)}`);
 		}
@@ -491,20 +539,12 @@ export function registerLastModelRestore(
 				getCurrentModel: () => ctx.model,
 				setModel: async (model) => {
 					restoring = true;
-					try {
-						return await pi.setModel(model);
-					} finally {
-						restoring = false;
-					}
+					return await pi.setModel(model);
 				},
 				getThinkingLevel: () => parseThinkingLevel(pi.getThinkingLevel()),
 				setThinkingLevel: (level) => {
 					restoring = true;
-					try {
-						pi.setThinkingLevel(level);
-					} finally {
-						restoring = false;
-					}
+					pi.setThinkingLevel(level);
 				},
 				hasSessionEntries: () =>
 					hasConversationEntries(ctx.sessionManager.getBranch()),
@@ -515,6 +555,10 @@ export function registerLastModelRestore(
 			);
 		} catch (error) {
 			logWarn(`Last model restore failed: ${errorSummary(error)}`);
+		} finally {
+			queueMicrotask(() => {
+				restoring = false;
+			});
 		}
 	});
 }

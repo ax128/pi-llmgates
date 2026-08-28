@@ -12,11 +12,12 @@
 
 - **新会话现在连思考档位一起恢复（默认开启，沿用 `restoreLastModel` 这一个开关）。** 0.5.0 只记模型：`last-model.json` 里只有 provider id 与模型 id，重开 pi 回到了上次的模型，档位却要重新按一遍 Shift+Tab。pi 启动时的档位取自 `settings.json` 的 `defaultThinkingLevel`，然后按启动落在的那个模型的能力上限夹一次——白名单第一条上限更低时，上次用的档就在这一夹里没了；而写这个键的 `setThinkingLevel` 分不清「你按 Shift+Tab 换的档」和「切模型时自动夹出来的档」，两种都往同一个键里写，所以那份设置本身也不是一份可靠的「上次用的档」。
   - `last-model.json` 新增第三个字段 `thinkingLevel`。**旧文件兼容**：0.5.0 及更早写的记录没有这个字段，模型照常恢复、只跳过档位那一步；写回时档位为空则整个键不落盘，老版本仍然读得动。
-  - 记录侧新增 `thinking_level_select` 监听（Shift+Tab 换档、扩展 `setThinkingLevel`，以及 pi 切模型时的自动重夹都算）。本地一条记录都还没有时，只换档位、不切模型**不写文件**——没有模型可挂，这一段由 pi 自己的 `defaultThinkingLevel` 兜住，下次启动走种子路径。
-  - 恢复顺序是**先模型、后档位**：pi 自己的 `setModel` 会先按旧模型的档位重新取一次、再夹到新模型的能力上限，档位若先设会被这次切模型抹掉。**模型已经对了也照样把档位设回去**——启动档位来自被那一夹改写过的 `defaultThinkingLevel`，「模型没变」并不代表档位没变；上次的模型已下架或无凭证时同样照常恢复档位。
-  - 恢复自己触发的 `model_select` / `thinking_level_select` 都不回写文件。`thinking_level_select` 事件上**没有 `source` 字段**（自动重夹与手动换档在事件层面分不出来），挡住自身回写靠的是恢复期间的内部闩——也正因如此，把 `high` 恢复到只支持到 `low` 的模型上时生效的是 `low`，而记录里仍然是 `high`，换回吃得下的模型时它就回来了。
+  - 记录侧新增 `thinking_level_select` 监听（Shift+Tab 换档、扩展 `setThinkingLevel`，以及 pi 切模型时的自动重夹都算）。本地还没有记录时，只换档位也会写文件，挂在当前模型上（0.84 起 Shift+Tab 不写 `defaultThinkingLevel`，不能靠种子兜下次启动）；没有当前模型才不写。
+  - 恢复顺序是**先模型、后档位**：pi 自己的 `setModel` 会重推导档位并夹到新模型，档位若先设会被这次切模型抹掉。**模型已经对了也照样把档位设回去**；上次的模型已下架或无凭证时，档位加在**当前**模型上。命令行 `--thinking` 只跳过档位（`thinking=cli-thinking`），模型仍恢复；`--model` / `--models` 两者都跳过。
+  - 恢复自己触发的 `model_select` / `thinking_level_select` 都不回写文件（闩持有到这些事件的微任务跑完）。`thinking_level_select` 事件上**没有 `source` 字段**。启动恢复把 `high` 夹成 `low` 时记录仍是 `high`；会话里切到低上限模型则自动重夹会更新记录。
   - 文件里的档位不认识（手工写错，或未来 pi 新增的档）时**只丢档位、不丢模型**：不原样透传是有意的——pi 对认不出的档位会夹到 `availableLevels[0]`，在多数模型上就是 `off`，一个笔误会静默把思考关掉。代价是 pi 将来新增的档位要等扩展补上才认。
   - 种子路径一并跟上：本地还没有记录时，除 `defaultProvider` / `defaultModel` 外也读 pi 的 `defaultThinkingLevel`。
+  - 同机多个 pi 交错切模型与换档时，后写的那份可能带上过期的另一半（每次写前会读出另一字段）。整份原子覆盖，不加锁。
   - `LLMGATES_DEBUG=1` 的启动判定行**改了格式**，模型与档位各一段：`model=restored thinking=restored`（原先只有一个 `restored`）。对着它做脚本判断的请一并改。
   - **不新增开关**：`restoreLastModel` / `LLMGATES_RESTORE_LAST_MODEL` 同时管模型与思考档位。
 

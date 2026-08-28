@@ -57,9 +57,9 @@ export default function (pi: ExtensionAPI): void {
 	}
 
 	/**
-	 * Guarded on its own for the same reason: restoring the last used model is
-	 * independent of both the gateways and the editor, so neither a broken
-	 * 2api.json nor a failed editor hook may take it down.
+	 * Guarded on its own for the same reason: restoring the last used model and
+	 * thinking level is independent of both the gateways and the editor, so neither
+	 * a broken 2api.json nor a failed editor hook may take it down.
 	 */
 	try {
 		registerLastModelRestore(pi, agentDir);
