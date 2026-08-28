@@ -50,7 +50,7 @@ pi
 
 ## 安装
 
-**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.85.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1、0.83.0 与 0.84.0 也已验证）。
+**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.85.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1、0.83.0、0.84.0 与 0.84.3 也已验证）。
 
 本扩展使用 **native Provider** API，**不支持 pi 0.80.x**。
 
@@ -441,7 +441,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 
 - 每次真正发生恢复时，会话里多一条 `model_change` 条目；若新模型的思考档位与当前不同（pi 切模型时会按新模型的能力重新取一次档位，可能降也可能升——旧模型不支持思考时取的是设置里的默认档位），还会多一条 `thinking_level_change`。在 pi 0.81–0.83 上还会顺带把模型写进 `settings.json` 的 `defaultModel`、并可能改写 `defaultThinkingLevel`（那几版扩展侧 `setModel` 一律持久化）；0.84 起两者都不会。
 - 上次的模型如果还不在本地目录缓存里（刚清过 `~/.pi/agent/models-store.json` 里该实例的条目，或它是上游刚加的），本次启动判为 `model-unavailable` 不恢复；目录在后台刷新完成后，下次启动即可回到它。
-- 记的是**显式切换**：`/model` 回车、Ctrl+P 循环、扩展 `setModel`。pi 恢复会话自己的模型时目前不发 `model_select`；若将来发出 `source: "restore"`，也不计入。因此从老会话直接 `/new`，回到的是上一次显式切过的模型，而不是刚才那个。
+- 记的是**显式切换**：`/model` 回车、Ctrl+P 循环、扩展 `setModel`（**别的扩展**为某类任务临时换模型也会被记下）。启动时用 `--model` 指定的模型**不算**——pi 只在切换时发 `model_select`，所以 CI 里的 `pi --model … -p …` 不会覆盖你手上的记录。pi 恢复会话自己的模型时目前不发 `model_select`；若将来发出 `source: "restore"`，也不计入。因此从老会话直接 `/new`，回到的是上一次显式切过的模型，而不是刚才那个。
 - 恢复自己触发的 `model_select` 不回写 `last-model.json`，避免把别的 pi 刚记下的切换盖回去。
 - **非交互运行同样生效**：`pi -p "..."` 与 RPC 模式走的是同一个 `session_start`，脚本 / CI 里也会被切到上次用的模型。要钉死就显式带 `--model`，或用 `LLMGATES_RESTORE_LAST_MODEL=0`。
 - 若恢复出的模型**不在** `enabledModels` 里，之后第一次按 Ctrl+P 会跳到白名单第 2 条（pi 在当前模型不在列表里时从索引 0 开始往后走，第 1 条被跳过），Ctrl+N 则跳到最后一条。
