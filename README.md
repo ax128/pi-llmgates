@@ -424,20 +424,23 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 1. **记录**：监听 `model_select`，把每次真正切到的模型写进 `~/.pi/agent/llmgates/last-model.json`（全局一份，只有 provider id 与模型 id 两个字段）。`/model` 回车、Ctrl+P 循环、扩展切换都算。
 2. **恢复**：新会话建立后把模型改回那一个。本地还没有记录时（刚装上、刚清过），退回读 pi 的 `defaultProvider` / `defaultModel`——白名单同样会顶掉那份显式默认，所以这一步是同一个修复。
 
+**记录一旦存在，就压过 pi 里显式钉住的默认模型。** `settings.json` 的 `defaultProvider` / `defaultModel` 只在还没有记录时被当作种子读一次；之后启动看的是记录。这包括 0.84 起在 `/model` 列表里按 **Ctrl+S**「set as default」钉的那一份——按完 Ctrl+S 再 Ctrl+P 切走，下次启动回到的是 Ctrl+P 那个，不是钉住的那个——也包括项目级 `<项目>/.pi/settings.json` 里手写的那一份（pi 会把项目设置合并到全局之上，本扩展有记录时不再参考）。要让钉住的默认说了算，就关掉本功能。
+
 **默认开启。** 以下情况**故意不介入**：
 
 | 情况 | 原因 |
 | --- | --- |
 | `/resume` / `/tree` 分叉 / `/reload` | 这些动作的 `reason` 不是 startup/new，交给 pi |
 | 会话里已经有对话内容 | 含 `pi -c` / `--session` 打开的老会话。CLI 打开会话时 reason 仍是 `startup`，所以按有没有对话内容跳过，不认 `-c` 这个旗标 |
-| 命令行带 `--model` / `--models` | 单次运行的显式指定优先于「上次用的」 |
+| 命令行带 `--model` / `--models` | `--model` 是单次运行钉死的模型，优先于「上次用的」；`--models` 是本次运行临时换了一份白名单，一并不介入（长期存在 `settings.json` 里的 `enabledModels` 则照常恢复） |
 | 上次的模型已下架、无凭证，或当前就是它 | 保持 pi 自己的选择不动 |
 
 生效的只有：**冷启动**（`pi`）、**`/new` 开新会话**，以及没发过消息的空会话（`pi -c` 打开也一样）——pi 自己也不会从 stamp 恢复模型，和冷启动同等对待。
 
 已知代价与边界：
 
-- 每次真正发生恢复时，会话里多一条 `model_change` 条目。在 pi 0.81–0.83 上还会顺带把它写进 `settings.json` 的 `defaultModel`（那几版扩展侧 `setModel` 一律持久化）；0.84 起不会。
+- 每次真正发生恢复时，会话里多一条 `model_change` 条目；若新模型的思考档位与当前不同（pi 切模型时会重新夹取），还会多一条 `thinking_level_change`。在 pi 0.81–0.83 上还会顺带把模型写进 `settings.json` 的 `defaultModel`、并可能改写 `defaultThinkingLevel`（那几版扩展侧 `setModel` 一律持久化）；0.84 起两者都不会。
+- 上次的模型如果还不在本地目录缓存里（刚清过 `~/.pi/agent/models.json` 的缓存条目，或它是上游刚加的），本次启动判为 `model-unavailable` 不恢复；目录在后台刷新完成后，下次启动即可回到它。
 - 记的是**显式切换**：`/model` 回车、Ctrl+P 循环、扩展 `setModel`。pi 恢复会话自己的模型时目前不发 `model_select`；若将来发出 `source: "restore"`，也不计入。因此从老会话直接 `/new`，回到的是上一次显式切过的模型，而不是刚才那个。
 - 恢复自己触发的 `model_select` 不回写 `last-model.json`，避免把别的 pi 刚记下的切换盖回去。
 - **非交互运行同样生效**：`pi -p "..."` 与 RPC 模式走的是同一个 `session_start`，脚本 / CI 里也会被切到上次用的模型。要钉死就显式带 `--model`，或用 `LLMGATES_RESTORE_LAST_MODEL=0`。

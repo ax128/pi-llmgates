@@ -404,10 +404,11 @@ describe("session_start against a real session", () => {
 		agentDir: string,
 		reason: string,
 		session: SessionManager,
+		argv: string[] = [],
 	): Promise<ReturnType<typeof fakePi>> {
 		const fake = fakePi();
 		registerLastModelRestore(fake.pi, agentDir);
-		await withArgv([], async () => {
+		await withArgv(argv, async () => {
 			await fake.handlers.get("session_start")?.(
 				{ type: "session_start", reason },
 				ctxFor(session, agentDir),
@@ -520,6 +521,44 @@ describe("session_start against a real session", () => {
 				agentDir,
 				"startup",
 				freshPiSession(agentDir),
+			);
+			expect(setModel).not.toHaveBeenCalled();
+		} finally {
+			cleanup();
+		}
+	});
+
+	/**
+	 * The `enabled` and `argv` deps are one-line lambdas in the handler, so only
+	 * a start driven by a real config file and a real process.argv pins them.
+	 */
+	it("obeys restoreLastModel: false in the real config file", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeLastModel(agentDir, SAVED);
+			writeJson(join(agentDir, "llmgates/config.json"), {
+				restoreLastModel: false,
+			});
+			const { setModel } = await startSession(
+				agentDir,
+				"startup",
+				freshPiSession(agentDir),
+			);
+			expect(setModel).not.toHaveBeenCalled();
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("yields to a --model on the real process.argv", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeLastModel(agentDir, SAVED);
+			const { setModel } = await startSession(
+				agentDir,
+				"startup",
+				freshPiSession(agentDir),
+				["--model", "cpa1/claude-sonnet-5"],
 			);
 			expect(setModel).not.toHaveBeenCalled();
 		} finally {

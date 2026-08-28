@@ -229,7 +229,9 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
 - [ ] `pi --model <provider>/<id>` 与 `pi --models <pattern>`：**不介入**（分支 `cli-model`）
 - [ ] `LLMGATES_RESTORE_LAST_MODEL=0`（或 `"restoreLastModel": false`）后重开：启动模型与装扩展前一致；**但 `~/.pi/agent/llmgates/last-model.json` 仍在更新**
 - [ ] 删掉 `last-model.json`、`settings.json` 里留着 `defaultProvider` / `defaultModel`：冷启动回到那份钉住的默认（种子路径，分支 `restored`）
+- [ ] **记录压过钉住的默认**（有意行为，README 已写）：`/model` 里按 Ctrl+S 钉一个模型，再 Ctrl+P 切到另一个 → 重开 `pi` 回到 Ctrl+P 那个；项目级 `<项目>/.pi/settings.json` 里手写的 `defaultModel` 同样被顶掉
 - [ ] 上次的模型对应实例已 `/logout` 或已下架：不报错、保持 pi 自己的选择（分支 `model-unavailable` / `no-auth`）
+- [ ] 上次的模型还没进本地目录缓存（清掉 `~/.pi/agent/models.json` 里该实例的条目后立刻重开）：本次判 `model-unavailable` 不恢复，等后台刷新完再开一次即回到它
 - [ ] `~/.pi/agent/llmgates/last-model.json` 写成半截 JSON：启动不报错，按「没有记录」处理
 
 **安全 / HTTP**
