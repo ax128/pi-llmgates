@@ -426,20 +426,23 @@ This extension adds the two missing halves:
 1. **Record** — a `model_select` listener writes whichever model was switched to into `~/.pi/agent/llmgates/last-model.json` (one global file, two fields: provider id and model id). `/model` with Enter, Ctrl+P cycling and extension-driven switches all count.
 2. **Restore** — once a fresh session exists, the model is set back to that one. With nothing recorded yet (fresh install, just cleared), it falls back to pi's `defaultProvider` / `defaultModel`: a scope shadows that pin the same way, so it is the same fix.
 
+**Once a record exists, it outranks every explicitly pinned default in pi.** `defaultProvider` / `defaultModel` in `settings.json` is read as a seed only while nothing has been recorded; after that, starts follow the record. That includes the pin written by **Ctrl+S** ("set as default") in the `/model` list from 0.84 on — press Ctrl+S, then cycle away with Ctrl+P, and the next start comes back on the Ctrl+P model, not the pinned one — and it includes a hand-written pin in a project's `<project>/.pi/settings.json` (pi merges project settings over global; this extension stops consulting either once it has a record). Turn the feature off if the pin should win.
+
 **On by default.** It deliberately stays out of the way when:
 
 | Case | Why |
 | --- | --- |
 | `/resume` / a `/tree` fork / `/reload` | those actions arrive with a reason other than startup/new, so pi keeps the model |
 | the session already carries a conversation | including an old chat opened with `pi -c` / `--session`. CLI continue still arrives as `reason: "startup"`, so the skip is the conversation, not the `-c` flag |
-| `--model` / `--models` on the command line | an explicit per-run choice outranks a remembered one |
+| `--model` / `--models` on the command line | `--model` pins the model for this run and outranks a remembered one; `--models` swaps in a different scope just for this run, so it is skipped too (an `enabledModels` scope stored in `settings.json` is still restored over) |
 | the saved model is gone, has no credentials, or is already selected | pi's own choice is left untouched |
 
 That leaves a **cold start** (`pi`), **`/new`**, and an empty continued session (`pi -c` on a session that never sent a message) — pi itself would not restore a model from stamps there, so they are treated the same as a cold start.
 
 Known costs and boundaries:
 
-- Each restore appends one `model_change` entry to the session. On pi 0.81–0.83 it also writes `defaultModel` in `settings.json` as a side effect (extension-side `setModel` persisted unconditionally in those versions); from 0.84 on it does not.
+- Each restore appends one `model_change` entry to the session, plus a `thinking_level_change` when the new model re-clamps the level (pi re-applies the thinking level on every model switch). On pi 0.81–0.83 it also writes `defaultModel` — and possibly `defaultThinkingLevel` — in `settings.json` as a side effect (extension-side `setModel` persisted unconditionally in those versions); from 0.84 on it does neither.
+- If the last model is not in the local catalog cache yet (the cached entries in `~/.pi/agent/models.json` were just cleared, or the model is new upstream), this start reports `model-unavailable` and restores nothing; the next start picks it up once the background catalog refresh has landed.
 - What gets recorded is an **explicit switch**: `/model` with Enter, Ctrl+P cycling, extension `setModel`. pi currently emits no `model_select` when it restores a session's own model; a future `source: "restore"` event is ignored too. Going straight from an old session to `/new` lands on the last model you explicitly switched to, not on that one.
 - A restore-triggered `model_select` does not write `last-model.json` back, so it cannot clobber a newer switch recorded by another pi process.
 - **Non-interactive runs are covered too**: `pi -p "..."` and RPC mode go through the same `session_start`, so scripts and CI get switched to the last used model as well. Pin the model with an explicit `--model`, or set `LLMGATES_RESTORE_LAST_MODEL=0`.

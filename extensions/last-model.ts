@@ -200,8 +200,10 @@ export async function restoreLastModel(
 	const model = deps.findModel(saved.provider, saved.modelId);
 	if (!model) return "model-unavailable";
 
-	// setModel answers false instead of throwing when the provider has no
-	// configured auth; either way pi's own choice stays in place.
+	// `pi.setModel` answers false when the provider is absent from pi's
+	// configured-auth snapshot. A credential that is present but unusable is a
+	// different path: pi's own `setModel` throws there, and the session_start
+	// handler logs it. Either way pi's own choice stays in place.
 	return (await deps.setModel(model)) ? "restored" : "no-auth";
 }
 
@@ -219,6 +221,11 @@ function logDebug(message: string): void {
  * Seed for the very first start, before any switch has been recorded: pi's own
  * `defaultProvider` / `defaultModel`. A scope shadows that pin exactly the way
  * it shadows a remembered model, so honoring it here is the same fix.
+ *
+ * Seed only: once a switch has been recorded, the record wins and this is never
+ * consulted again — including a Ctrl+S "set as default" pin and a project-level
+ * `.pi/settings.json` pin. That is the documented trade of "last used beats
+ * pinned"; `restoreLastModel: false` is how a pin is given the last word.
  *
  * pi's `SettingsManager` rather than a hand-rolled read of settings.json: it
  * applies the global/project merge and the project trust gate, which is exactly
