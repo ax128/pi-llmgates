@@ -52,7 +52,7 @@ Pick **「LLMGates 网关」** in `/login`, then choose the gateway type and fil
 
 ## Installation
 
-**Requirements:** [pi](https://pi.dev), Node **≥ 22.19**, and `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.85.0** (baseline 0.81.1 — tests and typecheck run against that version; 0.82.1, 0.83.0 and 0.84.0 are also verified).
+**Requirements:** [pi](https://pi.dev), Node **≥ 22.19**, and `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.85.0** (baseline 0.81.1 — tests and typecheck run against that version; 0.82.1, 0.83.0, 0.84.0 and 0.84.3 are also verified).
 
 This extension uses the **native Provider** API and does **not** support pi 0.80.x.
 
@@ -443,7 +443,7 @@ Known costs and boundaries:
 
 - Each restore appends one `model_change` entry to the session, plus a `thinking_level_change` when the new model lands on a different level (pi re-applies the thinking level on every model switch, and it can go up as well as down — the level is taken from settings when the outgoing model had no thinking). On pi 0.81–0.83 it also writes `defaultModel` — and possibly `defaultThinkingLevel` — in `settings.json` as a side effect (extension-side `setModel` persisted unconditionally in those versions); from 0.84 on it does neither.
 - If the last model is not in the local catalog cache yet (the provider's entry in `~/.pi/agent/models-store.json` was just cleared, or the model is new upstream), this start reports `model-unavailable` and restores nothing; the next start picks it up once the background catalog refresh has landed.
-- What gets recorded is an **explicit switch**: `/model` with Enter, Ctrl+P cycling, extension `setModel`. pi currently emits no `model_select` when it restores a session's own model; a future `source: "restore"` event is ignored too. Going straight from an old session to `/new` lands on the last model you explicitly switched to, not on that one.
+- What gets recorded is an **explicit switch**: `/model` with Enter, Ctrl+P cycling, extension `setModel` (**another extension** swapping the model for one kind of task is recorded too). A model named with `--model` at startup is **not** recorded — pi emits `model_select` only on a switch — so `pi --model … -p …` in CI cannot overwrite the record you have. pi currently emits no `model_select` when it restores a session's own model; a future `source: "restore"` event is ignored too. Going straight from an old session to `/new` lands on the last model you explicitly switched to, not on that one.
 - A restore-triggered `model_select` does not write `last-model.json` back, so it cannot clobber a newer switch recorded by another pi process.
 - **Non-interactive runs are covered too**: `pi -p "..."` and RPC mode go through the same `session_start`, so scripts and CI get switched to the last used model as well. Pin the model with an explicit `--model`, or set `LLMGATES_RESTORE_LAST_MODEL=0`.
 - If the restored model is **not** in `enabledModels`, the next Ctrl+P jumps to the scope's *second* entry (pi starts from index 0 when the current model is not in the list, so the first is skipped); Ctrl+N jumps to the last one.

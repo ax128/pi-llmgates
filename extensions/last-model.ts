@@ -149,6 +149,10 @@ const FRESH_START_REASONS: ReadonlySet<string> = new Set(["startup", "new"]);
  * entirely. pi's own startup criterion is `buildSessionContext().messages.length
  * > 0` — `ReadonlySessionManager` does not expose that, so the same question is
  * asked of the branch directly.
+ *
+ * One deliberate difference: pi drops a `branch_summary` whose `summary` is
+ * empty, this set counts it. Erring toward leaving the model alone is the safe
+ * direction, and the entry pi writes always carries a summary.
  */
 const CONVERSATION_ENTRY_TYPES: ReadonlySet<string> = new Set([
 	"message",
@@ -235,10 +239,12 @@ function logDebug(message: string): void {
  * whole extension at import time.
  *
  * Cost of borrowing pi's loader: it takes a `proper-lockfile` lock on each
- * settings.json it reads and spins synchronously for up to ~200 ms when another
- * pi holds one, then throws ELOCKED. That runs on the session-start path, so it
- * is reached only when nothing has been recorded yet, and the caller degrades a
- * throw to "no seed" rather than propagating it.
+ * settings.json that exists and spins synchronously for up to ~200 ms when
+ * another pi holds one. pi then swallows that ELOCKED itself and reports the
+ * scope as empty, so the practical worst case here is a short stall and no
+ * seed, never a failed start. The caller still catches: a peer version that
+ * lets the error escape must degrade to "no seed" too. Either way this is
+ * reached only while nothing has been recorded yet.
  */
 function readPinnedDefaultModel(
 	cwd: string,

@@ -220,7 +220,11 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
 `thinking_level_change` 两条条目，误把它们当「已有会话」会让恢复永远不触发，`last-model.test.ts` 已钉住），
 而**启动时的模型优先级只能在真机上验**——白名单顶掉保存模型这件事没有任何离线替身。
 改动 `last-model.ts`、`connection.ts` 的配置读写或任何 `session_start` / `setModel` 相关代码时必测。
-全程开 `LLMGATES_DEBUG=1`，逐条对判定分支：
+全程开 `LLMGATES_DEBUG=1`，逐条对判定分支。
+
+标 🖐 的两处必须真人上手（一处要在 TUI 里按 Ctrl+S / Ctrl+P，一处要有个不支持思考的模型），
+其余都能用 [§4.4 的 rpc 方式](#44-rpc-驱动的隔离验证agent-推荐做法)在隔离 agent dir 里驱动——本功能那轮门禁
+就是这么跑的，比反复重开 pi 快得多，也不会动到自己的 `settings.json` 与 `last-model.json`：
 
 - [ ] `settings.json` 里配好 `enabledModels`（或用 `/scoped-models` 存一份），在 `/model` 里切到**白名单外**的模型 → 完全退出后重开 `pi`，**回到该模型**（分支 `restored`），而不是白名单第 1 条
 - [ ] 同一条件下 `/new` 开新会话，同样回到该模型（分支 `restored`）
@@ -229,10 +233,10 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
 - [ ] `pi --model <provider>/<id>` 与 `pi --models <pattern>`：**不介入**（分支 `cli-model`）
 - [ ] `LLMGATES_RESTORE_LAST_MODEL=0`（或 `"restoreLastModel": false`）后重开：启动模型与装扩展前一致；**但 `~/.pi/agent/llmgates/last-model.json` 仍在更新**
 - [ ] 删掉 `last-model.json`、`settings.json` 里留着 `defaultProvider` / `defaultModel`：冷启动回到那份钉住的默认（种子路径，分支 `restored`）
-- [ ] **记录压过钉住的默认**（有意行为，README 已写）：`/model` 里按 Ctrl+S 钉一个模型，再 Ctrl+P 切到另一个 → 重开 `pi` 回到 Ctrl+P 那个；项目级 `<项目>/.pi/settings.json` 里手写的 `defaultModel` 同样被顶掉。**Ctrl+S 那半条需 pi ≥ 0.84**（0.81–0.83 的 `/model` 列表里没有「set as default」这个动作，且每次切换都会写 `defaultModel`；那几版的 Ctrl+S 绑的是 `/scoped-models` 的「保存白名单」`app.models.save`，别按错——按下去存的正是会顶掉 pin 的那份白名单），在老版本上只验项目级那半条
+- [ ] 🖐 **记录压过钉住的默认**（有意行为，README 已写）：`/model` 里按 Ctrl+S 钉一个模型，再 Ctrl+P 切到另一个 → 重开 `pi` 回到 Ctrl+P 那个；项目级 `<项目>/.pi/settings.json` 里手写的 `defaultModel` 同样被顶掉。**Ctrl+S 那半条需 pi ≥ 0.84**（0.81–0.83 的 `/model` 列表里没有「set as default」这个动作，且每次切换都会写 `defaultModel`；那几版的 Ctrl+S 绑的是 `/scoped-models` 的「保存白名单」`app.models.save`，别按错——按下去存的正是会顶掉 pin 的那份白名单），在老版本上只验项目级那半条
 - [ ] 上次的模型对应实例已 `/logout` 或已下架：不报错、保持 pi 自己的选择（分支 `model-unavailable` / `no-auth`）
 - [ ] 上次的模型还没进本地目录缓存（清掉 `~/.pi/agent/models-store.json` 里该实例的条目后立刻重开）：本次判 `model-unavailable` 不恢复，等后台刷新完再开一次即回到它
-- [ ] **恢复的副作用**：让 pi 启动时落在不支持思考的模型上、而 `last-model.json` 记的是 reasoning 模型 → 恢复后会话里除 `model_change` 外还多一条 `thinking_level_change`（档位真的变了才有这条：旧模型不支持思考时取的是 `defaultThinkingLevel ?? "medium"`，把它显式设成 `off` 就复现不出来）；在 pi 0.81–0.83 上确认 `settings.json` 的 `defaultModel` 被写、`defaultThinkingLevel` 可能被改写（**0.84 起两者都不应再写**，README 已这么写但尚未真机核实）
+- [ ] **恢复的副作用**：让 pi 启动时落在不支持思考的模型上、而 `last-model.json` 记的是 reasoning 模型 → 恢复后会话里除 `model_change` 外还多一条 `thinking_level_change`（档位真的变了才有这条：旧模型不支持思考时取的是 `defaultThinkingLevel ?? "medium"`，把它显式设成 `off` 就复现不出来）；在 pi 0.81–0.83 上确认 `settings.json` 的 `defaultModel` 被写、`defaultThinkingLevel` 可能被改写（**0.84 起两者都不写**——本功能的门禁在 pi 0.84.3 上实测：恢复到另一个模型后 `defaultModel` 纹丝不动，源码里 `setModel` / `setThinkingLevel` 都只在 `options.persist` 时才落盘，而扩展侧那个 `setModel` 不传 options）。🖐 **`thinking_level_change` 那半条要有一个不支持思考的模型**——网关目录里全是 `reasoning: true` 时复现不出来，可跳过并在回执里注明
 - [ ] `~/.pi/agent/llmgates/last-model.json` 写成半截 JSON：启动不报错，按「没有记录」处理
 
 **安全 / HTTP**
@@ -294,6 +298,39 @@ ln -s "$PWD/node_modules/@earendil-works/pi-coding-agent" <pkgdir>/node_modules/
 ```
 
 这种旁路副本要另建目录，别往 §3 那份已注册进 settings 的安装目录里塞 `node_modules`，以免运行时遮蔽 pi 自己的模块；用 `diff -r` 确认两份 `dist/` 一致即可代表验的是同一产物。
+
+#### 驱动启动期的模型判定（`restoreLastModel`）
+
+§4.2 那张表里除标 🖐 的两处外，都能在同一个隔离 agent dir 里跑完——关键是 rpc 有一组**与 TUI 同路径**的命令：
+`set_model` 等价于 `/model` 回车、`cycle_model` 等价于 Ctrl+P（0.84 起两者都是 `persist: false`），
+`new_session` = `/new`、`switch_session` = `/resume`、`clone` 走 fork，`get_state` 读当前模型、`get_entries` 数会话条目。
+
+隔离目录里把场景摆成「pin 不在白名单里」——这正是本功能要修的情形：
+
+```bash
+cat >"$ISO/settings.json" <<'JSON'
+{ "packages": ["/tmp/llg-pkg"],
+  "defaultProvider": "<实例>", "defaultModel": "<白名单外的模型>",
+  "enabledModels": ["<实例>/<模型 A>", "<实例>/<模型 B>"] }
+JSON
+```
+
+命令要**错开时间**依次写进 stdin（rpc 按到达顺序处理），并全程开 `LLMGATES_DEBUG=1` 读分支：
+
+```bash
+node -e 'const cs=[{type:"get_state",id:"a"},{type:"cycle_model",id:"c"},{type:"get_state",id:"b"}];
+  let t=300; for(const c of cs){ setTimeout(()=>process.stdout.write(JSON.stringify(c)+"\n"), t); t+=2500 }
+  setTimeout(()=>{}, t+3000)' \
+  | PI_CODING_AGENT_DIR="$ISO" LLMGATES_DEBUG=1 timeout 60 pi --mode rpc >out.jsonl 2>&1
+grep "last model restore" out.jsonl      # 分支：restored / cli-model / session-restored / model-unavailable …
+```
+
+几个踩过的点：
+
+- **`--model` / `--models` 直接加在 `pi --mode rpc` 后面**即可验 `cli-model` 分支。
+- **「打开过但没发过消息的会话」需要自己造**：rpc 里空会话不落盘，把一个有消息的会话文件 `grep -v '"type":"message"'` 出来当 `--session` 的参数，得到的正是「只有 `model_change` / `thinking_level_change` 戳记」那种文件。
+- **`/reload` 驱动不了**：rpc 会把它当 prompt 发给模型（还要花一次调用）。同一处 `reason` 判定的 `resume` / `fork` 能验，`reload` 交给单测。
+- 换会话类命令会让 `session_start` 被**发两次**（rpc 重绑运行时），第二次落在 `already-selected` / `not-fresh-start`，属正常。
 
 **收尾必做：** `rm -rf "$ISO"` —— 里面有 `auth.json` 的明文副本。
 
