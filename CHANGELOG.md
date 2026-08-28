@@ -12,7 +12,7 @@
 
 - **新会话现在会回到上次使用的模型（默认开启）。** pi 自己不存这件事：0.84 起 `/model` 回车选中与 Ctrl+P/Ctrl+N 循环都是 `persist: false`，`settings.json` 里的 `defaultProvider` / `defaultModel` 只有按 Ctrl+S「set as default」才会写（0.81–0.83 每次切换都写，所以老版本上那份文件看着像「上次用的」）。而启动时 pi 想用的正是这个默认值——**但只在没配模型白名单时**：一旦有 `enabledModels`（`/scoped-models` 保存的那份）或命令行带 `--models`，pi 改成「保存的模型在白名单里才用，不在就退回白名单第一条」，且没有开关能调这个优先级。于是每次重开 pi 都要重新选一遍。
   - 本版监听 `model_select` 把每次切到的模型记进 `~/.pi/agent/llmgates/last-model.json`（全局一份、文件 `0600`，只有 provider id 与模型 id 两个字段），并在新会话建立后改回那一个。本地还没有记录时退回读 pi 的 `defaultProvider` / `defaultModel`——白名单同样会顶掉那份显式默认。
-  - **记录一旦存在就压过 pi 里显式钉住的默认模型**：`settings.json` 的 `defaultProvider` / `defaultModel` 只在还没有记录时当种子读一次。这包括 Ctrl+S「set as default」钉的那一份（钉完再 Ctrl+P 切走，下次启动回到 Ctrl+P 那个），也包括项目级 `<项目>/.pi/settings.json` 里手写的那一份。要让钉住的默认说了算就关掉本功能。
+  - **记录一旦存在就压过 pi 里显式钉住的默认模型**：`settings.json` 的 `defaultProvider` / `defaultModel` 只在还没有记录时当种子读一次。这包括 Ctrl+S「set as default」钉的那一份（钉完再 Ctrl+P 切走，下次启动回到 Ctrl+P 那个），也包括项目级 `<项目>/.pi/settings.json` 里手写的那一份。要让钉住的默认说了算就关掉本功能——但这只在没配 `enabledModels` 白名单时成立，配了白名单而 pin 不在其中时 pi 自己也会退回白名单第一条。
   - **只在冷启动与 `/new` 生效**（以及没发过消息的空会话，`pi -c` 打开也一样）。进程内 `/resume` / `/tree` 分叉 / `/reload` 按 `reason` 跳过。CLI 打开会话时 reason 仍是 `startup`，有对话内容的老会话按内容跳过，不认 `-c` 这个旗标。
   - 命令行带 `--model` / `--models` 时不介入：`--model` 是本次运行钉死的模型，`--models` 是本次运行临时换的白名单（长期存在 `settings.json` 里的 `enabledModels` 则照常恢复）。上次的模型已下架、无凭证、还没进本地目录缓存，或当前就是它时也不动。
   - 记的是**显式切换**（`/model`、Ctrl+P、扩展 `setModel`；`source: "restore"` 不计入）。恢复自己触发的 `model_select` 不回写文件，避免盖掉别的 pi 刚记下的切换。`pi -p` 与 RPC 等非交互运行同样会被恢复，脚本里要钉死模型请显式带 `--model`。

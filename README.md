@@ -424,7 +424,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 1. **记录**：监听 `model_select`，把每次真正切到的模型写进 `~/.pi/agent/llmgates/last-model.json`（全局一份，只有 provider id 与模型 id 两个字段）。`/model` 回车、Ctrl+P 循环、扩展切换都算。
 2. **恢复**：新会话建立后把模型改回那一个。本地还没有记录时（刚装上、刚清过），退回读 pi 的 `defaultProvider` / `defaultModel`——白名单同样会顶掉那份显式默认，所以这一步是同一个修复。
 
-**记录一旦存在，就压过 pi 里显式钉住的默认模型。** `settings.json` 的 `defaultProvider` / `defaultModel` 只在还没有记录时被当作种子读一次；之后启动看的是记录。这包括 0.84 起在 `/model` 列表里按 **Ctrl+S**「set as default」钉的那一份——按完 Ctrl+S 再 Ctrl+P 切走，下次启动回到的是 Ctrl+P 那个，不是钉住的那个——也包括项目级 `<项目>/.pi/settings.json` 里手写的那一份（pi 会把项目设置合并到全局之上，本扩展有记录时不再参考）。要让钉住的默认说了算，就关掉本功能。
+**记录一旦存在，就压过 pi 里显式钉住的默认模型。** `settings.json` 的 `defaultProvider` / `defaultModel` 只在还没有记录时被当作种子读一次；之后启动看的是记录。这包括 0.84 起在 `/model` 列表里按 **Ctrl+S**「set as default」钉的那一份——按完 Ctrl+S 再 Ctrl+P 切走，下次启动回到的是 Ctrl+P 那个，不是钉住的那个——也包括项目级 `<项目>/.pi/settings.json` 里手写的那一份（pi 会把项目设置合并到全局之上，本扩展有记录时不再参考）。要让钉住的默认说了算，就关掉本功能——但这只在**没配白名单**时成立：`settings.json` 里有 `enabledModels` 而钉住的模型不在其中时，pi 自己的启动也会退回白名单第一条（见上文），关掉本功能同样回不到那份 pin。
 
 **默认开启。** 以下情况**故意不介入**：
 
@@ -439,8 +439,8 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 
 已知代价与边界：
 
-- 每次真正发生恢复时，会话里多一条 `model_change` 条目；若新模型的思考档位与当前不同（pi 切模型时会重新夹取），还会多一条 `thinking_level_change`。在 pi 0.81–0.83 上还会顺带把模型写进 `settings.json` 的 `defaultModel`、并可能改写 `defaultThinkingLevel`（那几版扩展侧 `setModel` 一律持久化）；0.84 起两者都不会。
-- 上次的模型如果还不在本地目录缓存里（刚清过 `~/.pi/agent/models.json` 的缓存条目，或它是上游刚加的），本次启动判为 `model-unavailable` 不恢复；目录在后台刷新完成后，下次启动即可回到它。
+- 每次真正发生恢复时，会话里多一条 `model_change` 条目；若新模型的思考档位与当前不同（pi 切模型时会按新模型的能力重新取一次档位，可能降也可能升——旧模型不支持思考时取的是设置里的默认档位），还会多一条 `thinking_level_change`。在 pi 0.81–0.83 上还会顺带把模型写进 `settings.json` 的 `defaultModel`、并可能改写 `defaultThinkingLevel`（那几版扩展侧 `setModel` 一律持久化）；0.84 起两者都不会。
+- 上次的模型如果还不在本地目录缓存里（刚清过 `~/.pi/agent/models-store.json` 里该实例的条目，或它是上游刚加的），本次启动判为 `model-unavailable` 不恢复；目录在后台刷新完成后，下次启动即可回到它。
 - 记的是**显式切换**：`/model` 回车、Ctrl+P 循环、扩展 `setModel`。pi 恢复会话自己的模型时目前不发 `model_select`；若将来发出 `source: "restore"`，也不计入。因此从老会话直接 `/new`，回到的是上一次显式切过的模型，而不是刚才那个。
 - 恢复自己触发的 `model_select` 不回写 `last-model.json`，避免把别的 pi 刚记下的切换盖回去。
 - **非交互运行同样生效**：`pi -p "..."` 与 RPC 模式走的是同一个 `session_start`，脚本 / CI 里也会被切到上次用的模型。要钉死就显式带 `--model`，或用 `LLMGATES_RESTORE_LAST_MODEL=0`。
