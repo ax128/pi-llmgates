@@ -69,8 +69,11 @@ git push origin "v$VERSION"                          # 若尚未推送 tag
 **必须**回复安装示例（把 `VERSION` 换成刚发布的真实版本，取自 `package.json`）：
 
 ```bash
-# 最新版
+# 首次安装（最新版）
 pi install npm:@llmgates_api/pi-llmgates-provider
+
+# 已装过旧版 → 升级（不带版本号的 pi install 跨 minor 升不上去，见 §2）
+pi update npm:@llmgates_api/pi-llmgates-provider
 
 # 固定本版
 pi install npm:@llmgates_api/pi-llmgates-provider@VERSION
@@ -114,8 +117,11 @@ test -n "$NPM_TOKEN" || { echo "missing NPM_TOKEN in .env"; exit 1; }
 环境：Node `>= 22.19`，已安装 [pi](https://pi.dev)。
 
 ```bash
-# 最新版
+# 首次安装（最新版）
 pi install npm:@llmgates_api/pi-llmgates-provider
+
+# 已装过旧版 → 升级（见 §2：不带版本号的 pi install 跨 minor 升不上去）
+pi update npm:@llmgates_api/pi-llmgates-provider
 
 # 固定版本（发布后）
 pi install npm:@llmgates_api/pi-llmgates-provider@0.5.0
@@ -136,11 +142,32 @@ npm view @llmgates_api/pi-llmgates-provider versions --json
 ## 2. 更新（用户侧）
 
 ```bash
-pi install npm:@llmgates_api/pi-llmgates-provider
-pi install npm:@llmgates_api/pi-llmgates-provider@0.5.0
+pi update npm:@llmgates_api/pi-llmgates-provider           # 升到 latest
+pi install npm:@llmgates_api/pi-llmgates-provider@0.5.0    # 装到指定版本（会把条目钉死）
 ```
 
 然后 `/reload`。peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <0.85.0`。
+
+**别把不带版本号的 `pi install` 当升级命令**——它只在 caret 范围内升，跨 minor 就停住，且回显看不出来。在 pi 0.84.3 上用隔离 `PI_CODING_AGENT_DIR` 逐条实测：
+
+| 起点 | 命令 | 实际结果 |
+| --- | --- | --- |
+| 已装 0.2.5 | `pi install npm:<pkg>`（不带版本） | 升到 **0.2.13**（`^0.2.5` 内最高），回显 `Installed` |
+| 已装 0.4.0，latest 0.5.0 | `pi install npm:<pkg>`（不带版本） | **不升**（`^0.4.0` 够不着 0.5.0），npm 报 `up to date`，回显**照样是** `Installed` |
+| 条目不钉版 | `pi update npm:<pkg>` | 升到 latest ✓（实测 0.4.0 → 0.5.0，跨 caret） |
+| 任意 | `pi install npm:<pkg>@x.y.z` | 装到该版本 ✓，并把 `settings.json` 条目**钉死**为 `@x.y.z` |
+| 条目钉版 | `pi update npm:<pkg>` | **打印 `Updated`，版本纹丝不动**——pi 跳过 pinned 条目 |
+| 条目钉版 | `pi install npm:<pkg>`（不带版本） | 去掉钉版；已装版本同时按前两行的 caret 规则动 |
+| 刚 `pi uninstall` 过 | `pi install npm:<pkg>`（不带版本） | 装到 **latest** ✓（uninstall 把 dep 从 root `package.json` 摘掉了） |
+
+要点是**两份状态互不相干**：
+
+- `settings.json` 的 `packages` 条目带不带 `@x.y.z` → 只决定 `pi update` 会不会处理它（`core/package-manager.js` 的 `updateConfiguredSources`：`if (!parsed.pinned) npmCandidates.push(...)`，pinned 的 npm 条目被过滤掉，而 `pi update` 的 `Updated` 是无条件打印的）。
+- `~/.pi/agent/npm/package.json` 里的 `"^<已装版本>"` → 决定不带版本的 `pi install` 能升到哪。pi 的 install 就是在那个目录里跑 `npm install <包名>`（`installNpm`），npm 按已存的 range 解析。本包还在 0.x，`^0.5.0` = `>=0.5.0 <0.6.0`，所以 minor 一跳就够不着。
+
+（顺带澄清一个容易搭错的函数：`installedNpmMatchesConfiguredVersion` 确实在条目无 range 时一律返回 `true`，但它只被 `resolvePackageSources` 调用，管的是**启动加载扩展时要不要补装**，不在 `pi install` 命令路径上。）
+
+发版后请用户验证新版本时，给的应是 `pi update`（或钉版 `pi install`），不要给不带版本号的 `pi install`。
 
 ---
 
