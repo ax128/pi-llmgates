@@ -57,10 +57,18 @@ pi
 ### npm
 
 ```bash
-pi install npm:@llmgates_api/pi-llmgates-provider          # 最新版
+pi install npm:@llmgates_api/pi-llmgates-provider          # 首次安装（最新版）
 pi install npm:@llmgates_api/pi-llmgates-provider@0.5.0    # 指定版本
 pi install -l npm:@llmgates_api/pi-llmgates-provider       # 仅当前项目（否则装到 ~/.pi/agent/）
 ```
+
+**升级要用 `pi update`。** 不带版本号的 `pi install` 在已经装过的情况下**不一定升级**：pi 在 `~/.pi/agent/npm/` 里跑的是 `npm install <包名>`，npm 按那份 `package.json` 里已存的 `^<已装版本>` 解析。本扩展还在 0.x，`^0.5.0` 只覆盖 `0.5.x`——补丁版升得到，跨 minor（0.5 → 0.6）升不到，而两种情况的回显都是 `Installed`：
+
+```bash
+pi update npm:@llmgates_api/pi-llmgates-provider           # 升到最新版（不受上面那条范围限制）
+```
+
+带版本号的 `pi install …@x.y.z` 会真的装到该版本，但同时把 `settings.json` 里的条目**钉死**；此后 `pi update` 会跳过它——**照样打印 `Updated`，版本却不动**。想回到「跟随最新版」：先重跑一次不带版本号的 `pi install` 去掉钉版，再 `pi update`。
 
 ### 源码 / 本地开发
 

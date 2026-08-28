@@ -155,8 +155,10 @@ REMOTE="$(NPM_TOKEN="$NPM_TOKEN_VALUE" npm view @llmgates_api/pi-llmgates-provid
 echo "Published. registry version=$REMOTE"
 echo
 echo "Install examples (send to user):"
-echo "  pi install npm:@llmgates_api/pi-llmgates-provider"
-echo "  pi install npm:@llmgates_api/pi-llmgates-provider@$VERSION"
-echo "  pi install -l npm:@llmgates_api/pi-llmgates-provider@$VERSION"
+echo "  pi install npm:@llmgates_api/pi-llmgates-provider              # first install"
+echo "  pi update npm:@llmgates_api/pi-llmgates-provider               # upgrade an existing install"
+echo "  pi install npm:@llmgates_api/pi-llmgates-provider@$VERSION      # pin this version"
+echo "  pi install -l npm:@llmgates_api/pi-llmgates-provider@$VERSION   # this project only"
+echo "  (for an existing install, a version-less 'pi install' only moves within ^<installed> — see docs/npm-package.md 2)"
 echo
 echo "Tag (if needed): git tag v$VERSION && git push origin v$VERSION"

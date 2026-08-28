@@ -59,10 +59,18 @@ This extension uses the **native Provider** API and does **not** support pi 0.80
 ### npm
 
 ```bash
-pi install npm:@llmgates_api/pi-llmgates-provider          # latest
+pi install npm:@llmgates_api/pi-llmgates-provider          # first install (latest)
 pi install npm:@llmgates_api/pi-llmgates-provider@0.5.0    # pinned version
 pi install -l npm:@llmgates_api/pi-llmgates-provider       # this project only (otherwise ~/.pi/agent/)
 ```
+
+**Upgrade with `pi update`.** A plain `pi install` with no version does **not reliably** upgrade an existing copy: inside `~/.pi/agent/npm/` pi runs `npm install <name>`, and npm resolves that against the `^<installed version>` already saved in that `package.json`. This extension is still 0.x, so `^0.5.0` only covers `0.5.x` — a patch release is picked up, a minor bump (0.5 → 0.6) is not, and both cases print `Installed`:
+
+```bash
+pi update npm:@llmgates_api/pi-llmgates-provider           # move to the latest release (not held back by that range)
+```
+
+`pi install …@x.y.z` does install that exact version, but it also **pins** the entry in `settings.json`; from then on `pi update` skips the package — **it still prints `Updated` while the version stays put**. To follow latest again: run the version-less `pi install` once to drop the pin, then `pi update`.
 
 ### From source / local development
 

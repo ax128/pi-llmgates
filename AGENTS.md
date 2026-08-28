@@ -24,7 +24,7 @@ Pi coding agent 扩展包：`@llmgates_api/pi-llmgates-provider`。
 
 - 解包 tarball 后 `pi install <目录>`，**不要** `pi install ./*.tgz`——pi 会记进 `packages` 并从此拒绝启动（门禁 §3 有恢复办法）。
 - 发布**无法由 Agent 独立完成**：跑 `npm-publish-auth-link.mjs` 拿到 `https://www.npmjs.com/login/...` 后必须**把链接发给用户、等对方回 OTP**，再 `./scripts/publish-npm.sh --otp=<回复>`。
-- 发布成功后**立刻**给出安装示例命令（latest / 钉版本 / `-l`）。
+- 发布成功后**立刻**给出安装示例命令（首装 / `pi update` 升级 / 钉版本 / `-l`）——已装过旧版的用户要给 `pi update`，不带版本号的 `pi install` 跨 minor 升不上去（[npm-package.md §2](./docs/npm-package.md#2-更新用户侧)）。
 
 遇到「发布 / 安装 / 更新 / 要认证链接」类请求时的完整分支，见门禁 [§7 决策简表](./docs/pre-publish-gate.md#7-决策简表)。
 

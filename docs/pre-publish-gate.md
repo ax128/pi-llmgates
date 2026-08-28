@@ -127,7 +127,7 @@ pi
 
 ```bash
 pi uninstall /tmp/llg-pkg
-pi install npm:@llmgates_api/pi-llmgates-provider   # publish 后再装新版本
+pi install npm:@llmgates_api/pi-llmgates-provider   # 装回 registry 版；§3 开头已 uninstall 过它，这里拿到的就是 latest
 ```
 
 **通过标准：**
