@@ -8,7 +8,7 @@ Pi coding agent 扩展包：`@llmgates_api/pi-llmgates-provider`。
 并行接入多个 OpenAI 兼容网关（NewAPI / Sub2API / CLIProxyAPI / 通用）：从各网关 `/v1/models` 拉模型、
 注册为独立的 native Provider，并提供出口切换、额度查询与 TPS 统计。
 另有两个与网关无关、默认开启的功能：输入历史跨进程持久化（`/input-history`）与新会话恢复上次
-使用的模型（`restoreLastModel`）。两者都单独注册、不受网关注册失败连坐（`extensions/index.ts`）。
+使用的模型与思考档位（`restoreLastModel`）。两者都单独注册、不受网关注册失败连坐（`extensions/index.ts`）。
 
 用户文档：[README.md](./README.md)  
 设计索引：[docs/README.md](./docs/README.md)

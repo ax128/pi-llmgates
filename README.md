@@ -17,7 +17,7 @@ Pi provider 扩展：并行接入多个 **OpenAI 兼容网关**——[NewAPI](ht
 - [模型与推理出口](#模型与推理出口)
 - [用量与费用](#用量与费用)
 - [输入历史](#输入历史)
-- [记住上次使用的模型](#记住上次使用的模型)
+- [记住上次使用的模型与思考档位](#记住上次使用的模型与思考档位)
 - [配置](#配置)
 - [安全](#安全)
 - [故障排查](#故障排查)
@@ -34,7 +34,7 @@ Pi provider 扩展：并行接入多个 **OpenAI 兼容网关**——[NewAPI](ht
 - **额度查询**：`/balance` 按实例探测网关额度，网关不提供时明确显示「不可用」而非 0。
 - **用量与费用统计**：TUI 状态行 + `/calls` 明细，覆盖父会话与同步 / async 子代理，费用按上游零售价估算。
 - **输入历史持久化**：↑↓ 翻到的输入跨 pi 进程保留（默认开启，按工作目录隔离），`/input-history` 管理开关、作用域与清空。
-- **记住上次使用的模型**：新会话自动回到上次用的模型，不被 `/scoped-models` 白名单顶掉（默认开启）。
+- **记住上次使用的模型与思考档位**：新会话自动回到上次用的模型和上次用的思考档位，不被 `/scoped-models` 白名单顶掉（默认开启）。
 
 ## 快速开始
 
@@ -201,7 +201,7 @@ pi
 - 若 `auth.json` 整体缺失或暂时损坏（如手动重置凭证、同步工具改写中途），本轮清理会被跳过以防止误删全部实例；文件恢复可读后清理自动继续。
 - `/llmgates remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能短暂列出已删除的 ID，执行 `/reload` 后会完成清理。
 - 若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/llmgates remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
-- 若 `~/.pi/agent/llmgates/2api.json` 无法解析（手工编辑出错、重复实例 ID 等），扩展**不注册任何 provider 与网关命令**——包括 `/login` 里的「LLMGates 网关」入口，pi 里看不到任何提示。启动日志会打印具体原因（含文件名），修好或删除该文件后 `/reload` 即可恢复。（与网关无关的 `/input-history` 和「记住上次使用的模型」不受影响，仍然可用。）
+- 若 `~/.pi/agent/llmgates/2api.json` 无法解析（手工编辑出错、重复实例 ID 等），扩展**不注册任何 provider 与网关命令**——包括 `/login` 里的「LLMGates 网关」入口，pi 里看不到任何提示。启动日志会打印具体原因（含文件名），修好或删除该文件后 `/reload` 即可恢复。（与网关无关的 `/input-history` 和「记住上次使用的模型与思考档位」不受影响，仍然可用。）
 
 ## 模型与推理出口
 
@@ -413,18 +413,22 @@ pi 的输入框本来就支持用 ↑↓ 翻看敲过的内容（上限 100 条�
 - 预填走 pi 的自定义编辑器接口：若有别的扩展在本扩展**之后**也调用 `setEditorComponent`（例如 vim 模式类扩展），它会把我们顶掉，**预填静默失效**（记录不受影响）。这是 pi 扩展 API 的固有性质。
 - 不提供单条删除。密钥不慎落盘时只能 `/input-history clear` 整份清掉。
 
-## 记住上次使用的模型
+## 记住上次使用的模型与思考档位
 
 pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `defaultProvider` / `defaultModel` 是**显式设定的默认模型**：pi 0.84 起 `/model` 回车选中与 Ctrl+P/Ctrl+N 循环都是 `persist: false`（只改本次会话），只有在 `/model` 列表里按 **Ctrl+S**「set as default」才会写进去。（0.81–0.83 每次切换都写，所以那份文件在老版本上看起来像「上次用的」。）
 
 而启动时 pi 想用的正是这个 `defaultModel`——**但只在没配模型白名单时**。一旦 `settings.json` 里有 `enabledModels`（`/scoped-models` 保存的那份）或命令行带了 `--models`，pi 的启动逻辑改成：保存的模型**在白名单里才用**，不在就退回白名单**第一条**。pi 没有开关能调这个优先级。
 
+**思考档位是同一个问题的另一半。** pi 启动时的档位取自 `settings.json` 的 `defaultThinkingLevel`，然后**按启动落在的那个模型的能力上限夹一次**——白名单第一条上限更低时，你上次用的档就在这一夹里没了。而写这个键的 `setThinkingLevel` 分不清「你按 Shift+Tab 换的档」和「切模型时按新模型能力自动夹出来的档」，两种都往同一个键里写，所以那份设置本身也不是一份可靠的「上次用的档」。
+
 本扩展补上两件事：
 
-1. **记录**：监听 `model_select`，把每次真正切到的模型写进 `~/.pi/agent/llmgates/last-model.json`（全局一份，只有 provider id 与模型 id 两个字段）。`/model` 回车、Ctrl+P 循环、扩展切换都算。
-2. **恢复**：新会话建立后把模型改回那一个。本地还没有记录时（刚装上、刚清过），退回读 pi 的 `defaultProvider` / `defaultModel`——白名单同样会顶掉那份显式默认，所以这一步是同一个修复。
+1. **记录**：监听 `model_select` 与 `thinking_level_select`，把每次真正切到的模型与思考档位写进 `~/.pi/agent/llmgates/last-model.json`（全局一份，三个字段：provider id、模型 id、思考档位）。`/model` 回车、Ctrl+P 循环、Shift+Tab 换档、扩展切换都算。
+2. **恢复**：新会话建立后把模型改回那一个，**再**把档位设回去。本地还没有记录时（刚装上、刚清过），退回读 pi 的 `defaultProvider` / `defaultModel` / `defaultThinkingLevel`——白名单同样会顶掉那份显式默认，所以这一步是同一个修复。
 
-**记录一旦存在，就压过 pi 里显式钉住的默认模型。** `settings.json` 的 `defaultProvider` / `defaultModel` 只在还没有记录时被当作种子读一次；之后启动看的是记录。这包括 0.84 起在 `/model` 列表里按 **Ctrl+S**「set as default」钉的那一份——按完 Ctrl+S 再 Ctrl+P 切走，下次启动回到的是 Ctrl+P 那个，不是钉住的那个——也包括项目级 `<项目>/.pi/settings.json` 里手写的那一份（pi 会把项目设置合并到全局之上，本扩展有记录时不再参考）。要让钉住的默认说了算，就关掉本功能——但这只在**没配白名单**时成立：`settings.json` 里有 `enabledModels` 而钉住的模型不在其中时，pi 自己的启动也会退回白名单第一条（见上文），关掉本功能同样回不到那份 pin。
+**顺序是先模型、后档位，不能反。** pi 自己的 `setModel` 会按自己的规则重推导档位并夹到新模型（0.81 从旧模型当前档 / 设置；0.84 从 per-model override 或 `defaultThinkingLevel`）；档位若先设，会被我们自己这次切模型抹掉。**模型已经对了也照样把档位设回去**——启动档位来自 `defaultThinkingLevel`，白名单第一条进场时的那一夹已经把它改写过，「模型没变」并不代表档位没变。
+
+**记录一旦存在，就压过 pi 里显式钉住的默认模型。** `settings.json` 的 `defaultProvider` / `defaultModel` / `defaultThinkingLevel` 只在还没有记录时被当作种子读一次；之后启动看的是记录。这包括 0.84 起在 `/model` 列表里按 **Ctrl+S**「set as default」钉的那一份——按完 Ctrl+S 再 Ctrl+P 切走，下次启动回到的是 Ctrl+P 那个，不是钉住的那个——也包括项目级 `<项目>/.pi/settings.json` 里手写的那一份（pi 会把项目设置合并到全局之上，本扩展有记录时不再参考）。要让钉住的默认说了算，就关掉本功能——但这只在**没配白名单**时成立：`settings.json` 里有 `enabledModels` 而钉住的模型不在其中时，pi 自己的启动也会退回白名单第一条（见上文），关掉本功能同样回不到那份 pin。
 
 **默认开启。** 以下情况**故意不介入**：
 
@@ -432,24 +436,30 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | --- | --- |
 | `/resume` / `/tree` 分叉 / `/reload` | 这些动作的 `reason` 不是 startup/new，交给 pi |
 | 会话里已经有对话内容 | 含 `pi -c` / `--session` 打开的老会话。CLI 打开会话时 reason 仍是 `startup`，所以按有没有对话内容跳过，不认 `-c` 这个旗标 |
-| 命令行带 `--model` / `--models` | `--model` 是单次运行钉死的模型，优先于「上次用的」；`--models` 是本次运行临时换了一份白名单，一并不介入（长期存在 `settings.json` 里的 `enabledModels` 则照常恢复） |
-| 上次的模型已下架、无凭证，或当前就是它 | 保持 pi 自己的选择不动 |
+| 命令行带 `--model` / `--models` | `--model` 是单次运行钉死的模型，优先于「上次用的」；`--models` 是本次运行临时换了一份白名单，一并不介入（长期存在 `settings.json` 里的 `enabledModels` 则照常恢复）。这一条连档位一起跳过 |
+| 命令行带 `--thinking` | 模型照常恢复，档位不介入（`thinking=cli-thinking`）：这是本次运行钉死的档。`--model provider/id:high` 走上一行，模型和档都跳过 |
+| 上次的模型已下架、无凭证，或当前就是它 | 模型保持 pi 自己的选择不动。**档位仍然会设到此刻当前的那个模型上**（不是设到已下架的那个上）——它是独立的偏好，而 pi 启动读的正是被那一夹改写过的键 |
+| 记录里没有档位（0.5.0 及更早写的文件），或档位是 pi 不认识的值 | 只跳过档位那一步，模型照常恢复 |
 
 生效的只有：**冷启动**（`pi`）、**`/new` 开新会话**，以及没发过消息的空会话（`pi -c` 打开也一样）——pi 自己也不会从 stamp 恢复模型，和冷启动同等对待。
 
 已知代价与边界：
 
-- 每次真正发生恢复时，会话里多一条 `model_change` 条目；若新模型的思考档位与当前不同（pi 切模型时会按新模型的能力重新取一次档位，可能降也可能升——旧模型不支持思考时取的是设置里的默认档位），还会多一条 `thinking_level_change`。在 pi 0.81–0.83 上还会顺带把模型写进 `settings.json` 的 `defaultModel`、并可能改写 `defaultThinkingLevel`（那几版扩展侧 `setModel` 一律持久化）；0.84 起两者都不会。
-- 上次的模型如果还不在本地目录缓存里（刚清过 `~/.pi/agent/models-store.json` 里该实例的条目，或它是上游刚加的），本次启动判为 `model-unavailable` 不恢复；目录在后台刷新完成后，下次启动即可回到它。
-- 记的是**显式切换**：`/model` 回车、Ctrl+P 循环、扩展 `setModel`（**别的扩展**为某类任务临时换模型也会被记下）。启动时用 `--model` 指定的模型**不算**——pi 只在切换时发 `model_select`，所以 CI 里的 `pi --model … -p …` 不会覆盖你手上的记录。pi 恢复会话自己的模型时目前不发 `model_select`；若将来发出 `source: "restore"`，也不计入。因此从老会话直接 `/new`，回到的是上一次显式切过的模型，而不是刚才那个。
-- 恢复自己触发的 `model_select` 不回写 `last-model.json`，避免把别的 pi 刚记下的切换盖回去。
-- **非交互运行同样生效**：`pi -p "..."` 与 RPC 模式走的是同一个 `session_start`，脚本 / CI 里也会被切到上次用的模型。要钉死就显式带 `--model`，或用 `LLMGATES_RESTORE_LAST_MODEL=0`。
+- 每次真正发生恢复时，会话里多一条 `model_change` 条目；档位真的动了还会多一条 `thinking_level_change`（pi 切模型时会先按新模型能力重夹一次，我们再把记录里的档位设回去，两步都只在档位真的变化时才落条目）。在 pi 0.81–0.83 上还会顺带把模型写进 `settings.json` 的 `defaultModel`、并改写 `defaultThinkingLevel`（那几版扩展侧 `setModel` / `setThinkingLevel` 一律持久化）；0.84 起两者都由 `options.persist` 决定，扩展侧这两个调用都不传，所以都不写。
+- **恢复时记的是你要的档，不是夹完生效的档。** 启动恢复把 `high` 设到只支持 `low` 的模型上，会话里落成 `low`，而 `last-model.json` 仍是 `high`——这只挡住**恢复自己触发的那一夹**。会话里你切到上限更低的模型时，pi 的自动重夹会发 `thinking_level_select`，记录会改成夹后的值；再切回去不会凭空变回 `high`。
+- `thinking_level_select` 事件上**没有 `source` 字段**（切模型时的自动重夹与你手动换档在事件层面分不出来），所以挡住恢复期回写靠的是内部闩（一直持有到 `setModel` / `setThinkingLevel` 触发的事件微任务跑完），不是事件本身。
+- 本地还没有记录时，只换档位也会写文件：挂在**当前模型**上。0.84 起 Shift+Tab 是 `persist: false`，不能再靠 `defaultThinkingLevel` 兜下次启动。没有当前模型（没有 ctx）才不写。
+- 文件里的档位不认识（手工写错，或未来 pi 新增的档）时**只丢档位、不丢模型**：模型照常恢复，档位交回 pi。不原样透传是有意的——pi 对认不出的档位会夹到 `availableLevels[0]`，在多数模型上就是 `off`，一个笔误会静默把思考关掉。代价是 pi 将来新增的档位要等这里补上才认。
+- 上次的模型如果还不在本地目录缓存里（刚清过 `~/.pi/agent/models-store.json` 里该实例的条目，或它是上游刚加的），本次启动判为 `model-unavailable` 不恢复模型（档位照常设到**当前**模型上）；目录在后台刷新完成后，下次启动即可回到它。
+- 记的是**显式切换**：`/model` 回车、Ctrl+P 循环、Shift+Tab 换档、扩展 `setModel` / `setThinkingLevel`（**别的扩展**为某类任务临时换模型或换档也会被记下）。启动时用 `--model` / `--thinking` 指定的**不算**——pi 只在切换时发事件，档位在启动时被设成同一个值不触发事件，所以 CI 里的 `pi --model … -p …` 不会覆盖你手上的记录。`--thinking` 还会让本次启动**不恢复档位**（模型仍恢复）。pi 恢复会话自己的模型时目前不发 `model_select`；若将来发出 `source: "restore"`，也不计入。因此从老会话直接 `/new`，回到的是上一次显式切过的那一组。
+- 恢复自己触发的 `model_select` / `thinking_level_select` 不回写 `last-model.json`，避免把别的 pi 刚记下的切换盖回去。
+- **非交互运行同样生效**：`pi -p "..."` 与 RPC 模式走的是同一个 `session_start`，脚本 / CI 里也会被切到上次用的模型与档位。要钉死模型带 `--model`，要钉死档位带 `--thinking`，或用 `LLMGATES_RESTORE_LAST_MODEL=0`。
 - 若恢复出的模型**不在** `enabledModels` 里，之后第一次按 Ctrl+P 会跳到白名单第 2 条（pi 在当前模型不在列表里时从索引 0 开始往后走，第 1 条被跳过），Ctrl+N 则跳到最后一条。
-- 同机开多个 pi 时是「最后一次切换胜出」：文件整份原子覆盖，没有读-改-写，所以不需要锁，也不会互相吃掉内容。
-- 记录始终进行，即使恢复被关掉——否则重新打开开关时会没有可恢复的东西。文件里只有 provider id 与模型 id。
-- 关闭用 `"restoreLastModel": false` 或 `LLMGATES_RESTORE_LAST_MODEL=0`；关掉后启动行为与 pi 原样一致。
+- 同机开多个 pi 时是「最后一次整份写入胜出」：每次写都是原子覆盖整份文件，但写之前会读出另一半字段（切模型要带上已记的档，换档要带上已记的模型），两个进程交错切模型和换档时，后写的那份可能带上过期的另一半。这是偏好文件的 last-writer-wins，不加锁。
+- 记录始终进行，即使恢复被关掉——否则重新打开开关时会没有可恢复的东西。文件里只有 provider id、模型 id 与思考档位。
+- 关闭用 `"restoreLastModel": false` 或 `LLMGATES_RESTORE_LAST_MODEL=0`；一个开关同时管模型与档位，不另加键。关掉后启动行为与 pi 原样一致。
 
-`LLMGATES_DEBUG=1` 会打印每次启动的判定结果（`restored` / `already-selected` / `cli-model` / `session-restored` / `model-unavailable` …），用来确认到底走了哪条分支。
+`LLMGATES_DEBUG=1` 会打印每次启动的判定结果，模型与档位各一段（`model=restored thinking=restored`、`model=already-selected thinking=restored`、`model=cli-model thinking=skipped`、`model=restored thinking=cli-thinking` …），用来确认到底走了哪条分支。
 
 ## 配置
 
@@ -466,7 +476,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | `2api-models/<instanceId>.json` | 每个实例的出口覆盖，见 [手工编辑 override 文件](#手工编辑-override-文件) |
 | `pricing.json` | 可编辑的模型单价与 LiteLLM 同步缓存，见 [定价数据](#定价数据) |
 | `input-history/*.json` | 持久化的输入历史，每个作用域一份，见 [输入历史](#输入历史) |
-| `last-model.json` | 上次使用的模型（provider id + 模型 id），见 [记住上次使用的模型](#记住上次使用的模型) |
+| `last-model.json` | 上次使用的模型与思考档位（provider id + 模型 id + 思考档位），见 [记住上次使用的模型与思考档位](#记住上次使用的模型与思考档位) |
 
 `config.json`（下面写的是**默认值**，文件不存在或缺少某个键时即按此生效）：
 
@@ -481,7 +491,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 
 - 设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
 - `inputHistory` / `inputHistoryScope` 见 [输入历史](#输入历史)，改这两个键请优先用 `/input-history`（会原地保留文件里的其他键）。手工编辑后需 `/reload` 生效。
-- 设为 `"restoreLastModel": false` 或 `LLMGATES_RESTORE_LAST_MODEL=0` 则不再恢复上次使用的模型，见 [记住上次使用的模型](#记住上次使用的模型)。这个键每次会话开始时重读，改完下次启动即生效。
+- 设为 `"restoreLastModel": false` 或 `LLMGATES_RESTORE_LAST_MODEL=0` 则不再恢复上次使用的模型与思考档位，见 [记住上次使用的模型与思考档位](#记住上次使用的模型与思考档位)。这个键每次会话开始时重读，改完下次启动即生效。
 
 ### 环境变量
 
@@ -490,7 +500,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | `LLMGATES_PRICING_AUTO_UPDATE` | 覆盖 `pricingAutoUpdate`（默认 `true`；`0` / `false` 关闭） |
 | `LLMGATES_INPUT_HISTORY` | 覆盖 `inputHistory`（默认 `true`；`0` / `false` 关闭输入历史持久化，是最省事的总闸） |
 | `LLMGATES_INPUT_HISTORY_SCOPE` | 覆盖 `inputHistoryScope`：`cwd`（默认）或 `global` |
-| `LLMGATES_RESTORE_LAST_MODEL` | 覆盖 `restoreLastModel`（默认 `true`；`0` / `false` 关闭新会话恢复上次模型） |
+| `LLMGATES_RESTORE_LAST_MODEL` | 覆盖 `restoreLastModel`（默认 `true`；`0` / `false` 关闭新会话恢复上次模型与思考档位） |
 | `LLMGATES_DEBUG` | 设为 `1` / `true` / `yes` 时输出调试日志 |
 | `LLMGATES_BLOCK_PRIVATE_URLS` | 设为 `1` / `true` / `yes` 时拒绝 **IP 字面量** 形式的 private / link-local 网关地址（loopback 仍允许）；hostname（如 `gateway.local`）不受此规则约束 |
 | `LLMGATES_TPS_SUBAGENT` | 默认启用；设为 `0` / `false` / `no` 时关闭子代理 async 旁路与 meta 扫描 |
