@@ -445,7 +445,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | `/resume` / `/tree` 分叉 / `/reload` | 这些动作的 `reason` 不是 startup/new，交给 pi |
 | 会话里已经有对话内容 | 含 `pi -c` / `--session` 打开的老会话。CLI 打开会话时 reason 仍是 `startup`，所以按有没有对话内容跳过，不认 `-c` 这个旗标 |
 | 命令行带 `--model` / `--models` | `--model` 是单次运行钉死的模型，优先于「上次用的」；`--models` 是本次运行临时换了一份白名单，一并不介入（长期存在 `settings.json` 里的 `enabledModels` 则照常恢复）。这一条连档位一起跳过 |
-| 命令行带 `--thinking` | 模型照常恢复，档位不介入（`thinking=cli-thinking`）：这是本次运行钉死的档。`--model provider/id:high` 走上一行，模型和档都跳过 |
+| 命令行带 `--thinking` | 模型照常恢复；记录里的档位不套用（`thinking=cli-thinking`），生效的是命令行钉的那一档——恢复模型会让 pi 重夹档位，因此恢复后会把它设回去。`--model provider/id:high` 走上一行，模型和档都跳过 |
 | 上次的模型已下架、无凭证，或当前就是它 | 模型保持 pi 自己的选择不动。**档位仍然会设到此刻当前的那个模型上**（不是设到已下架的那个上）——它是独立的偏好，而 pi 启动读的正是被那一夹改写过的键 |
 | 记录里没有档位（0.5.0 及更早写的文件），或档位是 pi 不认识的值 | 只跳过档位那一步，模型照常恢复 |
 

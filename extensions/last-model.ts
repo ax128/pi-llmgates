@@ -363,10 +363,24 @@ export async function restoreLastModel(
 	const saved = deps.readSavedModel();
 	if (!saved) return skippedRestore("no-saved-model");
 
+	// `--thinking` owns the level for this run, so the record's level is not
+	// applied. Read what the flag actually put in effect BEFORE touching the
+	// model: pi's own `setModel` re-derives the level from
+	// `defaultThinkingLevel` and re-clamps it, which drops the flag's level on
+	// the floor. Restoring the model would then silently ignore `--thinking`.
+	const cliThinking = hasCliThinkingSelection(deps.argv);
+	const cliLevel = cliThinking ? deps.getThinkingLevel() : undefined;
+
 	// Model first, level second — see the header: pi's own `setModel` re-derives
 	// the level, so anything set before it would not survive the switch.
 	const model = await restoreSavedModel(saved, deps);
-	if (hasCliThinkingSelection(deps.argv)) {
+	if (cliThinking) {
+		// Only when the model step actually moved the level: an unchanged model
+		// never triggers pi's re-derivation, and a redundant set would add a
+		// `thinking_level_change` entry for nothing.
+		if (cliLevel && deps.getThinkingLevel() !== cliLevel) {
+			deps.setThinkingLevel(cliLevel);
+		}
 		return { model, thinkingLevel: "cli-thinking" };
 	}
 	return { model, thinkingLevel: restoreSavedThinkingLevel(saved.thinkingLevel, deps) };

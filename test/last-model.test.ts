@@ -265,6 +265,51 @@ describe("restoreLastModel", () => {
 		expect(setThinkingLevel).not.toHaveBeenCalled();
 	});
 
+	it("puts --thinking's level back after pi's setModel re-clamps it away", async () => {
+		// pi applies --thinking at startup, then our setModel makes pi re-derive
+		// the level from defaultThinkingLevel — the flag's level is gone unless
+		// we put it back.
+		// "low" so the assertion can tell the flag's level apart from the
+		// record's SAVED_LEVEL ("high"), which must stay unused on this path.
+		let level: ThinkingLevel = "low";
+		const setModel = vi.fn(async () => {
+			level = "max";
+			return true;
+		});
+		const setThinkingLevel = vi.fn((next: ThinkingLevel) => {
+			level = next;
+		});
+		const { deps } = makeDeps({
+			argv: ["--thinking", "low"],
+			getThinkingLevel: () => level,
+			setModel,
+			setThinkingLevel,
+		});
+		await expect(restoreLastModel("startup", deps)).resolves.toEqual({
+			model: "restored",
+			thinkingLevel: "cli-thinking",
+		});
+		expect(setThinkingLevel).toHaveBeenCalledTimes(1);
+		expect(setThinkingLevel).toHaveBeenCalledWith("low");
+		expect(setThinkingLevel).not.toHaveBeenCalledWith(SAVED_LEVEL);
+		expect(level).toBe("low");
+	});
+
+	it("leaves --thinking's level alone when the model step did not disturb it", async () => {
+		// already-selected never calls setModel, so nothing re-clamps the level
+		// and a set here would only add a stray thinking_level_change entry.
+		const { deps, setModel, setThinkingLevel } = makeDeps({
+			argv: ["--thinking", "high"],
+			getCurrentModel: () => model(SAVED.provider, SAVED.modelId),
+		});
+		await expect(restoreLastModel("startup", deps)).resolves.toEqual({
+			model: "already-selected",
+			thinkingLevel: "cli-thinking",
+		});
+		expect(setModel).not.toHaveBeenCalled();
+		expect(setThinkingLevel).not.toHaveBeenCalled();
+	});
+
 	it("does nothing when the setting is off", async () => {
 		const { deps, setModel, setThinkingLevel } = makeDeps({
 			enabled: () => false,
