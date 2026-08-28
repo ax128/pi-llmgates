@@ -447,7 +447,7 @@ This extension adds the two missing halves:
 | `/resume` / a `/tree` fork / `/reload` | those actions arrive with a reason other than startup/new, so pi keeps the model |
 | the session already carries a conversation | including an old chat opened with `pi -c` / `--session`. CLI continue still arrives as `reason: "startup"`, so the skip is the conversation, not the `-c` flag |
 | `--model` / `--models` on the command line | `--model` pins the model for this run and outranks a remembered one; `--models` swaps in a different scope just for this run, so it is skipped too (an `enabledModels` scope stored in `settings.json` is still restored over). This row skips the level as well |
-| `--thinking` on the command line | the model still restores; the level does not (`thinking=cli-thinking`) — that flag is this run's thinking pin. `--model provider/id:high` takes the row above and skips both |
+| `--thinking` on the command line | the model still restores; the recorded level is not applied (`thinking=cli-thinking`) — the flag's level is what stays in effect, and since restoring the model makes pi re-clamp the level, it is set back afterwards. `--model provider/id:high` takes the row above and skips both |
 | the saved model is gone, has no credentials, or is already selected | pi's own choice of model is left untouched. **The level is still applied to whichever model is current** (not to the missing one) — it is a preference of its own, and pi's startup reads the very key that clamp overwrote |
 | the record carries no level (written by 0.5.0 or earlier), or a level pi does not name | only the level step is skipped; the model still restores |
 

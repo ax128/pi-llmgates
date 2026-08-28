@@ -232,7 +232,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # 装回 registry 版；§3 
 - [ ] `pi -c` / `/resume` 打开一个**有消息**的老会话：**不介入**（`model=session-restored` 或 `model=not-fresh-start`，`thinking=skipped`），模型与档位仍是该会话自己的
 - [ ] 打开过但没发过消息的会话用 `pi -c`：与冷启动同等对待（`model=restored` / `model=already-selected`），不是「一律不碰」
 - [ ] `pi --model <provider>/<id>` 与 `pi --models <pattern>`：**不介入**（`model=cli-model thinking=skipped`——`--model` 连档位一起跳过）
-- [ ] `pi --thinking <level>`：模型照常恢复，档位不介入（`model=restored thinking=cli-thinking` 或 `model=already-selected thinking=cli-thinking`）
+- [ ] `pi --thinking <level>`：模型照常恢复，记录里的档位不套用（`model=restored thinking=cli-thinking` 或 `model=already-selected thinking=cli-thinking`）。**`get_state` 里的 `thinkingLevel` 必须仍是命令行那一档**——恢复模型会让 pi 按 `defaultThinkingLevel` 重夹，扩展要把它设回去；判定行相同而档位被改掉正是 0.5.0 的缺陷
 - [ ] `LLMGATES_RESTORE_LAST_MODEL=0`（或 `"restoreLastModel": false`）后重开：启动模型与装扩展前一致；**但 `~/.pi/agent/llmgates/last-model.json` 仍在更新**
 - [ ] 删掉 `last-model.json`、`settings.json` 里留着 `defaultProvider` / `defaultModel`：冷启动回到那份钉住的默认（种子路径，`model=restored`）；`settings.json` 里再留一个 `defaultThinkingLevel`，档位也从这份种子回来（`thinking=restored`）
 - [ ] 🖐 **记录压过钉住的默认**（有意行为，README 已写）：`/model` 里按 Ctrl+S 钉一个模型，再 Ctrl+P 切到另一个 → 重开 `pi` 回到 Ctrl+P 那个；项目级 `<项目>/.pi/settings.json` 里手写的 `defaultModel` 同样被顶掉。**Ctrl+S 那半条需 pi ≥ 0.84**（0.81–0.83 的 `/model` 列表里没有「set as default」这个动作，且每次切换都会写 `defaultModel`；那几版的 Ctrl+S 绑的是 `/scoped-models` 的「保存白名单」`app.models.save`，别按错——按下去存的正是会顶掉 pin 的那份白名单），在老版本上只验项目级那半条
