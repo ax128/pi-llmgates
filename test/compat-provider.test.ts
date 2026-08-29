@@ -20,7 +20,10 @@ import {
 	listInstances,
 	writeProviderOAuthCredential,
 } from "../extensions/compat/storage.js";
-import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
+import {
+	clearPricingCacheMemory,
+	LITELLM_PRICING_URL,
+} from "../extensions/model-pricing-cache.js";
 import { plausibleLiteLLMTable } from "./helpers/litellm-table.js";
 import type { CompatInstance } from "../extensions/compat/types.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
@@ -1278,6 +1281,120 @@ describe("override path ownership and per-instance isolation", () => {
 			});
 			expect(fetchCount).toBe(2);
 		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("compat provider catalog member tolerance", () => {
+	it("does not commit an empty list when a non-empty catalog maps to nothing", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createCompatProvider({
+				agentDir,
+				instance: INSTANCE,
+				fetchImpl: async () => new Response(JSON.stringify([{}])),
+			});
+			const store = createMemoryStore({ models: [model("cached")], checkedAt: 1 });
+			const auth = credential("key", INSTANCE.baseUrl);
+
+			// Seed the in-memory catalog from cache first.
+			await provider.refreshModels!({ credential: auth, store, allowNetwork: false });
+			expect(provider.getModels().map((item) => item.id)).toEqual(["cached"]);
+			const writesBefore = store.writes.length;
+
+			await expect(
+				provider.refreshModels!({
+					credential: auth,
+					store,
+					allowNetwork: true,
+					force: true,
+				}),
+			).rejects.toThrow(/member/i);
+
+			// The failure direction that matters: nothing published, nothing persisted.
+			expect(provider.getModels().map((item) => item.id)).toEqual(["cached"]);
+			expect(store.writes.length).toBe(writesBefore);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("commits only the good members of a mixed catalog", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const provider = createCompatProvider({
+				agentDir,
+				instance: INSTANCE,
+				fetchImpl: async () =>
+					new Response(
+						JSON.stringify([null, { id: "good-one" }, "junk", { id: "good-two" }]),
+					),
+			});
+			const store = createMemoryStore();
+
+			await provider.refreshModels!({
+				credential: credential("key", INSTANCE.baseUrl),
+				store,
+				allowNetwork: true,
+				force: true,
+			});
+
+			expect(provider.getModels().map((item) => item.id)).toEqual(["good-one", "good-two"]);
+			expect(store.writes.at(-1)?.models.map((item) => item.id)).toEqual([
+				"good-one",
+				"good-two",
+			]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	// patchPricing only leaves a model's contextWindow alone when its id is in
+	// explicitContextIds. The set used to be built from the RAW upstream id while
+	// the model carries the sanitized one, so an id holding a control char could
+	// never match and the gateway's own number was silently replaced.
+	it("keeps declared context windows explicit and keyed by the sanitized id", async () => {
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			// What patchPricing would write over an id it does not consider explicit.
+			writeFileSync(
+				join(agentDir, "llmgates/pricing.json"),
+				JSON.stringify({
+					updatedAt: 1,
+					rates: {},
+					contextWindows: { declared: 999_999, ctrlid: 888_888 },
+				}),
+			);
+			const provider = createCompatProvider({
+				agentDir,
+				instance: INSTANCE,
+				fetchImpl: async () =>
+					new Response(
+						JSON.stringify([
+							{ id: "declared", context_window: 321_000 },
+							{ id: "declared" },
+							{ id: "ctrl\u0007id", context_window: 424_242 },
+						]),
+					),
+			});
+
+			await provider.refreshModels!({
+				credential: credential("key", INSTANCE.baseUrl),
+				store: createMemoryStore(),
+				allowNetwork: true,
+				force: true,
+			});
+
+			const byId = new Map(provider.getModels().map((item) => [item.id, item]));
+			expect([...byId.keys()]).toEqual(["declared", "ctrlid"]);
+			expect(byId.get("declared")?.contextWindow).toBe(321_000);
+			expect(byId.get("ctrlid")?.contextWindow).toBe(424_242);
+		} finally {
+			clearPricingCacheMemory();
 			cleanup();
 		}
 	});

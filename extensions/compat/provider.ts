@@ -28,7 +28,6 @@ import {
 	applyInferenceBaseUrlToModel,
 	isOfflineMode,
 	modelForInferenceRequest,
-	parseGatewayModelsPayload,
 	storedModelBaseUrlMatches,
 	type GatewayModel,
 } from "../catalog.js";
@@ -320,7 +319,7 @@ export async function runCompatInstanceLogin(
 			initialCatalog = {
 				models: mapped.models,
 				pricingRefs: mapped.catalogRefs,
-				explicitContextIds: explicitContextIds(payload),
+				explicitContextIds: mapped.explicitContextIds,
 			};
 		} catch (error) {
 			if (error instanceof DOMException && error.name === "AbortError")
@@ -408,25 +407,6 @@ export function createCompatBootstrapProvider(
 		stream: bootstrapStreamError,
 		streamSimple: bootstrapStreamError,
 	};
-}
-
-function explicitContextIds(payload: unknown): Set<string> {
-	const ids = new Set<string>();
-	for (const model of parseGatewayModelsPayload(payload) as Array<
-		GatewayModel & { max_model_len?: unknown }
-	>) {
-		const id = typeof model.id === "string" ? model.id : "";
-		const context = model.context_window ?? model.max_model_len;
-		if (
-			id.trim() &&
-			typeof context === "number" &&
-			Number.isFinite(context) &&
-			context > 0
-		) {
-			ids.add(id);
-		}
-	}
-	return ids;
 }
 
 function isStoredModelValid(
@@ -803,7 +783,7 @@ export function createCompatProvider(
 		const result: CatalogResult = {
 			models: mapped.models,
 			pricingRefs: mapped.catalogRefs,
-			explicitContextIds: explicitContextIds(payload),
+			explicitContextIds: mapped.explicitContextIds,
 		};
 		schedulePricingSync(result, fetchGeneration);
 		return result;

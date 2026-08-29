@@ -287,8 +287,29 @@ export function buildInputModalities(model: GatewayModel): Array<"text" | "image
 	return input;
 }
 
-export function parseGatewayModelsPayload(payload: unknown): GatewayModel[] {
-	let list: unknown;
+export interface ParsedGatewayModels {
+	/** Members that are plain objects, in payload order. */
+	models: GatewayModel[];
+	/** Length of the source array BEFORE filtering — never `models.length`. */
+	sourceCount: number;
+	/** Members dropped because they were not plain objects. */
+	skippedNonObject: number;
+}
+
+/**
+ * The top-level envelope stays strict — a payload that is not an array, and has
+ * no `data`/`models` array, is not a catalog and still throws.
+ *
+ * Individual members do not. This used to reject the whole payload on the first
+ * non-object member, which is stricter than the mapper that actually consumes
+ * them (it already drops empty ids, duplicates, generation models and invalid
+ * optional fields) — so a single `null` blocked every good model in the same
+ * response from updating. Counting the skips instead lets the caller decide:
+ * `mapCompatModelsPayload` publishes the good members and refuses only when a
+ * non-empty payload maps to nothing because its members were invalid.
+ */
+export function parseGatewayModelsPayload(payload: unknown): ParsedGatewayModels {
+	let list: unknown[];
 	if (Array.isArray(payload)) {
 		list = payload;
 	} else if (isPlainObject(payload) && Array.isArray(payload.data)) {
@@ -299,12 +320,16 @@ export function parseGatewayModelsPayload(payload: unknown): GatewayModel[] {
 		throw new Error("Invalid models catalog: expected array or object with data/models array");
 	}
 
-	for (const [index, item] of (list as unknown[]).entries()) {
-		if (!isPlainObject(item)) {
-			throw new Error(`Invalid models catalog member at index ${index}`);
+	const models: GatewayModel[] = [];
+	let skippedNonObject = 0;
+	for (const item of list) {
+		if (isPlainObject(item)) {
+			models.push(item as GatewayModel);
+		} else {
+			skippedNonObject += 1;
 		}
 	}
-	return list as GatewayModel[];
+	return { models, sourceCount: list.length, skippedNonObject };
 }
 
 export function isOfflineMode(): boolean {
