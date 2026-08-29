@@ -14,6 +14,7 @@ import { addInstance, listInstances } from "../extensions/compat/storage.js";
 import { BOOTSTRAP_PROVIDER_ID } from "../extensions/compat/types.js";
 import { COMPAT_BOOTSTRAP_LOGIN_UI, COMPAT_DEFAULT_LOGIN_INTRO } from "../extensions/login-ui.js";
 import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
+import { plausibleLiteLLMTable } from "./helpers/litellm-table.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
 import { DiskMergingCredentialStore } from "./helpers/disk-merging-credential-store.js";
 import { withTempAgentDir, writeJson } from "./helpers/temp-agent-dir.js";
@@ -73,8 +74,9 @@ const BASE_URL = "https://compat.example/v1";
  * also receives the LiteLLM pricing sync, and that call is wrapped in a catch that
  * degrades to cached rates. An `expect()` rejection there never reaches the runner —
  * it is swallowed and re-logged as a pricing warning, so the assertion silently stops
- * guarding anything. Returning an empty table lets the sync succeed and keeps the
- * catalog URL guarded by the branch below.
+ * guarding anything. Returning a table that clears the plausibility floor — but
+ * prices none of these ids — lets the sync succeed and keeps the catalog URL
+ * guarded by the branch below.
  */
 function successfulFetch(modelId = "shared-model"): typeof fetch {
 	return vi.fn(async (input) => {
@@ -83,7 +85,7 @@ function successfulFetch(modelId = "shared-model"): typeof fetch {
 			return new Response(JSON.stringify([{ id: modelId }]));
 		}
 		if (url === LITELLM_PRICING_URL) {
-			return new Response(JSON.stringify({}));
+			return new Response(JSON.stringify(plausibleLiteLLMTable({})));
 		}
 		throw new Error(`unexpected URL: ${url}`);
 	});
@@ -285,13 +287,13 @@ describe("compat bootstrap transaction", () => {
 					if (url === LITELLM_PRICING_URL) {
 						await pricingGate;
 						return new Response(
-							JSON.stringify({
+							JSON.stringify(plausibleLiteLLMTable({
 								"openai/bootstrap-priced": {
 									input_cost_per_token: 0.000019,
 									output_cost_per_token: 0.000031,
 									max_input_tokens: 456_789,
 								},
-							}),
+							})),
 						);
 					}
 					throw new Error(`unexpected URL: ${url}`);

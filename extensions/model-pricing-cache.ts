@@ -36,7 +36,41 @@ export const LITELLM_PRICING_URL =
  */
 export const LITELLM_PRICING_MAX_BYTES = 8 * 1024 * 1024;
 
+/**
+ * Reject a network payload that parses as an object but cannot plausibly be the
+ * LiteLLM table — a GitHub/API error object, a proxy's JSON notice, a small
+ * hand-written stub. A table is accepted only if at least this many members look
+ * structurally like pricing entries (see `isPlausibleLiteLLMEntry`), so 50
+ * unrelated scalar fields do not clear the bar either.
+ *
+ * Measured 2026-08-29 against the live table: 1,972,867 bytes, 3,365 members,
+ * 2,986 of them structurally plausible. 50 is ~1.7% of that — roughly 60x of
+ * headroom, so LiteLLM would have to lose 98% of its catalog before a real table
+ * were rejected. Re-measure before raising it.
+ *
+ * This is a malformed-response guard, NOT authentication of the table's identity:
+ * it cannot prove a large object came from LiteLLM. The residual risk is bounded
+ * by the fixed HTTPS URL, the existing same-origin redirect policy, and the
+ * one-hour in-process miss TTL below.
+ *
+ * It is also the safety precondition for that miss TTL. Today a malformed table
+ * is self-healing — keys it cannot answer are re-fetched on every refresh. Once
+ * misses are suppressed, the same malformed table would freeze the miss records
+ * for an hour, so the two must ship together.
+ */
+export const MIN_PLAUSIBLE_LITELLM_ENTRIES = 50;
 
+/**
+ * How long a confirmed upstream miss is trusted within this process.
+ *
+ * A gateway's custom ids are never in LiteLLM, and without this every catalog
+ * refresh re-downloads and re-parses the whole ~1.9 MiB table to re-learn that.
+ * One hour clears the repeated `/llmgates-reload`, foreground endpoint refresh
+ * and 5-minute background refresh waste while keeping the worst-case delay for
+ * newly published upstream pricing at an hour. Records live in memory only —
+ * a restart re-probes, and nothing about this reaches `pricing.json`.
+ */
+export const PRICING_MISS_RETRY_MS = 60 * 60 * 1000;
 
 export interface CatalogModelRef {
 	id: string;
@@ -94,6 +128,66 @@ let memoryContextWindows: Record<string, number> | undefined;
 let pricingSyncChain: Promise<void> = Promise.resolve();
 const activePricingSyncs = new Map<string, Promise<ModelPricingFile | null>>();
 
+/**
+ * Missing price and missing context window are tracked as separate dimensions:
+ * a key can be in LiteLLM with a rate but no usable `max_input_tokens`, and one
+ * dimension must never mask a later miss in the other.
+ */
+type PricingMissKind = "rate" | "context";
+
+/**
+ * Confirmed upstream misses, keyed by agentDir + dimension + pricing cache key.
+ *
+ * agentDir is part of the key so two instances (A and B) that each hold a
+ * different catalog record their misses side by side instead of replacing each
+ * other's state — the failure mode that ruled out a persisted snapshot.
+ */
+const recentPricingMissProbes = new Map<string, number>();
+
+function pricingMissProbeKey(
+	agentDir: string,
+	kind: PricingMissKind,
+	ref: CatalogModelRef,
+): string {
+	// JSON, not a hand-joined separator: a model id may contain anything.
+	return JSON.stringify([agentDir, kind, pricingCacheKey(ref.id, ref.providerId)]);
+}
+
+/**
+ * `age >= 0` matters because the Map is process-global while tests mix a pinned
+ * fake clock with the real one: a record written at `now: () => 1_000_000` read
+ * back under `Date.now()` (or vice versa) is simply not fresh, instead of being
+ * preserved forever by a negative age.
+ */
+function isPricingMissProbeFresh(probedAt: number | undefined, nowMs: number): boolean {
+	if (probedAt === undefined) return false;
+	const age = nowMs - probedAt;
+	return age >= 0 && age < PRICING_MISS_RETRY_MS;
+}
+
+function recordPricingMissProbe(
+	agentDir: string,
+	kind: PricingMissKind,
+	ref: CatalogModelRef,
+	nowMs: number,
+	stillMissing: boolean,
+): void {
+	const key = pricingMissProbeKey(agentDir, kind, ref);
+	if (stillMissing) {
+		recentPricingMissProbes.set(key, nowMs);
+	} else {
+		recentPricingMissProbes.delete(key);
+	}
+}
+
+function prunePricingMissProbes(nowMs: number): void {
+	for (const [key, probedAt] of recentPricingMissProbes) {
+		if (!isPricingMissProbeFresh(probedAt, nowMs)) {
+			recentPricingMissProbes.delete(key);
+		}
+	}
+}
+
 /** Failure classes that warn independently. */
 type PricingSyncIssue = "fetch" | "write";
 const warnedPricingSyncIssues = new Set<PricingSyncIssue>();
@@ -140,6 +234,7 @@ export function resetPricingSyncChainForTests(): void {
 	pricingSyncChain = Promise.resolve();
 	activePricingSyncs.clear();
 	warnedPricingSyncIssues.clear();
+	recentPricingMissProbes.clear();
 }
 
 export function mergePricingRates(file: ModelPricingFile): Record<string, ModelCostRates> {
@@ -431,6 +526,12 @@ function isOverridden(file: ModelPricingFile, ref: CatalogModelRef): boolean {
 export interface SyncModelPricingCacheOptions {
 	now?: () => number;
 	fetchImpl?: typeof fetch;
+	/**
+	 * Test injection point. It replaces the whole network leg, so it also bypasses
+	 * `fetchLiteLLMPriceTable`'s `MIN_PLAUSIBLE_LITELLM_ENTRIES` payload check —
+	 * a few-entry table injected here is fine and does not have to be padded.
+	 * Fixtures that inject `fetchImpl` instead DO go through that check.
+	 */
 	loadLiteLLMTable?: () => Promise<Record<string, LiteLLMPriceEntry>>;
 	/** Override config/env auto-update switch (tests). */
 	pricingAutoUpdate?: boolean;
@@ -442,6 +543,36 @@ export interface SyncModelPricingCacheOptions {
 	 * `pricingSyncChain` serializes them globally.
 	 */
 	signal?: AbortSignal;
+}
+
+/** Numeric fields a real LiteLLM entry carries at least one of. */
+const LITELLM_ENTRY_NUMERIC_FIELDS = [
+	"input_cost_per_token",
+	"output_cost_per_token",
+	"max_input_tokens",
+	"max_tokens",
+	"max_output_tokens",
+] as const;
+
+function isPlausibleLiteLLMEntry(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return false;
+	}
+	const entry = value as Record<string, unknown>;
+	return LITELLM_ENTRY_NUMERIC_FIELDS.some((field) => {
+		const candidate = entry[field];
+		return typeof candidate === "number" && Number.isFinite(candidate);
+	});
+}
+
+function countPlausibleLiteLLMEntries(payload: Record<string, unknown>): number {
+	let count = 0;
+	for (const value of Object.values(payload)) {
+		if (isPlausibleLiteLLMEntry(value) && ++count >= MIN_PLAUSIBLE_LITELLM_ENTRIES) {
+			return count;
+		}
+	}
+	return count;
 }
 
 export async function fetchLiteLLMPriceTable(options?: {
@@ -459,6 +590,13 @@ export async function fetchLiteLLMPriceTable(options?: {
 	});
 	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
 		throw new Error("Invalid LiteLLM pricing payload");
+	}
+	const plausible = countPlausibleLiteLLMEntries(payload as Record<string, unknown>);
+	if (plausible < MIN_PLAUSIBLE_LITELLM_ENTRIES) {
+		throw new Error(
+			`Implausible LiteLLM pricing table: only ${plausible} entries look like pricing records ` +
+				`(expected at least ${MIN_PLAUSIBLE_LITELLM_ENTRIES})`,
+		);
 	}
 	return payload as Record<string, LiteLLMPriceEntry>;
 }
@@ -526,11 +664,29 @@ export async function syncModelPricingCache(
 			rates: {},
 		};
 
-	const stale = now() - (existing.lastAutoSyncAt ?? existing.updatedAt) >= MODEL_PRICING_CACHE_TTL_MS;
+	const nowMs = now();
+	prunePricingMissProbes(nowMs);
+
+	const stale = nowMs - (existing.lastAutoSyncAt ?? existing.updatedAt) >= MODEL_PRICING_CACHE_TTL_MS;
 	const missingRates = catalog.filter((ref) => !hasCachedRate(existing, ref));
 	const missingContexts = catalog.filter((ref) => !hasCachedContextWindow(existing, ref));
+	const probedRecently = (kind: PricingMissKind) => (ref: CatalogModelRef) =>
+		isPricingMissProbeFresh(
+			recentPricingMissProbes.get(pricingMissProbeKey(agentDir, kind, ref)),
+			nowMs,
+		);
 
-	if (!stale && missingRates.length === 0 && missingContexts.length === 0) {
+	// A complete fresh cache short-circuits exactly as before (both `every` calls
+	// are vacuously true). What is new is the second case: every current gap has
+	// already been confirmed absent upstream within PRICING_MISS_RETRY_MS, so the
+	// whole table would be downloaded and parsed only to re-learn the same misses.
+	// A key never probed — or probed too long ago — still forces a fetch, and the
+	// 24h TTL still wins over any miss record.
+	if (
+		!stale &&
+		missingRates.every(probedRecently("rate")) &&
+		missingContexts.every(probedRecently("context"))
+	) {
 		applyPricingCacheToResolver(existing);
 		return existing;
 	}
@@ -540,8 +696,6 @@ export async function syncModelPricingCache(
 		return existing;
 	}
 
-	const rateRefsToResolve = stale ? catalog : missingRates;
-	const contextRefsToResolve = stale ? catalog : missingContexts;
 	const loadTable =
 		options.loadLiteLLMTable ??
 		(async () =>
@@ -571,7 +725,12 @@ export async function syncModelPricingCache(
 		Object.create(null) as Record<string, ModelCostRates>,
 		existing.rates,
 	);
-	for (const ref of rateRefsToResolve) {
+	// Every successful fetch re-checks the WHOLE catalog, not just the gaps. The
+	// round already paid for the table, and `lastAutoSyncAt` is advanced below —
+	// so resolving only the missing refs is what let a permanently-absent id (a
+	// gateway's own model id, very common) reset the 24h clock on every refresh
+	// and starve the documented daily refresh of the ids that DO have prices.
+	for (const ref of catalog) {
 		if (isOverridden(existing, ref)) {
 			continue;
 		}
@@ -586,7 +745,7 @@ export async function syncModelPricingCache(
 		Object.create(null) as Record<string, number>,
 		existing.contextWindows,
 	);
-	for (const ref of contextRefsToResolve) {
+	for (const ref of catalog) {
 		const contextWindow = lookupLiteLLMContextWindow(table, ref.id, ref.providerId);
 		if (contextWindow === undefined) {
 			continue;
@@ -606,6 +765,16 @@ export async function syncModelPricingCache(
 			Object.create(null) as Record<string, ModelCostRates>,
 			existing.overrides,
 		);
+	}
+
+	// Derived from the assembled result, not from the pre-fetch gaps: a dimension
+	// that this table filled must drop its record, and one still empty afterwards
+	// is a confirmed upstream miss. Only reached on a successful, structurally
+	// valid table — a fetch or validation failure returns above without recording
+	// anything, so a bad round never suppresses the next one.
+	for (const ref of catalog) {
+		recordPricingMissProbe(agentDir, "rate", ref, nowMs, !hasCachedRate(next, ref));
+		recordPricingMissProbe(agentDir, "context", ref, nowMs, !hasCachedContextWindow(next, ref));
 	}
 
 	try {

@@ -1,7 +1,9 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import {
+	MIN_PLAUSIBLE_LITELLM_ENTRIES,
 	MODEL_PRICING_CACHE_FILE,
 	MODEL_PRICING_CACHE_TTL_MS,
+	PRICING_MISS_RETRY_MS,
 	applyPricingCacheToResolver,
 	catalogRefsFromGatewayModels,
 	clearPricingCacheMemory,
@@ -25,6 +27,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolvePricingAutoUpdate } from "../extensions/connection.js";
 import { resolveModelCostRates } from "../extensions/model-pricing.js";
+import { plausibleLiteLLMTable } from "./helpers/litellm-table.js";
 
 function tempAgentDir(prefix: string): string {
 	const agentDir = mkdtempSync(join(tmpdir(), prefix));
@@ -573,7 +576,7 @@ describe("model-pricing-cache", () => {
 	it("fetchLiteLLMPriceTable parses table via bounded client", async () => {
 		const table = await fetchLiteLLMPriceTable({
 			fetchImpl: async () =>
-				new Response(JSON.stringify(MOCK_LITELLM), {
+				new Response(JSON.stringify(plausibleLiteLLMTable(MOCK_LITELLM)), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -831,4 +834,273 @@ describe("pricing sync warnings", () => {
 			}
 		},
 	);
+});
+
+describe("LiteLLM table plausibility floor", () => {
+	beforeEach(() => {
+		clearPricingCacheMemory();
+		resetPricingSyncChainForTests();
+	});
+
+	function tableResponse(table: unknown): typeof fetch {
+		return (async () =>
+			new Response(JSON.stringify(table), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			})) as unknown as typeof fetch;
+	}
+
+	it("rejects a small object that parses but cannot be the LiteLLM table", async () => {
+		await expect(
+			fetchLiteLLMPriceTable({ fetchImpl: tableResponse(MOCK_LITELLM) }),
+		).rejects.toThrow(/implausible/i);
+	});
+
+	// The count is of entries that look like pricing records, not of keys: an
+	// error object or a proxy notice with plenty of scalar fields must not pass.
+	it("rejects a table padded with unrelated non-entry fields", async () => {
+		const decoys: Record<string, unknown> = {};
+		for (let i = 0; i < MIN_PLAUSIBLE_LITELLM_ENTRIES * 2; i++) {
+			decoys[`field-${i}`] = { message: "rate limited", documentation_url: "https://example" };
+		}
+		await expect(
+			fetchLiteLLMPriceTable({ fetchImpl: tableResponse(decoys) }),
+		).rejects.toThrow(/implausible/i);
+	});
+
+	it("accepts a table once enough members look like pricing entries", async () => {
+		const table = await fetchLiteLLMPriceTable({
+			fetchImpl: tableResponse(plausibleLiteLLMTable(MOCK_LITELLM)),
+		});
+		expect(table["gpt-5.6-sol"]).toBeDefined();
+	});
+
+	it("keeps cached rates and lastAutoSyncAt when the fetched table is rejected", async () => {
+		const agentDir = tempAgentDir("pricing-implausible-");
+		writeFileSync(
+			join(agentDir, "llmgates/pricing.json"),
+			JSON.stringify({
+				updatedAt: 1,
+				lastAutoSyncAt: 1,
+				rates: { "openai/gpt-5.6-sol": { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 } },
+			}),
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			await refreshModelPricing(
+				agentDir,
+				[{ id: "gpt-5.6-sol", provider_id: "openai", capability_tags: ["chat"] }],
+				{
+					pricingAutoUpdate: true,
+					now: () => MODEL_PRICING_CACHE_TTL_MS + 1,
+					fetchImpl: tableResponse(MOCK_LITELLM),
+				},
+			);
+
+			const persisted = readModelPricingFile(agentDir);
+			expect(persisted?.rates["openai/gpt-5.6-sol"]).toMatchObject({ input: 1, output: 2 });
+			expect(persisted?.lastAutoSyncAt).toBe(1);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
+describe("pricing miss suppression", () => {
+	beforeEach(() => {
+		clearPricingCacheMemory();
+		resetPricingSyncChainForTests();
+	});
+
+	const UNKNOWN = [{ id: "gateway-custom-model", capability_tags: ["chat"] }];
+
+	function countingLoader(table: Record<string, unknown> = MOCK_LITELLM) {
+		const state = { calls: 0 };
+		return {
+			state,
+			load: async () => {
+				state.calls += 1;
+				return table as never;
+			},
+		};
+	}
+
+	it("does not re-download the table for a miss it already confirmed", async () => {
+		const agentDir = tempAgentDir("pricing-miss-once-");
+		const { state, load } = countingLoader();
+
+		await syncModelPricingCache(agentDir, UNKNOWN, { now: () => 1_000_000, loadLiteLLMTable: load });
+		await syncModelPricingCache(agentDir, UNKNOWN, { now: () => 1_060_000, loadLiteLLMTable: load });
+
+		expect(state.calls).toBe(1);
+	});
+
+	it("re-probes a known miss once the retry window has passed", async () => {
+		const agentDir = tempAgentDir("pricing-miss-ttl-");
+		const { state, load } = countingLoader();
+
+		await syncModelPricingCache(agentDir, UNKNOWN, { now: () => 1_000_000, loadLiteLLMTable: load });
+		await syncModelPricingCache(agentDir, UNKNOWN, {
+			now: () => 1_000_000 + PRICING_MISS_RETRY_MS + 1,
+			loadLiteLLMTable: load,
+		});
+
+		expect(state.calls).toBe(2);
+	});
+
+	it("probes a newly appearing key immediately even while another miss is suppressed", async () => {
+		const agentDir = tempAgentDir("pricing-miss-new-");
+		const { state, load } = countingLoader();
+
+		await syncModelPricingCache(agentDir, UNKNOWN, { now: () => 1_000_000, loadLiteLLMTable: load });
+		await syncModelPricingCache(
+			agentDir,
+			[...UNKNOWN, { id: "second-custom-model", capability_tags: ["chat"] }],
+			{ now: () => 1_000_001, loadLiteLLMTable: load },
+		);
+
+		expect(state.calls).toBe(2);
+	});
+
+	it("stays quiet when a key leaves the catalog and every remaining miss is probed", async () => {
+		const agentDir = tempAgentDir("pricing-miss-shrink-");
+		const { state, load } = countingLoader();
+		const both = [...UNKNOWN, { id: "second-custom-model", capability_tags: ["chat"] }];
+
+		await syncModelPricingCache(agentDir, both, { now: () => 1_000_000, loadLiteLLMTable: load });
+		await syncModelPricingCache(agentDir, UNKNOWN, { now: () => 1_000_001, loadLiteLLMTable: load });
+
+		expect(state.calls).toBe(1);
+	});
+
+	// The failure mode that ruled out a persisted, whole-file snapshot: instance B
+	// writing its own misses must not evict A's, or A re-downloads on every switch.
+	it("keeps two instances' miss records side by side across A -> B -> A", async () => {
+		const dirA = tempAgentDir("pricing-miss-a-");
+		const dirB = tempAgentDir("pricing-miss-b-");
+		const { state, load } = countingLoader();
+		const catalogA = [{ id: "alpha-custom-model", capability_tags: ["chat"] }];
+		const catalogB = [{ id: "beta-custom-model", capability_tags: ["chat"] }];
+
+		await syncModelPricingCache(dirA, catalogA, { now: () => 1_000_000, loadLiteLLMTable: load });
+		await syncModelPricingCache(dirB, catalogB, { now: () => 1_000_001, loadLiteLLMTable: load });
+		await syncModelPricingCache(dirA, catalogA, { now: () => 1_000_002, loadLiteLLMTable: load });
+
+		expect(state.calls).toBe(2);
+	});
+
+	// "rate" and "context" are separate dimensions: an entry that carries a context
+	// window but no usable cost must not let its rate miss stand in for a context
+	// miss that appears later.
+	it("never lets a rate miss impersonate a context miss for the same key", async () => {
+		const agentDir = tempAgentDir("pricing-miss-dimension-");
+		const contextOnly = { "context-only-model": { max_input_tokens: 321_000 } };
+		const { state, load } = countingLoader(contextOnly);
+		const catalog = [{ id: "context-only-model", capability_tags: ["chat"] }];
+
+		await syncModelPricingCache(agentDir, catalog, { now: () => 1_000_000, loadLiteLLMTable: load });
+		const first = readModelPricingFile(agentDir);
+		expect(first?.contextWindows?.["context-only-model"]).toBe(321_000);
+		expect(first?.rates["context-only-model"]).toBeUndefined();
+
+		// Rate is still missing, but it was just probed — no second download.
+		await syncModelPricingCache(agentDir, catalog, { now: () => 1_000_001, loadLiteLLMTable: load });
+		expect(state.calls).toBe(1);
+
+		// Drop only the context window (a hand edit); the context dimension has no
+		// record of its own, so this must fetch again.
+		writeFileSync(
+			join(agentDir, "llmgates/pricing.json"),
+			JSON.stringify({ updatedAt: 1_000_000, lastAutoSyncAt: 1_000_000, rates: {} }),
+		);
+		await syncModelPricingCache(agentDir, catalog, { now: () => 1_000_002, loadLiteLLMTable: load });
+		expect(state.calls).toBe(2);
+	});
+
+	it("clears the record and stores the values when upstream finally lists the key", async () => {
+		const agentDir = tempAgentDir("pricing-miss-resolved-");
+		let table: Record<string, unknown> = {};
+		let calls = 0;
+		const load = async () => {
+			calls += 1;
+			return table as never;
+		};
+
+		await syncModelPricingCache(agentDir, UNKNOWN, { now: () => 1_000_000, loadLiteLLMTable: load });
+		table = {
+			"gateway-custom-model": {
+				input_cost_per_token: 4e-6,
+				output_cost_per_token: 8e-6,
+				max_input_tokens: 131_072,
+			},
+		};
+		await syncModelPricingCache(agentDir, UNKNOWN, {
+			now: () => 1_000_000 + PRICING_MISS_RETRY_MS + 1,
+			loadLiteLLMTable: load,
+		});
+
+		const persisted = readModelPricingFile(agentDir);
+		expect(persisted?.rates["gateway-custom-model"]).toMatchObject({ input: 4, output: 8 });
+		expect(persisted?.contextWindows?.["gateway-custom-model"]).toBe(131_072);
+
+		// The record is gone, so the key is simply cached now — not suppressed.
+		await syncModelPricingCache(agentDir, UNKNOWN, {
+			now: () => 1_000_000 + PRICING_MISS_RETRY_MS + 2,
+			loadLiteLLMTable: load,
+		});
+		expect(calls).toBe(2);
+	});
+
+	// A permanently absent id used to advance lastAutoSyncAt on every refresh while
+	// only the missing refs were resolved, so priced ids were never re-checked. Any
+	// successful fetch now re-reads the whole catalog.
+	it("refreshes an already-priced model on the round a stale miss re-probes", async () => {
+		const agentDir = tempAgentDir("pricing-miss-fullscan-");
+		let priced = { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, max_input_tokens: 100_000 };
+		let calls = 0;
+		const load = async () => {
+			calls += 1;
+			return { "priced-model": priced } as never;
+		};
+		const catalog = [
+			{ id: "priced-model", capability_tags: ["chat"] },
+			{ id: "gateway-custom-model", capability_tags: ["chat"] },
+		];
+
+		await syncModelPricingCache(agentDir, catalog, { now: () => 1_000_000, loadLiteLLMTable: load });
+		expect(readModelPricingFile(agentDir)?.rates["priced-model"]).toMatchObject({ input: 1, output: 2 });
+
+		priced = { input_cost_per_token: 9e-6, output_cost_per_token: 18e-6, max_input_tokens: 100_000 };
+		await syncModelPricingCache(agentDir, catalog, {
+			now: () => 1_000_000 + PRICING_MISS_RETRY_MS + 1,
+			loadLiteLLMTable: load,
+		});
+
+		expect(calls).toBe(2);
+		expect(readModelPricingFile(agentDir)?.rates["priced-model"]).toMatchObject({ input: 9, output: 18 });
+	});
+
+	it("records nothing when the load fails, so the next round still retries", async () => {
+		const agentDir = tempAgentDir("pricing-miss-failure-");
+		let calls = 0;
+		let failing = true;
+		const load = async () => {
+			calls += 1;
+			if (failing) throw new Error("network down");
+			return EXACT_LITELLM as never;
+		};
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			await syncModelPricingCache(agentDir, UNKNOWN, { now: () => 1_000_000, loadLiteLLMTable: load });
+			failing = false;
+			await syncModelPricingCache(agentDir, UNKNOWN, { now: () => 1_000_001, loadLiteLLMTable: load });
+			expect(calls).toBe(2);
+
+			// Only now is the miss confirmed, so the third round is suppressed.
+			await syncModelPricingCache(agentDir, UNKNOWN, { now: () => 1_000_002, loadLiteLLMTable: load });
+			expect(calls).toBe(2);
+		} finally {
+			warn.mockRestore();
+		}
+	});
 });

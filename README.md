@@ -389,7 +389,7 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与网关
 }
 ```
 
-启用 `pricingAutoUpdate` 时，每次 catalog 刷新会在后台从 [LiteLLM](https://github.com/BerriAI/litellm) 同步模型零售价（不阻塞列表）：缺失模型立即拉取，否则每 24h 刷新。同步失败时保留缓存与静态规则（`LLMGATES_DEBUG=1` 可查看详情）。自动同步**只写 `rates`**，**不修改 `overrides`**。catalog 外 `rates` 条目在刷新时保留。每次刷新会重读磁盘，手改无需重启。`extensions/model-pricing.ts` 中的静态规则为离线兜底。同步成功后会在内存中 patch 已注册模型的 `cost` 字段，不额外请求 catalog。
+启用 `pricingAutoUpdate` 时，每次 catalog 刷新会在后台从 [LiteLLM](https://github.com/BerriAI/litellm) 同步模型零售价（不阻塞列表）：**新出现**的缺失 key 立即拉取；已确认 LiteLLM 未收录的 key，在同一进程内最多每 1 小时重探一次（记录只在内存里，重启 pi 即重新探测，不写进任何文件）；已完整命中的正缓存仍每 24h 刷新。取到整表的那一轮会用它复核当前 catalog 的**全部**模型，不只补缺失项。同步失败、或拿到的表结构上不像定价表时，保留缓存与静态规则（`LLMGATES_DEBUG=1` 可查看详情）。自动同步**只写 `rates`**，**不修改 `overrides`**。catalog 外 `rates` 条目在刷新时保留。每次刷新会重读磁盘，手改无需重启。`extensions/model-pricing.ts` 中的静态规则为离线兜底。同步成功后会在内存中 patch 已注册模型的 `cost` 字段，不额外请求 catalog。
 
 ## 输入历史
 
@@ -552,7 +552,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | Kimi / `tokenization failed` | 升级本扩展后 `/reload`；Kimi 不接受 `developer` role，扩展会注入 compat。也可新建会话再试（中途从其他模型切到 K3 不稳定） |
 | 模型出口选错导致 400 | `/endpoint auto <model-id>` 或 `/endpoint-setting` 选 `auto` 回落 |
 | 费用与账单不一致 | TUI 费用为上游零售价估算；账户消费看 `/balance` 或网关控制台 |
-| `LiteLLM pricing sync failed`（每进程只提示一次） | 定价表拉不到（离线 / `raw.githubusercontent.com` 被墙）；费用回退到已缓存或静态价，功能不受影响。`LLMGATES_DEBUG=1` 看详情，或手工编辑 `~/.pi/agent/llmgates/pricing.json` |
+| `LiteLLM pricing sync failed`（每进程只提示一次） | 定价表拉不到（离线 / `raw.githubusercontent.com` 被墙），或返回的内容结构上不像定价表（`Implausible LiteLLM pricing table`，通常是被代理或错误页替换）；费用回退到已缓存或静态价，功能不受影响。`LLMGATES_DEBUG=1` 看详情，或手工编辑 `~/.pi/agent/llmgates/pricing.json` |
 | `The agent is still busy` | `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 等待当前对话轮结束超过 120s；未写入任何文件，等这一轮结束后重跑即可 |
 | `file lock was compromised` | 锁在续期窗口内没能刷新（机器休眠、事件循环长时间阻塞、网络盘）。已自动释放并继续，不影响写入；反复出现时检查 `~/.pi/agent/` 是否在网络文件系统上 |
 | 需要调试日志 | `LLMGATES_DEBUG=1` 后 `/reload` |
