@@ -1,11 +1,11 @@
 import { readFileSync, readdirSync, statSync, type Stats } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
 	emptyModelUsageEntry,
 	normalizeTokenCount,
 	type ModelUsageStats,
 } from "./tps-stats.js";
-import { isPlainObject, envFlag } from "./util.js";
+import { isPlainObject } from "./util.js";
 
 export const PI_SUBAGENTS_DIR = ".pi-subagents";
 export const PI_SUBAGENTS_ARTIFACTS_DIR = join(PI_SUBAGENTS_DIR, "artifacts");
@@ -399,10 +399,6 @@ export function asyncRunSourceKey(asyncDirBasename: string, agent: unknown, chil
 	return `async:${dir}:${normalizedAgent}:${index}`;
 }
 
-export function sessionFileSourceKey(absolutePath: string): string {
-	return `session:${absolutePath}`;
-}
-
 /**
  * Right-to-left parse: `_meta.json` → index → agent → remaining runId (may contain `-`) (§13.1/§13.10).
  */
@@ -684,8 +680,6 @@ export function parsePiSubagentsMetaJson(raw: unknown, sourceKey: string): Subag
  * stall a turn for as long as it takes to parse it.
  */
 export const MAX_SUBAGENT_META_BYTES = 2 * 1024 * 1024;
-/** Last-resort child session.jsonl reads. Over this, skip the whole file. */
-export const MAX_SUBAGENT_SESSION_BYTES = 8 * 1024 * 1024;
 
 /**
  * Per-scan ceiling on files actually read. The cap applies AFTER the ingested /
@@ -747,23 +741,6 @@ export function resolveSubagentArtifactDirs(cwd: string, sessionFile?: string | 
 		dirs.push(join(dirname(normalizedSessionFile), SUBAGENTS_SESSION_ARTIFACTS_DIR_NAME));
 	}
 	return [...new Set(dirs)];
-}
-
-/** Agent workspace root for subagent artifact reads (pi session cwd). */
-export function resolveSubagentWorkspaceRoot(cwd: string): string {
-	return resolve(cwd);
-}
-
-/** True when `candidate` resolves inside the workspace (blocks path traversal). */
-export function isSubagentPathWithinWorkspace(candidate: string, cwd: string): boolean {
-	const trimmed = candidate.trim();
-	if (!trimmed) {
-		return false;
-	}
-	const root = resolveSubagentWorkspaceRoot(cwd);
-	const target = isAbsolute(trimmed) ? resolve(trimmed) : resolve(root, trimmed);
-	const rel = relative(root, target);
-	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 /**
@@ -845,81 +822,6 @@ export function collectPiSubagentsMetaUsage(
 	return out;
 }
 
-function logSubagentSkip(message: string): void {
-	if (envFlag("LLMGATES_DEBUG")) {
-		console.warn(`[pi-llmgates-provider] ${message}`);
-	}
-}
-
-function readJsonFile(path: string, workspaceRoot: string | undefined): unknown | null {
-	if (workspaceRoot === undefined || !isSubagentPathWithinWorkspace(path, workspaceRoot)) {
-		return null;
-	}
-	try {
-		const sizeBytes = statSync(path).size;
-		if (sizeBytes > MAX_SUBAGENT_META_BYTES) {
-			logSubagentSkip(
-				`Skipping ${path}: ${sizeBytes} bytes exceeds ${MAX_SUBAGENT_META_BYTES} status.json cap`,
-			);
-			return null;
-		}
-		return JSON.parse(readFileSync(path, "utf8"));
-	} catch {
-		return null;
-	}
-}
-
-/** Read one child's usage from asyncDir/status.json (fallback when event lacks tokens). */
-export function extractSubagentUsageFromAsyncStatus(
-	asyncDir: string,
-	runId: string,
-	childIndex: number,
-	workspaceRoot?: string,
-): SubagentUsageRecord | null {
-	const status = readJsonFile(join(asyncDir, "status.json"), workspaceRoot);
-	if (!isPlainObject(status)) {
-		return null;
-	}
-	const steps = status.steps;
-	// Per-child only — never return run totals here (avoids N× fan-out in async-complete loops).
-	if (!Array.isArray(steps) || steps.length === 0) {
-		return null;
-	}
-	const step = steps[childIndex];
-	if (!isPlainObject(step)) {
-		return null;
-	}
-	const agent = typeof step.agent === "string" ? step.agent : "unknown";
-	const sourceKey =
-		subagentRunSourceKey(runId, agent, childIndex) ??
-		asyncRunSourceKey(basename(asyncDir), agent, childIndex);
-	if (!sourceKey) {
-		return null;
-	}
-	return recordFromPartial(step, sourceKey, agent);
-}
-
-/** Run-level totals from status.json when steps are missing/empty (§13.9). */
-export function extractSubagentRunAggregateFromAsyncStatus(
-	asyncDir: string,
-	runId: string,
-	workspaceRoot?: string,
-): SubagentUsageRecord | null {
-	const status = readJsonFile(join(asyncDir, "status.json"), workspaceRoot);
-	if (!isPlainObject(status)) {
-		return null;
-	}
-	const steps = status.steps;
-	if (Array.isArray(steps) && steps.length > 0) {
-		return null;
-	}
-	const sourceKey = subagentRunAggregateSourceKey(runId);
-	if (!sourceKey) {
-		return null;
-	}
-	return recordFromPartial(status, sourceKey, typeof status.mode === "string" ? status.mode : "aggregate");
-}
-
 export type SubagentIngestState = {
 	keys: Set<string>;
 	aggregateRunIds: Set<string>;
@@ -994,77 +896,6 @@ export function selectFreshSubagentRecords(
 	return fresh;
 }
 
-/** Last-resort: sum assistant usage lines from a child session.jsonl. */
-export function extractSubagentUsageFromSessionFile(
-	sessionFile: string,
-	workspaceRoot?: string,
-	onSkipped?: (reason: string) => void,
-): SubagentUsageRecord | null {
-	if (workspaceRoot === undefined || !isSubagentPathWithinWorkspace(sessionFile, workspaceRoot)) {
-		return null;
-	}
-	let text: string;
-	try {
-		const sizeBytes = statSync(sessionFile).size;
-		if (sizeBytes > MAX_SUBAGENT_SESSION_BYTES) {
-			const reason = `session.jsonl exceeds ${MAX_SUBAGENT_SESSION_BYTES} bytes (${sizeBytes}); skipping ${sessionFile}`;
-			logSubagentSkip(reason);
-			onSkipped?.(reason);
-			return null;
-		}
-		text = readFileSync(sessionFile, "utf8");
-	} catch {
-		return null;
-	}
-	let input = 0;
-	let output = 0;
-	let cacheRead = 0;
-	let cacheWrite = 0;
-	let calls = 0;
-	for (const line of text.split(/\r?\n/)) {
-		const trimmed = line.trim();
-		if (!trimmed) {
-			continue;
-		}
-		let entry: unknown;
-		try {
-			entry = JSON.parse(trimmed);
-		} catch {
-			continue;
-		}
-		if (!isPlainObject(entry)) {
-			continue;
-		}
-		const usage =
-			entry.role === "assistant" && isPlainObject(entry.usage)
-				? entry.usage
-				: isPlainObject(entry.message) &&
-					entry.message.role === "assistant" &&
-					isPlainObject(entry.message.usage)
-					? entry.message.usage
-					: null;
-		if (!usage) {
-			continue;
-		}
-		calls++;
-		input += normalizeTokenCount(usage.input);
-		output += normalizeTokenCount(usage.output);
-		cacheRead += normalizeTokenCount(usage.cacheRead);
-		cacheWrite += normalizeTokenCount(usage.cacheWrite);
-	}
-	if (calls === 0) {
-		return null;
-	}
-	return usageCountersToRecord(sessionFileSourceKey(sessionFile), "subagent/session", {
-		turns: calls,
-		input,
-		output,
-		cacheRead,
-		cacheWrite,
-		cost: 0,
-	});
-}
-
 function resolveChildSourceKey(
 	runId: unknown,
 	agent: unknown,
@@ -1087,8 +918,6 @@ function resolveChildSourceKey(
 export function extractSubagentUsageFromAsyncComplete(
 	data: unknown,
 	currentSessionId: string | SubagentSessionIdentity | null | undefined,
-	workspaceRoot?: string,
-	onSkipped?: (reason: string) => void,
 ): SubagentUsageRecord[] {
 	if (!isPlainObject(data)) {
 		return [];
@@ -1117,38 +946,7 @@ export function extractSubagentUsageFromAsyncComplete(
 					: undefined;
 		const sourceKey = resolveChildSourceKey(childRunId ?? runId, agent, i, asyncDir);
 
-		let record = recordFromPartial(item, sourceKey, agent);
-
-		if (!record && asyncDir) {
-			const fromStatus = extractSubagentUsageFromAsyncStatus(asyncDir, runId ?? "", i, workspaceRoot);
-			if (fromStatus) {
-				// Keep meta:{runId}:{agent}:{i} for dedupe with tool/meta paths when possible.
-				record = { ...fromStatus, sourceKey };
-			}
-		}
-
-		if (!record) {
-			const sessionFile =
-				typeof item.sessionFile === "string"
-					? item.sessionFile
-					: isPlainObject(item.artifactPaths) && typeof item.artifactPaths.outputPath === "string"
-						? item.artifactPaths.outputPath
-						: undefined;
-			if (sessionFile) {
-				const fromSession = extractSubagentUsageFromSessionFile(
-					sessionFile,
-					workspaceRoot,
-					onSkipped,
-				);
-				if (fromSession) {
-					record = {
-						...fromSession,
-						sourceKey,
-						modelLabel: modelLabelFromPartial(item, agent),
-					};
-				}
-			}
-		}
+		const record = recordFromPartial(item, sourceKey, agent);
 
 		if (record) {
 			out.push(record);
@@ -1160,7 +958,7 @@ export function extractSubagentUsageFromAsyncComplete(
 		return out;
 	}
 
-	// No per-child usage: emit at most one run aggregate (event totals, else status).
+	// No per-child usage: emit at most one run aggregate from the event's own totals.
 	// Applies even when results[] are non-empty stubs lacking tokens.
 	const aggregateKey = runId ? subagentRunAggregateSourceKey(runId) : null;
 	if (aggregateKey) {
@@ -1175,12 +973,6 @@ export function extractSubagentUsageFromAsyncComplete(
 		const aggregate = recordFromPartial(aggregatePartial, aggregateKey, aggregatePartial.agent);
 		if (aggregate) {
 			return [aggregate];
-		}
-	}
-	if (asyncDir && runId) {
-		const fromStatusAgg = extractSubagentRunAggregateFromAsyncStatus(asyncDir, runId, workspaceRoot);
-		if (fromStatusAgg) {
-			return [fromStatusAgg];
 		}
 	}
 	return [];

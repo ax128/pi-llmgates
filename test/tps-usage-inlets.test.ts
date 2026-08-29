@@ -221,7 +221,8 @@ describe("extractToolResultUsage", () => {
 
 	it("keeps the pi-subagents management tools unclaimed (mirror of the inlet B invariant)", () => {
 		// Their results describe already-finished runs; counting them would double up
-		// with the async-complete / status.json path that inlet C owns.
+		// with the async-complete / _meta.json path that inlet C owns. pi-subagents 0.59.0
+		// put a real pooled `usage` on `subagent_wait`, so this is load-bearing.
 		for (const name of ["subagent_wait", "subagent_supervisor", "intercom"]) {
 			expect(TOOL_USAGE_CLAIMED_ELSEWHERE.has(name)).toBe(true);
 			expect(SUBAGENT_TOOL_NAMES.has(name)).toBe(false);

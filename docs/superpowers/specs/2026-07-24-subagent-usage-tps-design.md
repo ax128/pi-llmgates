@@ -5,6 +5,8 @@
 **关联模块：** `extensions/tps.ts`、`extensions/tps-subagent.ts`  
 **外部依赖：** pi-subagents（可选；未安装时零开销降级）
 
+> **2026-08-29 修订：** §6.4 / §7 的两条文件系统兜底（asyncDir 下的 `status.json`、子会话 `session.jsonl`）连同下方那条 `workspaceRoot` fail-closed 规则**已删除**。原因是它们互相抵消：pi-subagents 把 asyncDir 放在 `os.tmpdir()/pi-subagents-<scope>/`、子会话放在 `~/.pi/agent/sessions/`，恒在工作区之外，因此「只读工作区内路径」这条门禁让兜底在默认布局下从未生效。async 用量现在只有两个来源——事件载荷自带的 `usage` / `modelAttempts` / `totalCost` / `tokens`，以及 `_meta.json`。详见 2026-08-22 方案的 rev 5。
+>
 > **2026-08-15 修订（对照代码核对）：**
 >
 > - §4.4 / §6.4 的 artifact 目录已扩展为三处：`.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧 `.pi-subagents/artifacts`、会话文件旁的 `subagent-artifacts/`（见 `extensions/tps-subagent.ts` 顶部常量）。
@@ -270,7 +272,7 @@ interface SubagentUsageRecord {
 | `LLMGATES_TPS_SUBAGENT` | 启用 | 设为 `0` / `false` / `no` 时跳过 bridge 与 meta 的 subagent 扩展解析 |
 | `LLMGATES_DEBUG` | 关 | 采集/解析失败时 `console.warn` |
 
-Bridge 注册时须传入 pi session `cwd` 作为 `workspaceRoot`；`status.json` / `session.jsonl` 文件系统兜底仅在路径位于该 workspace 内时读取，否则跳过（fail-closed）。
+~~Bridge 注册时须传入 pi session `cwd` 作为 `workspaceRoot`；`status.json` / `session.jsonl` 文件系统兜底仅在路径位于该 workspace 内时读取，否则跳过（fail-closed）。~~ **2026-08-29 起作废**：兜底与门禁一并删除（见顶部修订），`SubagentUsageBridgeOptions` 不再有 `workspaceRoot`。
 
 ---
 

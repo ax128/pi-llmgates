@@ -472,7 +472,6 @@ export default function (pi: ExtensionAPI) {
 			unregisterSubagentBridge = registerSubagentUsageBridge(pi.events, {
 				sessionId: ctx.sessionManager.getSessionId(),
 				sessionFile,
-				workspaceRoot: ctx.cwd,
 				onRecords: ingestSubagentRecords,
 				onAsyncCompleteData: (data) => {
 					const sessionIdentity = normalizeSubagentSessionIdentity(
@@ -483,14 +482,9 @@ export default function (pi: ExtensionAPI) {
 								}
 							: null,
 					);
-					const workspaceRoot = ctx.cwd;
 					const targetStats = requestStartMs !== null ? turnStats : sessionStats;
 					runUsageTask(() => {
-						const records = extractSubagentUsageFromAsyncComplete(
-							data,
-							sessionIdentity,
-							workspaceRoot,
-						);
+						const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity);
 						if (records.length > 0) {
 							applySubagentRecords(records, targetStats);
 						}

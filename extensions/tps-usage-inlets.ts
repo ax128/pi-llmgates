@@ -29,13 +29,14 @@ import {
 
 /**
  * pi-subagents' management tools. What they return is data about **already finished**
- * runs, so counting them would double up with the async-complete / `status.json` /
- * `_meta.json` path. Long-standing invariant — do not delete: `tps-subagent.ts:17-21`
- * and `test/tps-subagent.test.ts` ("SUBAGENT_TOOL_NAMES excludes wait/supervisor/intercom").
+ * runs, so counting them would double up with the async-complete / `_meta.json` path.
+ * Long-standing invariant — do not delete: `tps-subagent.ts:17-21` and
+ * `test/tps-subagent.test.ts` ("SUBAGENT_TOOL_NAMES excludes wait/supervisor/intercom").
  *
- * 0.54.0's `subagent_wait` happens to carry no top-level `usage` today
- * (`src/runs/background/subagent-wait.ts:316-324`), but that is their choice to change,
- * and the failure mode if they do is silent double counting.
+ * That is no longer hypothetical: 0.54.0's `subagent_wait` carried no top-level `usage`,
+ * and 0.59.0 (#1662) added one — the pooled usage of every async child that finished
+ * (`src/runs/background/subagent-wait.ts:319-345`). Without this exclusion those tokens
+ * would be counted twice, once here and once from the completion event inlet C owns.
  */
 const PI_SUBAGENTS_MANAGEMENT_TOOL_NAMES = ["subagent_wait", "subagent_supervisor", "intercom"] as const;
 

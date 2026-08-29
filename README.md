@@ -357,13 +357,13 @@ TUI 扩展状态行：
 
 - 父会话 assistant 用量在 `message_end` 时统计。
 - 同步 pi `subagent` / Cursor `Task` 工具结果与 `_meta.json` 汇总计入同一计数器；扫描 `.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧版 `.pi-subagents/artifacts` 及会话文件旁的 `subagent-artifacts/`。
-- async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 事件旁路采集（缺 token 时再读 `status.json` / child `session.jsonl`）。
+- async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 事件旁路采集：数字取事件自带的 `usage` / `modelAttempts` / `totalCost` / `tokens`，事件没带就等上一条那三个目录里的 `_meta.json`。**不读 pi-subagents 临时目录里的 `status.json`，也不扫子会话 `session.jsonl`**——两者在默认布局下都落在工作区之外（asyncDir 在 `os.tmpdir()`、子会话在 `~/.pi/`），而这两条兜底当初就限定只读工作区内的路径，实际从未生效，已连同那道门禁一起删除。
 - 事件里的 `sessionId` 可能是裸 ID、会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。
-- 子代理的**费用**只在上游报了金额时才有：按 `usage.cost` → `modelAttempts[].usage.cost` 之和 → `totalCost.costUsd` 的顺序取第一个有值的，原样采用；只报到 token（`tokens` / `totalTokens`）、或只能靠扫子会话 `session.jsonl` 兜底时，**token 照记、费用记 0**，不按父模型的费率倒推。所以 `/calls` 里子代理行的费用偏低是预期行为，不代表 token 漏算。
+- 子代理的**费用**只在上游报了金额时才有：按 `usage.cost` → `modelAttempts[].usage.cost` 之和 → `totalCost.costUsd` 的顺序取第一个有值的，原样采用；只报到 token（`tokens` / `totalTokens`）时，**token 照记、费用记 0**，不按父模型的费率倒推。所以 `/calls` 里子代理行的费用偏低是预期行为，不代表 token 漏算。
 - 任何按 pi 约定在工具结果顶层挂 `usage` 的工具（不限于某个具体扩展），其用量都会计入。结果自报模型时按 `<provider>/<模型>` 分行——与父模型同名时并入同一行；未自报模型时记为 `tool/<工具名>` 且费用记 0，**但自报了一个不在定价表里的模型 id 时会落到默认费率**（`resolveModelCostRates` 永不返回 0）。已被子代理路径认领或计了会重复的工具名不在此列：`subagent`、`task`、`subagent_wait`、`subagent_supervisor`、`intercom`，以及 `@tintinweb/pi-subagents` 的 `Agent` / `get_subagent_result` / `steer_subagent`。
 - 上一条有两处刻意的少算：`@tintinweb/pi-subagents` 的三个工具名当前是**排除但无人接手**的中间态（接手它的事件入口未排期），若你手动开启了该扩展默认关闭的 `reportUsage`，这部分用量不会被统计；另外，一条工具结果可能聚合多次 LLM 调用却不上报次数，此时 calls 记 1，token 与费用不受影响。少算是安全方向，重复计不是。
 - 上下文压缩与分支摘要那次 LLM 调用计入 `compact/<模型>` 一行（pi 自己也算这笔，我们此前漏计）。自动压缩、手动 `/compact`、上下文溢出恢复压缩与分支摘要都覆盖。由其他扩展代管的压缩（pi 标记为 `fromHook`）计入 `compact/unknown`，且只认它自报的费用——它用的是哪个模型我们看不到，不会按会话模型的费率估价；完全不上报用量的仍无从统计。
-- **结构性统计不到的**（不是 bug，也没有开关）：在自己进程内起子会话、又不按 pi 约定挂 `usage` 的扩展（dynamic-workflows、piolium、pi-goal-x 一类）——它们的消息不进父会话消息流，pi 自己的 `/cost` 同样看不到；`pi-vision` 这类直连模型并自建会话条目的扩展；以及 pi-subagents 深度 ≥ 2 的孙代理。第三方扩展想被统计，按 pi 约定在工具结果顶层挂一个 `usage` 即可，会同时进 pi 的 `/cost` 与这里。
+- **结构性统计不到的**（不是 bug，也没有开关）：在自己进程内起子会话、又不按 pi 约定挂 `usage` 的扩展（dynamic-workflows、piolium、pi-goal-x 一类）——它们的消息不进父会话消息流，pi 自己的 `/cost` 同样看不到；`pi-vision` 这类直连模型并自建会话条目的扩展；spawn 子 pi 进程但不回报用量的扩展（`@mjasnikovs/pi-task` 的 `pi --mode json` worker、`pi-goal-list-loop-audit` 的 `pi --mode rpc` 审计子进程）；以及 pi-subagents 深度 ≥ 2 的孙代理。pi-subagents 把 `artifactDir` 设成 `temp`（或拿不到会话文件）时 `_meta.json` 落进临时目录，不在扫描范围内；个别写成 `<runId>_<agent>_meta.json`（不带子序号）的 meta 文件也不解析。第三方扩展想被统计，按 pi 约定在工具结果顶层挂一个 `usage` 即可，会同时进 pi 的 `/cost` 与这里。
 - 设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与同步 `subagent` / Cursor `Task` 工具结果仍统计）。
 - 设 `LLMGATES_TPS_COMPACTION=0` 可关闭压缩 / 分支摘要统计。
 - 设 `LLMGATES_TPS_TOOL_USAGE=0` 可关闭通用工具结果用量统计（`subagent` / Cursor `Task` 仍统计）。

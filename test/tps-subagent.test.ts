@@ -1,4 +1,4 @@
-import { closeSync, ftruncateSync, mkdtempSync, mkdirSync, openSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -7,16 +7,11 @@ import {
 	asyncRunSourceKey,
 	collectPiSubagentsMetaUsage,
 	createSubagentIngestState,
-	extractSubagentRunAggregateFromAsyncStatus,
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
-	extractSubagentUsageFromAsyncStatus,
-	extractSubagentUsageFromSessionFile,
 	extractSubagentUsageFromToolExecution,
-	isSubagentPathWithinWorkspace,
 	MAX_SUBAGENT_META_BYTES,
 	MAX_SUBAGENT_META_READS_PER_SCAN,
-	MAX_SUBAGENT_SESSION_BYTES,
 	metaFileSourceKey,
 	normalizeRunIdForSourceKey,
 	normalizeUsageFromPartial,
@@ -24,7 +19,6 @@ import {
 	readPiSubagentsMetaUsage,
 	recordSubagentUsageRecords,
 	selectFreshSubagentRecords,
-	sessionFileSourceKey,
 	resolveSubagentArtifactDirs,
 	subagentEventMatchesSession,
 	subagentRunSourceKey,
@@ -309,9 +303,8 @@ describe("tps subagent usage", () => {
 		).toEqual({ turns: 0, input: 11, output: 9, cacheRead: 0, cacheWrite: 0, cost: 0 });
 	});
 
-	it("builds async and session source keys", () => {
+	it("builds async source keys", () => {
 		expect(asyncRunSourceKey("run-dir", "reviewer", 2)).toBe("async:run-dir:reviewer:2");
-		expect(sessionFileSourceKey("/tmp/child.jsonl")).toBe("session:/tmp/child.jsonl");
 	});
 
 	it("uses totalChildUsage aggregate when results are empty", () => {
@@ -743,86 +736,6 @@ describe("tps subagent usage", () => {
 		expect(records[0]?.costUsd).toBeCloseTo(0.03, 6);
 	});
 
-	it("falls back to status.json per-child when event child lacks tokens", () => {
-		const root = mkdtempSync(join(tmpdir(), "async-status-"));
-		const asyncDir = join(root, "async-run");
-		mkdirSync(asyncDir, { recursive: true });
-		writeFileSync(
-			join(asyncDir, "status.json"),
-			JSON.stringify({
-				steps: [
-					{
-						agent: "worker",
-						model: "llmgates/gpt-5.6-sol",
-						turnCount: 2,
-						tokens: { input: 15, output: 5 },
-						totalCost: { inputTokens: 15, outputTokens: 5, costUsd: 0.002 },
-					},
-				],
-				totalTokens: { input: 999, output: 999 },
-				totalCost: { inputTokens: 999, outputTokens: 999, costUsd: 9 },
-			}),
-		);
-
-		const fromStatus = extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0, root);
-		expect(fromStatus?.sourceKey).toBe(`meta:${UUID_NORM}:worker:0`);
-		expect(fromStatus?.input).toBe(15);
-
-		const records = extractSubagentUsageFromAsyncComplete(
-			{
-				sessionId: "s",
-				runId: UUID_RUN,
-				asyncDir,
-				results: [{ agent: "worker", index: 0 }],
-			},
-			"s",
-			root,
-		);
-		expect(records).toHaveLength(1);
-		expect(records[0]?.input).toBe(15);
-		expect(records.find((r) => r.sourceKey === `meta:${UUID_NORM}`)).toBeUndefined();
-	});
-
-	it("falls back to session.jsonl when status also lacks tokens", () => {
-		const root = mkdtempSync(join(tmpdir(), "async-session-"));
-		const sessionFile = join(root, "child.jsonl");
-		writeFileSync(
-			sessionFile,
-			[
-				JSON.stringify({
-					role: "assistant",
-					usage: { input: 3, output: 1, cacheRead: 0, cacheWrite: 0 },
-				}),
-				JSON.stringify({
-					message: { role: "assistant", usage: { input: 4, output: 2 } },
-				}),
-				JSON.stringify({
-					role: "user",
-					usage: { input: 100, output: 100, cacheRead: 100, cacheWrite: 100 },
-				}),
-			].join("\n"),
-		);
-
-		const fromSession = extractSubagentUsageFromSessionFile(sessionFile, root);
-		expect(fromSession?.sourceKey).toBe(`session:${sessionFile}`);
-		expect(fromSession?.calls).toBe(2);
-		expect(fromSession?.input).toBe(7);
-		expect(fromSession?.output).toBe(3);
-
-		const records = extractSubagentUsageFromAsyncComplete(
-			{
-				sessionId: "s",
-				runId: UUID_RUN,
-				results: [{ agent: "worker", index: 0, sessionFile }],
-			},
-			"s",
-			root,
-		);
-		expect(records).toHaveLength(1);
-		expect(records[0]?.input).toBe(7);
-		expect(records[0]?.sourceKey).toBe(`meta:${UUID_NORM}:worker:0`);
-	});
-
 	it("dedupes tool and async-complete via meta sourceKey", () => {
 		const fromTool = extractSubagentUsageFromToolExecution(
 			"subagent",
@@ -843,30 +756,19 @@ describe("tps subagent usage", () => {
 		);
 		expect(fromTool[0]?.sourceKey).toBe(`meta:${UUID_NORM}:worker:0`);
 
-		const root = mkdtempSync(join(tmpdir(), "async-dedupe-"));
-		const asyncDir = join(root, "async-run");
-		mkdirSync(asyncDir, { recursive: true });
-		writeFileSync(
-			join(asyncDir, "status.json"),
-			JSON.stringify({
-				steps: [
-					{
-						agent: "worker",
-						modelAttempts: [{ model: "m", usage: { turns: 1, input: 9, output: 9, cost: 0 } }],
-					},
-				],
-			}),
-		);
-
 		const fromAsync = extractSubagentUsageFromAsyncComplete(
 			{
 				sessionId: "s",
 				runId: UUID_RUN,
-				asyncDir,
-				results: [{ agent: "worker", index: 0 }],
+				results: [
+					{
+						agent: "worker",
+						index: 0,
+						modelAttempts: [{ model: "m", usage: { turns: 1, input: 9, output: 9, cost: 0 } }],
+					},
+				],
 			},
 			"s",
-			root,
 		);
 		expect(fromAsync[0]?.sourceKey).toBe(`meta:${UUID_NORM}:worker:0`);
 
@@ -881,88 +783,12 @@ describe("tps subagent usage", () => {
 		expect(ingested.size).toBe(1);
 	});
 
-	it("does not emit run aggregate when status.json has per-step usage (§13.9)", () => {
-		const root = mkdtempSync(join(tmpdir(), "status-nagg-"));
-		const asyncDir = join(root, "async-run");
-		mkdirSync(asyncDir, { recursive: true });
-		writeFileSync(
-			join(asyncDir, "status.json"),
-			JSON.stringify({
-				steps: [
-					{
-						agent: "a",
-						tokens: { input: 1, output: 1 },
-						modelAttempts: [{ model: "m", usage: { turns: 1, input: 1, output: 1, cost: 0 } }],
-					},
-					{
-						agent: "b",
-						tokens: { input: 2, output: 2 },
-						modelAttempts: [{ model: "m", usage: { turns: 1, input: 2, output: 2, cost: 0 } }],
-					},
-				],
-				totalTokens: { input: 999, output: 999 },
-				totalCost: { inputTokens: 999, outputTokens: 999, costUsd: 9 },
-			}),
-		);
-
-		const step0 = extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0, root);
-		const step1 = extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 1, root);
-		expect(step0?.input).toBe(1);
-		expect(step1?.input).toBe(2);
-
-		const records = extractSubagentUsageFromAsyncComplete(
-			{
-				sessionId: "s",
-				runId: UUID_RUN,
-				asyncDir,
-				totalTokens: { input: 999, output: 999 },
-				results: [{ agent: "a" }, { agent: "b" }],
-			},
-			"s",
-			root,
-		);
-		expect(records).toHaveLength(2);
-		expect(records.find((r) => r.sourceKey === `meta:${UUID_NORM}`)).toBeUndefined();
-	});
-
 	it("SUBAGENT_TOOL_NAMES excludes wait/supervisor/intercom (§13.11)", () => {
 		expect(SUBAGENT_TOOL_NAMES.has("subagent")).toBe(true);
 		expect(SUBAGENT_TOOL_NAMES.has("task")).toBe(true);
 		expect(SUBAGENT_TOOL_NAMES.has("subagent_wait")).toBe(false);
 		expect(SUBAGENT_TOOL_NAMES.has("subagent_supervisor")).toBe(false);
 		expect(SUBAGENT_TOOL_NAMES.has("intercom")).toBe(false);
-	});
-
-	it("does not fan out status run totals onto each child when steps are missing", () => {
-		const root = mkdtempSync(join(tmpdir(), "status-fanout-"));
-		const asyncDir = join(root, "async-run");
-		mkdirSync(asyncDir, { recursive: true });
-		writeFileSync(
-			join(asyncDir, "status.json"),
-			JSON.stringify({
-				totalTokens: { input: 100, output: 50 },
-				totalCost: { inputTokens: 100, outputTokens: 50, costUsd: 1 },
-			}),
-		);
-
-		expect(extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0, root)).toBeNull();
-		const aggregate = extractSubagentRunAggregateFromAsyncStatus(asyncDir, UUID_RUN, root);
-		expect(aggregate?.sourceKey).toBe(`meta:${UUID_NORM}`);
-		expect(aggregate?.input).toBe(100);
-
-		const records = extractSubagentUsageFromAsyncComplete(
-			{
-				sessionId: "s",
-				runId: UUID_RUN,
-				asyncDir,
-				results: [{ agent: "a" }, { agent: "b" }, { agent: "c" }, { agent: "d" }],
-			},
-			"s",
-			root,
-		);
-		expect(records).toHaveLength(1);
-		expect(records[0]?.sourceKey).toBe(`meta:${UUID_NORM}`);
-		expect(records.reduce((sum, r) => sum + r.input, 0)).toBe(100);
 	});
 
 	it("emits one event run aggregate when stub children lack tokens and status has no steps", () => {
@@ -1019,109 +845,6 @@ describe("tps subagent usage", () => {
 		expect(state2.keys.has(aggregate.sourceKey)).toBe(true);
 	});
 
-	it("rejects filesystem fallbacks outside the workspace root", () => {
-		const root = mkdtempSync(join(tmpdir(), "subagent-path-"));
-		const outside = mkdtempSync(join(tmpdir(), "outside-"));
-		const sessionFile = join(outside, "child.jsonl");
-		writeFileSync(
-			sessionFile,
-			JSON.stringify({
-				role: "assistant",
-				usage: { input: 99, output: 1, cacheRead: 0, cacheWrite: 0 },
-			}),
-		);
-
-		expect(isSubagentPathWithinWorkspace(sessionFile, root)).toBe(false);
-		expect(extractSubagentUsageFromSessionFile(sessionFile, root)).toBeNull();
-		expect(
-			extractSubagentUsageFromAsyncComplete(
-				{
-					sessionId: "s",
-					runId: UUID_RUN,
-					results: [{ agent: "worker", index: 0, sessionFile }],
-				},
-				"s",
-				root,
-			),
-		).toHaveLength(0);
-
-		const asyncDir = join(outside, "async-run");
-		mkdirSync(asyncDir, { recursive: true });
-		writeFileSync(
-			join(asyncDir, "status.json"),
-			JSON.stringify({
-				steps: [{ agent: "worker", tokens: { input: 5, output: 1 } }],
-			}),
-		);
-		expect(extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0, root)).toBeNull();
-	});
-
-	it("denies filesystem fallbacks without workspaceRoot", () => {
-		const root = mkdtempSync(join(tmpdir(), "subagent-no-root-"));
-		const sessionFile = join(root, "child.jsonl");
-		writeFileSync(
-			sessionFile,
-			JSON.stringify({
-				role: "assistant",
-				usage: { input: 5, output: 1, cacheRead: 0, cacheWrite: 0 },
-			}),
-		);
-
-		expect(extractSubagentUsageFromSessionFile(sessionFile)).toBeNull();
-		const asyncDir = join(root, "async-run");
-		mkdirSync(asyncDir, { recursive: true });
-		writeFileSync(
-			join(asyncDir, "status.json"),
-			JSON.stringify({
-				steps: [{ agent: "worker", tokens: { input: 5, output: 1 } }],
-			}),
-		);
-		expect(extractSubagentUsageFromAsyncStatus(asyncDir, UUID_RUN, 0)).toBeNull();
-	});
-});
-
-describe("tps subagent session.jsonl size cap", () => {
-	it("returns null and reports a skip when session.jsonl exceeds the byte cap", () => {
-		const root = mkdtempSync(join(tmpdir(), "session-cap-"));
-		const sessionFile = join(root, "child.jsonl");
-		const fd = openSync(sessionFile, "w");
-		ftruncateSync(fd, MAX_SUBAGENT_SESSION_BYTES + 1);
-		closeSync(fd);
-
-		const skipped: string[] = [];
-		process.env.LLMGATES_DEBUG = "1";
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			expect(extractSubagentUsageFromSessionFile(sessionFile, root, (reason) => skipped.push(reason))).toBeNull();
-			expect(skipped.length).toBe(1);
-			expect(skipped[0]).toMatch(/exceeds/);
-			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/exceeds/));
-		} finally {
-			warn.mockRestore();
-			delete process.env.LLMGATES_DEBUG;
-		}
-	});
-
-	it("still sums assistant usage from the head and middle of a file under the cap", () => {
-		const root = mkdtempSync(join(tmpdir(), "session-spread-"));
-		const sessionFile = join(root, "child.jsonl");
-		const lines = [
-			JSON.stringify({
-				role: "assistant",
-				usage: { input: 5, output: 1, cacheRead: 0, cacheWrite: 0 },
-			}),
-			...Array.from({ length: 20 }, () => JSON.stringify({ role: "user", text: "pad" })),
-			JSON.stringify({
-				message: { role: "assistant", usage: { input: 7, output: 3 } },
-			}),
-		];
-		writeFileSync(sessionFile, lines.join("\n"));
-
-		const record = extractSubagentUsageFromSessionFile(sessionFile, root);
-		expect(record?.calls).toBe(2);
-		expect(record?.input).toBe(12);
-		expect(record?.output).toBe(4);
-	});
 });
 
 describe("tps subagent async child runId keys", () => {
@@ -1154,7 +877,6 @@ describe("tps subagent async child runId keys", () => {
 				],
 			},
 			"s",
-			root,
 		);
 		expect(fromEvent).toHaveLength(1);
 		expect(fromEvent[0]?.sourceKey).toBe(`meta:${childRunId}:worker:0`);
@@ -1172,37 +894,6 @@ describe("tps subagent async child runId keys", () => {
 		expect(selectFreshSubagentRecords(state, fromMeta)).toHaveLength(0);
 	});
 
-	it("keeps status.json fallback keyed by the child runId when the event has no usage", () => {
-		const root = mkdtempSync(join(tmpdir(), "async-status-child-"));
-		const asyncDir = join(root, "async-run");
-		mkdirSync(asyncDir, { recursive: true });
-		writeFileSync(
-			join(asyncDir, "status.json"),
-			JSON.stringify({
-				steps: [
-					{
-						agent: "worker",
-						model: "llmgates/gpt-5.6-sol",
-						tokens: { input: 15, output: 5 },
-					},
-				],
-			}),
-		);
-
-		const records = extractSubagentUsageFromAsyncComplete(
-			{
-				sessionId: "s",
-				runId: UUID_RUN,
-				asyncDir,
-				results: [{ runId: childRunId, agent: "worker", index: 0 }],
-			},
-			"s",
-			root,
-		);
-		expect(records).toHaveLength(1);
-		expect(records[0]?.input).toBe(15);
-		expect(records[0]?.sourceKey).toBe(`meta:${childRunId}:worker:0`);
-	});
 });
 
 describe("tps subagent meta scan bounds", () => {

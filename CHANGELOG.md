@@ -21,6 +21,12 @@
   - `LLMGATES_DEBUG=1` 的启动判定行**改了格式**，模型与档位各一段：`model=restored thinking=restored`（原先只有一个 `restored`）。对着它做脚本判断的请一并改。
   - **不新增开关**：`restoreLastModel` / `LLMGATES_RESTORE_LAST_MODEL` 同时管模型与思考档位。
 
+### 变更
+
+- **删掉了 async 子代理用量的两条文件系统兜底（`status.json` 与子会话 `session.jsonl`）。** 它们只允许读工作区（pi session `cwd`）内的路径，而 pi-subagents 把 async run 目录放在 `os.tmpdir()/pi-subagents-<scope>/`、子会话放在 `~/.pi/agent/sessions/`——两者恒在工作区之外，所以这两条兜底自加入起在默认布局下就没有生效过。**统计数字不变**：async 子代理的用量本来就来自完成事件自带的 `usage` / `modelAttempts` / `totalCost` / `tokens`，以及项目目录或会话文件旁 `subagent-artifacts/` 里的 `_meta.json`。README 的「统计范围」已按实际口径改写。
+  - 顺带删除的内部 API：`extractSubagentUsageFromAsyncStatus`、`extractSubagentRunAggregateFromAsyncStatus`、`extractSubagentUsageFromSessionFile`、`isSubagentPathWithinWorkspace`、`resolveSubagentWorkspaceRoot`、`sessionFileSourceKey`、`MAX_SUBAGENT_SESSION_BYTES`，以及 `SubagentUsageBridgeOptions.workspaceRoot`。本扩展不对外导出这些符号，只影响直接引用源码的人。
+  - 已知少算随之写进两份 README：`artifactDir: "temp"` 布局下的 `_meta.json` 不在扫描目录里；`@mjasnikovs/pi-task`、`pi-goal-list-loop-audit` 这类 spawn 子 pi 进程却不按 pi 约定回报用量的扩展同样统计不到（pi 自己的 `/cost` 也看不到）。
+
 ### 修复
 
 - **`pi --thinking <档位>` 不再被模型恢复静默吃掉。** 0.5.0 起就有：恢复真的切换了模型时，pi 自己的 `setModel` 会按 `settings.json` 的 `defaultThinkingLevel` 重新推导档位并夹到新模型上，命令行钉的那一档就此消失——`pi --thinking high` 实际跑在 `defaultThinkingLevel` 那一档上，而且没有任何提示。现在恢复模型之后会把命令行那一档原样设回去。只在模型真的换了、档位确实被改掉时才设，模型没换不动它（避免多一条 `thinking_level_change` 会话条目）。判定行仍是 `thinking=cli-thinking`——它表示的是「档位来自命令行而非记录」，不变。
