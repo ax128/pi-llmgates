@@ -734,7 +734,13 @@ describe("login validation against catalog member damage", () => {
 			}),
 		).rejects.toThrow(/member|login validation failed/i);
 		expect(onValidated).not.toHaveBeenCalled();
-		expect(interaction.messages.at(-1)).toMatch(/验证失败/);
+		expect(interaction.messages.at(-1)).toMatch(/验证失败（5\/5）/);
+		// Hard-failing this path was only defensible because the user can read the
+		// reason, so the guard's own wording must be translated, not raw English.
+		expect(interaction.messages.at(-1)).toMatch(
+			/1 个成员没有一个能解析成可用模型/,
+		);
+		expect(interaction.messages.at(-1)).not.toMatch(/Invalid models catalog/);
 	});
 
 	it("leaves nothing behind in the registry or in pi when that login fails", async () => {
@@ -749,7 +755,7 @@ describe("login validation against catalog member damage", () => {
 						return new Response(JSON.stringify([null, { id: "" }]));
 					}
 					if (url === LITELLM_PRICING_URL) {
-						return new Response(JSON.stringify({}));
+						return new Response(JSON.stringify(plausibleLiteLLMTable({})));
 					}
 					throw new Error(`unexpected URL: ${url}`);
 				}),
@@ -779,7 +785,8 @@ describe("login validation against catalog member damage", () => {
 					fetchImpl: vi.fn(async (input) => {
 						const url = String(input);
 						if (url === `${BASE_URL}/models`) return new Response(body);
-						if (url === LITELLM_PRICING_URL) return new Response(JSON.stringify({}));
+						if (url === LITELLM_PRICING_URL)
+							return new Response(JSON.stringify(plausibleLiteLLMTable({})));
 						throw new Error(`unexpected URL: ${url}`);
 					}),
 					now: () => NOW,

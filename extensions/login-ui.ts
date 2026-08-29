@@ -47,6 +47,21 @@ export function translateLoginError(message: string): string {
 	if (trimmed === "API key is required") return "API Key 不能为空";
 	if (trimmed === "Invalid base URL") return "网关地址无效";
 	if (trimmed === "Login validation failed") return "登录验证失败";
+	// The empty-catalog guard in compat/catalog.ts. It fires on the /login
+	// credential probe as well as on refresh, and a login is the one moment a
+	// user is watching the result — leaving the raw English here would undercut
+	// the whole reason that path was allowed to hard-fail. The member counts are
+	// the only actionable detail, so they are kept verbatim.
+	const catalogMembers =
+		/^Invalid models catalog: none of the (\d+) member\(s\) yielded a usable model/.exec(
+			trimmed,
+		);
+	if (catalogMembers) {
+		return (
+			`网关返回的模型目录中 ${catalogMembers[1]} 个成员没有一个能解析成可用模型，` +
+			"这份响应已按损坏处理；请检查网关 /v1/models 的返回内容，或确认网关地址是否正确"
+		);
+	}
 	return trimmed;
 }
 
