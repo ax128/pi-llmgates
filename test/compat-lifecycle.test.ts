@@ -1,6 +1,6 @@
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { chmodSync, existsSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -873,6 +873,41 @@ describe("auth cleanup reconciliation", () => {
 			writeJson(join(agentDir, "auth.json"), {});
 			await vi.advanceTimersByTimeAsync(60_000);
 			await settleUntil(() => listInstances(agentDir).length === 0);
+			expect(listInstances(agentDir)).toEqual([]);
+
+			await pi.emit("session_shutdown");
+		} finally {
+			for (const provider of fakes.providers.values()) provider.completeRefresh();
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	// The case above chains missing -> unreadable -> readable. The plan asks for
+	// `missing -> readable` on its own too: that transition leaves the sentinel
+	// for a real fingerprint in a single step, with no unreadable round in between.
+	it("recovers directly from a missing auth.json once it reappears", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const fakes = fakeProviderFactory();
+		const instance = INSTANCES[0]!;
+		const watcher = silentWatcher();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir, {
+				watchImpl: watcher.watchImpl,
+				createProvider: fakes.createProvider,
+			});
+			rmSync(join(agentDir, "auth.json"));
+			await pi.emit("session_start", { reason: "start" });
+			await settle();
+			expect(listInstances(agentDir)).toEqual([instance]);
+
+			writeJson(join(agentDir, "auth.json"), {});
+			await vi.advanceTimersByTimeAsync(60_000);
+			await settleUntil(() => listInstances(agentDir).length === 0);
+
 			expect(listInstances(agentDir)).toEqual([]);
 
 			await pi.emit("session_shutdown");
