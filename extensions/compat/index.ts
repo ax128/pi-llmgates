@@ -1,4 +1,4 @@
-import { readFileSync, watch, type FSWatcher } from "node:fs";
+import { readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import type {
 	Credential,
@@ -35,6 +35,12 @@ export interface RegisterCompatGatewaysOptions {
 	fetchImpl?: typeof fetch;
 	now?: () => number;
 	createProvider?: (options: CompatProviderOptions) => CompatProvider;
+	/**
+	 * Test seam for the auth.json watcher; production uses `fs.watch`. Kept off
+	 * the user-facing surface deliberately — the poll interval stays a constant
+	 * that tests reach with fake timers rather than a second injectable knob.
+	 */
+	watchImpl?: typeof watch;
 }
 
 export interface CompatGatewayRegistration {
@@ -58,7 +64,7 @@ export type CompatCommand =
 
 const COMPAT_COMMAND_USAGE =
 	"Usage: /llmgates list | /llmgates remove <id> | /llmgates help";
-const COMPAT_COMMAND_HELP = `${COMPAT_COMMAND_USAGE}\n/logout removes its selected auth.json credential; this extension then deletes the matching compatible gateway registry entry and endpoint overrides. If the watcher is not running, /reload or a restart completes cleanup. Orphan auth (an auth.json key with no registry entry) must be deleted manually.`;
+const COMPAT_COMMAND_HELP = `${COMPAT_COMMAND_USAGE}\n/logout removes its selected auth.json credential; this extension then deletes the matching compatible gateway registry entry and endpoint overrides. The auth.json watcher normally triggers that immediately; if the watcher cannot start or silently misses the event, a low-frequency reconciliation picks it up within 60s. /reload or a restart still triggers a cleanup right away, but is no longer the only way to recover. Orphan auth (an auth.json key with no registry entry) must be deleted manually.`;
 
 export function parseCompatCommand(args: string): CompatCommand {
 	const parts = args.trim().split(/\s+/).filter(Boolean);
@@ -173,6 +179,7 @@ export function registerCompatGateways(
 	const providers = new Map<string, CompatProvider>();
 	const idTransactions = new Map<string, Promise<void>>();
 	const reservedProviderIds = [...(options.reservedProviderIds ?? [])];
+	const watchImpl = options.watchImpl ?? watch;
 	const createProvider = options.createProvider ?? createCompatProvider;
 
 	let instances: CompatInstance[];
@@ -264,10 +271,21 @@ export function registerCompatGateways(
 	let orphanCleanupRequested = false;
 	let orphanCleanupRetryTimer: ReturnType<typeof setTimeout> | undefined;
 	let orphanCleanupRetryCount = 0;
+	let authCleanupPollTimer: ReturnType<typeof setInterval> | undefined;
+	let lastAuthFingerprint: string | undefined;
 	let stopped = false;
 
 	const ORPHAN_CLEANUP_MAX_RETRIES = 3;
 	const ORPHAN_CLEANUP_RETRY_DELAY_MS = 1_000;
+	/**
+	 * `fs.watch` has a failure mode with no error to catch: Node does not
+	 * guarantee event delivery on network filesystems and some mounts, so a
+	 * watcher can be established successfully and then stay silent forever. This
+	 * reconciliation is the backstop for exactly that — it never decides on its
+	 * own what to delete, it only adds a second trigger for the existing
+	 * `requestOrphanCleanup()`.
+	 */
+	const AUTH_CLEANUP_POLL_INTERVAL_MS = 60_000;
 
 	function scheduleOrphanCleanupRetry(): void {
 		if (stopped) return;
@@ -385,22 +403,96 @@ export function registerCompatGateways(
 			});
 	}
 
+	/**
+	 * A cheap file-state fingerprint, not a content hash: this runs every minute
+	 * and auth.json holds credentials, so it must not read, parse or hash the
+	 * file. Combining dev/ino/size/mtimeMs/ctimeMs covers coarse timestamp
+	 * granularity, a same-size rewrite in place, and the atomic replace pi
+	 * normally does (which changes inode and ctime).
+	 *
+	 * ENOENT and other stat errors get stable sentinels so a file that stays
+	 * missing or stays unreadable does not re-trigger cleanup every minute. The
+	 * fingerprint never contains the path.
+	 */
+	function readAuthFingerprint(): string {
+		try {
+			const stat = statSync(join(agentDir, "auth.json"));
+			return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return "missing";
+			return `error:${code ?? "UNKNOWN"}`;
+		}
+	}
+
+	/** Idempotent: re-baselines on every session_start but never stacks timers. */
+	function startAuthCleanupPoll(): void {
+		if (stopped) return;
+		lastAuthFingerprint = readAuthFingerprint();
+		if (authCleanupPollTimer) return;
+		authCleanupPollTimer = setInterval(() => {
+			if (stopped) return;
+			const fingerprint = readAuthFingerprint();
+			// Unchanged state is silent: no cleanup, no log. The gate exists only
+			// here — the watcher stays unconditional (see startAuthWatcher).
+			if (fingerprint === lastAuthFingerprint) return;
+			lastAuthFingerprint = fingerprint;
+			requestOrphanCleanup();
+		}, AUTH_CLEANUP_POLL_INTERVAL_MS);
+		authCleanupPollTimer.unref();
+	}
+
+	function stopAuthCleanupPoll(): void {
+		if (authCleanupPollTimer) {
+			clearInterval(authCleanupPollTimer);
+			authCleanupPollTimer = undefined;
+		}
+	}
+
 	function startAuthWatcher(): void {
 		if (authWatcher) return;
+		let watcherForThisStart: FSWatcher | undefined;
 		try {
-			authWatcher = watch(
+			watcherForThisStart = watchImpl(
 				agentDir,
 				{ persistent: false },
 				(_event, filename) => {
-					if (!filename || filename.toString() === "auth.json")
-						requestOrphanCleanup();
+					// A callback already queued when an older watcher was closed must not
+					// act on a later session's watcher generation.
+					if (stopped || !watcherForThisStart || authWatcher !== watcherForThisStart)
+						return;
+					if (filename && filename.toString() !== "auth.json") return;
+					// Deliberately NOT fingerprint-gated. Today every auth.json event
+					// triggers cleanup, and a metadata-invisible write (coarse mtime,
+					// same size, same inode) would be dropped by both the poll and a
+					// gated watcher — this reconciliation is here to ADD a backstop,
+					// not to weaken the primary path. Duplicate work is already
+					// collapsed by requestOrphanCleanup's in-flight merge.
+					lastAuthFingerprint = readAuthFingerprint();
+					requestOrphanCleanup();
 				},
 			);
-			authWatcher.on("error", (error) => {
+			authWatcher = watcherForThisStart;
+			watcherForThisStart.on("error", (error) => {
+				const failed = watcherForThisStart;
+				if (!failed || authWatcher !== failed) return;
 				authWatcher = undefined;
+				try {
+					failed.close();
+				} catch {
+					// Already torn down by the same failure; nothing to release.
+				}
 				logWarn(`auth.json watcher stopped: ${errorText(error)}`);
 			});
 		} catch (error) {
+			if (watcherForThisStart && authWatcher === watcherForThisStart) {
+				authWatcher = undefined;
+				try {
+					watcherForThisStart.close();
+				} catch {
+					// Setup already failed; preserve the original error below.
+				}
+			}
 			logWarn(
 				`Could not watch auth.json for logout cleanup: ${errorText(error)}`,
 			);
@@ -408,8 +500,9 @@ export function registerCompatGateways(
 	}
 
 	function stopAuthWatcher(): void {
-		authWatcher?.close();
+		const watcher = authWatcher;
 		authWatcher = undefined;
+		watcher?.close();
 	}
 
 	function rollbackStartupInstances(
@@ -647,6 +740,7 @@ export function registerCompatGateways(
 	pi.on("session_start", (event) => {
 		stopped = false;
 		startAuthWatcher();
+		startAuthCleanupPoll();
 		requestOrphanCleanup();
 		const reason =
 			typeof (event as { reason?: unknown })?.reason === "string"
@@ -664,6 +758,7 @@ export function registerCompatGateways(
 	pi.on("session_shutdown", async () => {
 		stopped = true;
 		stopAuthWatcher();
+		stopAuthCleanupPoll();
 		stopOrphanCleanupRetry();
 		await Promise.allSettled([
 			...[...providers.values()].map((provider) => provider.shutdown()),

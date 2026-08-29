@@ -426,7 +426,11 @@ describe("/llmgates management", () => {
 			registerCompatGateways(runtime.pi, agentDir);
 			const [{ message }] = await runCommand(runtime.commands.get("llmgates")!, "help");
 			expect(message).toMatch(/\/logout.*deletes.*registry.*endpoint/i);
-			expect(message).toMatch(/watcher.*\/reload.*restart/i);
+			// The watcher is the immediate path; the 60s reconciliation is the
+			// backstop. /reload and a restart are still listed, but the help must no
+			// longer present them as the only way to recover from a dead watcher.
+			expect(message).toMatch(/watcher.*60s/i);
+			expect(message).toMatch(/\/reload.*restart.*no longer the only/i);
 			expect(message).toMatch(/orphan auth/i);
 			expect(message).toMatch(/auth\.json/i);
 		} finally {
