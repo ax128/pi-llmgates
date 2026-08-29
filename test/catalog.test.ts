@@ -336,9 +336,28 @@ describe("isOfflineMode", () => {
 
 describe("parseGatewayModelsPayload strict", () => {
 	it("accepts empty arrays in all supported envelopes", () => {
-		expect(parseGatewayModelsPayload([])).toEqual([]);
-		expect(parseGatewayModelsPayload({ data: [] })).toEqual([]);
-		expect(parseGatewayModelsPayload({ models: [] })).toEqual([]);
+		for (const payload of [[], { data: [] }, { models: [] }]) {
+			expect(parseGatewayModelsPayload(payload)).toEqual({
+				models: [],
+				sourceCount: 0,
+				skippedNonObject: 0,
+			});
+		}
+	});
+
+	it("reports the source length of every envelope, not the filtered length", () => {
+		expect(parseGatewayModelsPayload([{ id: "a" }, null])).toMatchObject({
+			sourceCount: 2,
+			skippedNonObject: 1,
+		});
+		expect(parseGatewayModelsPayload({ data: [{ id: "a" }, null] })).toMatchObject({
+			sourceCount: 2,
+			skippedNonObject: 1,
+		});
+		expect(parseGatewayModelsPayload({ models: [{ id: "a" }, null] })).toMatchObject({
+			sourceCount: 2,
+			skippedNonObject: 1,
+		});
 	});
 
 	it("rejects null, primitives, and missing arrays", () => {
@@ -348,12 +367,25 @@ describe("parseGatewayModelsPayload strict", () => {
 		expect(() => parseGatewayModelsPayload({ data: null })).toThrow(/catalog/i);
 	});
 
-	it("rejects non-object array members", () => {
-		expect(() => parseGatewayModelsPayload([null, "x", 1])).toThrow(/member/i);
+	// The throw moved down to the mapper, which is the layer that can tell an
+	// all-invalid payload apart from a legitimately empty one — see
+	// test/compat-catalog.test.ts.
+	it("counts non-object array members instead of rejecting the whole payload", () => {
+		expect(parseGatewayModelsPayload([null, "x", 1])).toEqual({
+			models: [],
+			sourceCount: 3,
+			skippedNonObject: 3,
+		});
+	});
+
+	it("keeps good members when a payload mixes them with junk", () => {
+		const parsed = parseGatewayModelsPayload([null, { id: "good" }, 7]);
+		expect(parsed.models).toEqual([{ id: "good" }]);
+		expect(parsed).toMatchObject({ sourceCount: 3, skippedNonObject: 2 });
 	});
 
 	it("passes unsafe optional fields through for the mapper to filter", () => {
-		const models = parseGatewayModelsPayload([
+		const { models } = parseGatewayModelsPayload([
 			{
 				id: "safe",
 				name: "Safe",

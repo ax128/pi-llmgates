@@ -713,3 +713,95 @@ describe("runCompatInstanceLogin", () => {
 		expect(interaction.messages.at(-1)).toMatch(/验证失败/);
 	});
 });
+
+describe("login validation against catalog member damage", () => {
+	// The empty-catalog guard lives inside mapCompatModelsPayload, so it also runs
+	// on the /login credential probe. This is the intended direction: login is the
+	// one moment the user is watching, and accepting a damaged catalog there just
+	// defers the same problem to every later refresh.
+	it("fails credential validation for a non-empty catalog that maps to nothing", async () => {
+		const attemptAnswers = ["newapi", "broken-gateway", "", BASE_URL, "key"];
+		const interaction = scriptedAuthInteraction(
+			Array.from({ length: 5 }, () => attemptAnswers).flat(),
+		);
+		const onValidated = vi.fn(async () => {});
+
+		await expect(
+			runCompatInstanceLogin(interaction, {
+				fetchImpl: vi.fn(async () => new Response(JSON.stringify([{}]))),
+				now: () => NOW,
+				onValidated,
+			}),
+		).rejects.toThrow(/member|login validation failed/i);
+		expect(onValidated).not.toHaveBeenCalled();
+		expect(interaction.messages.at(-1)).toMatch(/验证失败（5\/5）/);
+		// Hard-failing this path was only defensible because the user can read the
+		// reason, so the guard's own wording must be translated, not raw English.
+		expect(interaction.messages.at(-1)).toMatch(
+			/1 个成员没有一个能解析成可用模型/,
+		);
+		expect(interaction.messages.at(-1)).not.toMatch(/Invalid models catalog/);
+	});
+
+	it("leaves nothing behind in the registry or in pi when that login fails", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const harness = createPi();
+		harness.bindAgentDir(agentDir);
+		try {
+			registerCompatGateways(harness.pi, agentDir, {
+				fetchImpl: vi.fn(async (input) => {
+					const url = String(input);
+					if (url === `${BASE_URL}/models`) {
+						return new Response(JSON.stringify([null, { id: "" }]));
+					}
+					if (url === LITELLM_PRICING_URL) {
+						return new Response(JSON.stringify(plausibleLiteLLMTable({})));
+					}
+					throw new Error(`unexpected URL: ${url}`);
+				}),
+				now: () => NOW,
+			});
+			const bootstrap = harness.registered.get(BOOTSTRAP_PROVIDER_ID)!;
+			const attemptAnswers = ["newapi", "broken-gateway", "", BASE_URL, "key"];
+
+			await expect(
+				bootstrapLogin(bootstrap, Array.from({ length: 5 }, () => attemptAnswers).flat()),
+			).rejects.toThrow();
+
+			expect(listInstances(agentDir)).toEqual([]);
+			expect(harness.registered.has("broken-gateway")).toBe(false);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("still logs in and registers a zero-model instance for a legitimately empty catalog", async () => {
+		for (const body of ["[]", JSON.stringify({ data: [] })]) {
+			const { agentDir, cleanup } = withTempAgentDir();
+			const harness = createPi();
+			harness.bindAgentDir(agentDir);
+			try {
+				registerCompatGateways(harness.pi, agentDir, {
+					fetchImpl: vi.fn(async (input) => {
+						const url = String(input);
+						if (url === `${BASE_URL}/models`) return new Response(body);
+						if (url === LITELLM_PRICING_URL)
+							return new Response(JSON.stringify(plausibleLiteLLMTable({})));
+						throw new Error(`unexpected URL: ${url}`);
+					}),
+					now: () => NOW,
+				});
+				const bootstrap = harness.registered.get(BOOTSTRAP_PROVIDER_ID)!;
+
+				await bootstrapLogin(bootstrap, ["newapi", "empty-gateway", "", BASE_URL, "key"]);
+
+				expect(listInstances(agentDir).map((instance) => instance.id)).toEqual([
+					"empty-gateway",
+				]);
+				expect(harness.registered.get("empty-gateway")!.getModels()).toEqual([]);
+			} finally {
+				cleanup();
+			}
+		}
+	});
+});

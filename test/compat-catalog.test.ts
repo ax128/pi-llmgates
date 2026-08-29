@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	DEFAULT_CONTEXT_WINDOW,
@@ -502,5 +502,147 @@ describe("mapCompatModelsPayload", () => {
 		const model = { id: "k3", api: "anthropic-messages" } as unknown as Model<Api>;
 		applyMoonshotKimiCompatModel(model);
 		expect(model.compat).toBeUndefined();
+	});
+});
+
+describe("mapCompatModelsPayload member-level tolerance", () => {
+	afterEach(() => {
+		delete process.env.LLMGATES_DEBUG;
+	});
+
+	it("publishes the good members of a payload that also holds junk", () => {
+		const { models, stats } = mapCompatModelsPayload(
+			[null, { id: "good" }, "x", { id: "also-good" }],
+			OPTIONS,
+		);
+
+		expect(models.map((model) => model.id)).toEqual(["good", "also-good"]);
+		expect(stats).toMatchObject({ sourceCount: 4, skippedNonObject: 2, invalidId: 0 });
+	});
+
+	it("refuses a non-empty payload whose members are all invalid", () => {
+		expect(() => mapCompatModelsPayload([null, null, { id: "" }], OPTIONS)).toThrow(
+			/none of the 3 member/i,
+		);
+	});
+
+	it("refuses object-shaped junk that would map to zero models", () => {
+		expect(() => mapCompatModelsPayload([{}], OPTIONS)).toThrow(/none of the 1 member/i);
+		// Sanitizing a control-char-only id leaves nothing: object-shaped, still unusable.
+		expect(() => mapCompatModelsPayload([{ id: "\u0007" }], OPTIONS)).toThrow(
+			/none of the 1 member/i,
+		);
+	});
+
+	it("refuses a payload of only non-object members", () => {
+		expect(() => mapCompatModelsPayload([null, "x", 1], OPTIONS)).toThrow(/none of the 3 member/i);
+	});
+
+	it("still allows a legitimately empty catalog", () => {
+		for (const payload of [[], { data: [] }, { models: [] }]) {
+			const { models, stats } = mapCompatModelsPayload(payload, OPTIONS);
+			expect(models).toEqual([]);
+			expect(stats.sourceCount).toBe(0);
+		}
+	});
+
+	it("still allows a catalog that holds only generation models", () => {
+		const { models, stats } = mapCompatModelsPayload(
+			[
+				{ id: "img", capability_tags: ["image_generation"] },
+				{ id: "vid", capability_tags: ["video_t2v"] },
+			],
+			OPTIONS,
+		);
+
+		expect(models).toEqual([]);
+		expect(stats).toMatchObject({ sourceCount: 2, unsupportedGeneration: 2, invalidId: 0 });
+	});
+
+	// Deliberately stricter than the rule above: a payload carrying a bad member is
+	// not trustworthy enough to publish an empty catalog from, even if its only
+	// other member is a legitimately unsupported generation model.
+	it("refuses a generation-only catalog that also contains a bad member", () => {
+		expect(() =>
+			mapCompatModelsPayload(
+				[{ id: "img", capability_tags: ["image_generation"] }, null],
+				OPTIONS,
+			),
+		).toThrow(/none of the 2 member/i);
+	});
+
+	it("treats duplicates as routine, not as damage", () => {
+		const { models, stats } = mapCompatModelsPayload(
+			[{ id: "dup" }, { id: "dup" }],
+			OPTIONS,
+		);
+
+		expect(models.map((model) => model.id)).toEqual(["dup"]);
+		expect(stats).toMatchObject({ duplicateId: 1, invalidId: 0, skippedNonObject: 0 });
+	});
+
+	it("logs at most one debug line per payload and nothing without LLMGATES_DEBUG", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			mapCompatModelsPayload([null, "x", { id: "" }, { id: "good" }], OPTIONS);
+			expect(warn).not.toHaveBeenCalled();
+
+			process.env.LLMGATES_DEBUG = "1";
+			mapCompatModelsPayload([null, "x", { id: "" }, { id: "good" }], OPTIONS);
+			expect(warn).toHaveBeenCalledOnce();
+			const line = String(warn.mock.calls[0]?.[0]);
+			expect(line).toMatch(/skipped 3 invalid member\(s\) of 4/);
+			// Counts only — no remote member content, no model ids.
+			expect(line).not.toContain("good");
+
+			// Duplicates and generation models stay silent.
+			warn.mockClear();
+			mapCompatModelsPayload(
+				[{ id: "dup" }, { id: "dup" }, { id: "img", capability_tags: ["image_generation"] }],
+				OPTIONS,
+			);
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
+describe("mapCompatModelsPayload explicit context ids", () => {
+	it("keys the set by the sanitized id so it matches the mapped model", () => {
+		const rawId = "ctrl\u0007id";
+		const { models, explicitContextIds } = mapCompatModelsPayload(
+			[{ id: rawId, context_window: 424_242 }],
+			OPTIONS,
+		);
+
+		expect(models[0]!.id).toBe("ctrlid");
+		expect(explicitContextIds.has("ctrlid")).toBe(true);
+		// The raw id was the old key, and it can never equal a mapped model id.
+		expect(explicitContextIds.has(rawId)).toBe(false);
+	});
+
+	it("counts an id as explicit when any member with that id declares a window", () => {
+		const { explicitContextIds } = mapCompatModelsPayload(
+			[{ id: "dup" }, { id: "dup", context_window: 321_000 }],
+			OPTIONS,
+		);
+
+		expect(explicitContextIds.has("dup")).toBe(true);
+	});
+
+	it("accepts max_model_len and ignores non-positive or non-numeric windows", () => {
+		const { explicitContextIds } = mapCompatModelsPayload(
+			[
+				{ id: "vllm", max_model_len: 65_536 },
+				{ id: "zero", context_window: 0 },
+				{ id: "text", context_window: "128000" },
+			],
+			OPTIONS,
+		);
+
+		expect(explicitContextIds.has("vllm")).toBe(true);
+		expect(explicitContextIds.has("zero")).toBe(false);
+		expect(explicitContextIds.has("text")).toBe(false);
 	});
 });

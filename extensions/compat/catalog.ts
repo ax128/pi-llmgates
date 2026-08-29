@@ -12,6 +12,7 @@ import {
 	type GatewayModel,
 } from "../catalog.js";
 import { normalizeEndpointOverride } from "../model-overrides.js";
+import { envFlag } from "../util.js";
 import {
 	KNOWN_UPSTREAM_VENDOR_IDS,
 	lookupMemoryContextWindow,
@@ -156,29 +157,81 @@ export interface MapCompatModelsOptions {
 	endpointOverride?: (modelId: string) => string | undefined;
 }
 
+/** Why members of a payload did not become models. Counts only — never ids. */
+export interface CatalogMappingStats {
+	/** Members in the source array before any filtering. */
+	sourceCount: number;
+	skippedNonObject: number;
+	invalidId: number;
+	duplicateId: number;
+	unsupportedGeneration: number;
+}
+
+export interface MappedCompatCatalog {
+	models: Model<Api>[];
+	catalogRefs: CatalogModelRef[];
+	/**
+	 * Ids whose upstream member declared a usable context window, keyed by the
+	 * SAME sanitized id the models carry. The provider uses it to keep a
+	 * gateway-declared `context_window` from being overwritten by the LiteLLM
+	 * value, so a key that cannot equal a model id silently disables that.
+	 */
+	explicitContextIds: Set<string>;
+	stats: CatalogMappingStats;
+}
+
+function debugLog(message: string): void {
+	if (envFlag("LLMGATES_DEBUG")) {
+		console.warn(`[pi-llmgates-provider] ${message}`);
+	}
+}
+
 export function mapCompatModelsPayload(
 	payload: unknown,
 	options: MapCompatModelsOptions,
-): { models: Model<Api>[]; catalogRefs: CatalogModelRef[] } {
+): MappedCompatCatalog {
 	const models: Model<Api>[] = [];
 	const catalogRefs: CatalogModelRef[] = [];
+	const explicitContextIds = new Set<string>();
 	const seen = new Set<string>();
+	const parsed = parseGatewayModelsPayload(payload);
+	const stats: CatalogMappingStats = {
+		sourceCount: parsed.sourceCount,
+		skippedNonObject: parsed.skippedNonObject,
+		invalidId: 0,
+		duplicateId: 0,
+		unsupportedGeneration: 0,
+	};
 
-	for (const upstream of parseGatewayModelsPayload(payload) as CompatGatewayModel[]) {
+	for (const upstream of parsed.models as CompatGatewayModel[]) {
 		// Control chars only: trimming would rewrite the id pi sends upstream and
 		// would orphan any override keyed on the original.
 		const id = stripControlChars(typeof upstream.id === "string" ? upstream.id : "");
-		if (!id.trim() || seen.has(id)) {
+		if (!id.trim()) {
+			stats.invalidId += 1;
+			continue;
+		}
+		// Collected before the duplicate and generation filters so the existing
+		// semantics hold: if ANY member with this id declares a context window,
+		// the id counts as explicit. Only members with a usable id get here, so
+		// the set keys always match a possible model id.
+		const declaredContext =
+			positiveNumber(upstream.context_window) ?? positiveNumber(upstream.max_model_len);
+		if (declaredContext !== undefined) {
+			explicitContextIds.add(id);
+		}
+		if (seen.has(id)) {
+			stats.duplicateId += 1;
 			continue;
 		}
 		// Image/video generation models cannot be driven by the coding agent; a
 		// gateway that tags them would otherwise fill /model with dead entries.
 		if (!isPiSelectableModel(upstream)) {
+			stats.unsupportedGeneration += 1;
 			continue;
 		}
 		seen.add(id);
 
-		const explicitContext = positiveNumber(upstream.context_window) ?? positiveNumber(upstream.max_model_len);
 		const maxTokens =
 			positiveNumber(upstream.max_output_tokens) ??
 			positiveNumber(upstream.max_tokens) ??
@@ -215,7 +268,7 @@ export function mapCompatModelsPayload(
 			reasoning: thinking.reasoning,
 			input: buildInputModalities(upstream),
 			cost: resolveModelCostRates(id),
-			contextWindow: resolveCompatContextWindow(id, explicitContext),
+			contextWindow: resolveCompatContextWindow(id, declaredContext),
 			maxTokens,
 			thinkingLevelMap: thinking.thinkingLevelMap,
 			...(thinking.compat ? { compat: thinking.compat } : {}),
@@ -228,5 +281,31 @@ export function mapCompatModelsPayload(
 		);
 	}
 
-	return { models, catalogRefs };
+	const invalidMembers = stats.skippedNonObject + stats.invalidId;
+	if (invalidMembers > 0) {
+		// One line per payload, counts only — never the remote member contents or
+		// the ids themselves. Duplicates and generation models stay silent: those
+		// are routine gateway shapes, not signs of a damaged response.
+		debugLog(
+			`Gateway catalog for ${options.providerId}: skipped ${invalidMembers} invalid member(s) ` +
+				`of ${stats.sourceCount} (${stats.skippedNonObject} not an object, ${stats.invalidId} unusable id).`,
+		);
+	}
+	// A non-empty payload that maps to nothing BECAUSE its members were invalid is
+	// a damaged response, not an empty catalog, and publishing it would wipe the
+	// cached models. `{"data": []}` and a catalog holding only generation models
+	// still map to an empty list without throwing — those are legitimately empty.
+	//
+	// Deliberately no `unsupportedGeneration === 0` relaxation: with one, a single
+	// bad member standing next to one generation model would clear the guard. If a
+	// payload contains invalid members at all, it is not trustworthy enough to
+	// publish an empty catalog from.
+	if (stats.sourceCount > 0 && models.length === 0 && invalidMembers > 0) {
+		throw new Error(
+			`Invalid models catalog: none of the ${stats.sourceCount} member(s) yielded a usable model ` +
+				`(${stats.skippedNonObject} not an object, ${stats.invalidId} unusable id)`,
+		);
+	}
+
+	return { models, catalogRefs, explicitContextIds, stats };
 }
