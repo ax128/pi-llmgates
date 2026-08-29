@@ -29,6 +29,12 @@
   - **代价**：长时间运行的进程里，一个已知缺失的模型即使上游刚刚补上定价，最多也要 1 小时才会被发现（重启立刻生效）。新出现的模型键仍然立即探测，24h 的正缓存刷新也不受任何 miss 记录阻挡。
   - 同时**收紧了对下载结果的校验**：整表里结构上像定价条目的成员少于 50 条时整张表作废，保留旧缓存并按既有的 `LiteLLM pricing sync failed` 提示一次。这挡的是被代理页、GitHub 错误对象之类替换掉的响应——它不是对表身份的认证，只是畸形响应防线；也正因为畸形表在有了 miss 抑制之后会把缺失记录冻结 1 小时，这条校验必须和上面一起生效。（2026-08-29 实测官方表 3,365 条、其中 2,986 条结构可信，50 条约为其 1.7%。）
 
+- **`auth.json` watcher 之外多了一条每 60 秒的低频核对，`/logout` 清理不再只靠它一个触发源。** `fs.watch` 最常见的失效方式不是抛错——Node 明确不保证网络文件系统和部分挂载上的事件送达，watcher 可以成功建立却永久静默，此时不会进入任何失败分支，登出清理就一直不发生，只能靠 `/reload` 或重启补做。
+  - 核对**只比对文件元数据**（`dev`/`ino`/`size`/`mtimeMs`/`ctimeMs`），不读取、不解析、不哈希含凭证的文件内容；文件缺失与不可读各自记为稳定哨兵，所以「一直缺失」「一直不可读」不会每分钟重复触发或刷屏。
+  - **指纹门控只加在轮询上**：watcher 回调保持今天对任何 `auth.json` 事件无条件触发的行为，只多一步写回指纹。给 watcher 也加门控会削弱现有主路径——元数据看不出变化的原地覆写会被两边同时丢掉，而今天至少 watcher 能抓到。watcher 与轮询之间的去重由既有的 `requestOrphanCleanup` in-flight 合流负责。
+  - 判定与删除**仍然全部发生在既有的 `pruneOrphanedInstances` 里**：missing / unreadable 一律不删，真正删除前还在 id 事务内重读一次 auth。本条新增的不是一条删除路径，而是既有删除路径被执行得更频繁。
+  - timer 已 `.unref()`，并在 `session_shutdown` 时清除。帮助文案与两份 README 同步：正常路径是 watcher 即时触发，watcher 不可用或静默漏事件时由最多 60 秒的低频核对补做，`/reload` 与重启仍可立刻触发一次、但不再是唯一恢复方式。
+
 - **删掉了 async 子代理用量的两条文件系统兜底（`status.json` 与子会话 `session.jsonl`）。** 它们只允许读工作区（pi session `cwd`）内的路径，而 pi-subagents 把 async run 目录放在 `os.tmpdir()/pi-subagents-<scope>/`、子会话放在 `~/.pi/agent/sessions/`——两者恒在工作区之外，所以这两条兜底自加入起在默认布局下就没有生效过。**统计数字不变**：async 子代理的用量本来就来自完成事件自带的 `usage` / `modelAttempts` / `totalCost` / `tokens`，以及项目目录或会话文件旁 `subagent-artifacts/` 里的 `_meta.json`。README 的「统计范围」已按实际口径改写。
   - 顺带删除的内部 API：`extractSubagentUsageFromAsyncStatus`、`extractSubagentRunAggregateFromAsyncStatus`、`extractSubagentUsageFromSessionFile`、`isSubagentPathWithinWorkspace`、`resolveSubagentWorkspaceRoot`、`sessionFileSourceKey`、`MAX_SUBAGENT_SESSION_BYTES`，以及 `SubagentUsageBridgeOptions.workspaceRoot`。本扩展不对外导出这些符号，只影响直接引用源码的人。
   - 已知少算随之写进两份 README：`artifactDir: "temp"` 布局下的 `_meta.json` 不在扫描目录里；`@mjasnikovs/pi-task`、`pi-goal-list-loop-audit` 这类 spawn 子 pi 进程却不按 pi 约定回报用量的扩展同样统计不到（pi 自己的 `/cost` 也看不到）。

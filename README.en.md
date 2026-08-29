@@ -159,7 +159,7 @@ The instance registry is written to `~/.pi/agent/llmgates/2api.json`. Both it an
 ### Removing an instance
 
 - `/llmgates remove <id>` — deletes the instance along with its registry / auth / endpoint-override records.
-- `/logout` — select the instance's display name in the picker and pi deletes the `auth.json` credential; this extension watches that file and asynchronously drops the matching registry record, stops the provider, and removes the endpoint override. The instance is not retained as a restorable config; if the current process cannot watch the file, `/reload` or a restart finishes the cleanup.
+- `/logout` — select the instance's display name in the picker and pi deletes the `auth.json` credential; this extension watches that file and asynchronously drops the matching registry record, stops the provider, and removes the endpoint override. The instance is not retained as a restorable config; if the watcher cannot start — or starts but silently misses the event — a low-frequency reconciliation every 60s finishes the cleanup within one interval, and `/reload` or a restart still triggers one right away.
 
 ### Per-gateway walkthroughs
 
@@ -207,7 +207,7 @@ Only currency-denominated fields are read (`balance` / `remaining` / `remaining_
 
 ### Known limitations
 
-- Pi's `/logout` offers no extension cleanup callback; this extension watches `auth.json` for changes to clean up the registry, provider and endpoint override of a logged-out instance. If the watcher is not running, `/reload` or a restart performs the cleanup. The instance is not kept as a restorable config.
+- Pi's `/logout` offers no extension cleanup callback; this extension watches `auth.json` for changes to clean up the registry, provider and endpoint override of a logged-out instance. The watcher is the immediate path; when it cannot start — or starts and then silently misses events, which Node does not rule out on network filesystems and some mounts — a low-frequency reconciliation every 60s is the backstop. It only compares file metadata (it never reads or parses the credentials) and triggers the same cleanup when that metadata changes. `/reload` or a restart still triggers one right away, but is no longer the only way to recover. The instance is not kept as a restorable config.
 - If `auth.json` is missing entirely or temporarily corrupt (a manual credential reset, a sync tool mid-write), that cleanup round is skipped so instances are not wrongly deleted; cleanup resumes once the file is readable again.
 - After `/llmgates remove <id>`, the instance's models disappear immediately; because of pi extension API limits, `/logout` may still briefly list the removed ID until `/reload`.
 - Orphan auth keys in `auth.json` with no matching registry record cannot be handled by `/llmgates remove`; delete the corresponding ID entry from `~/.pi/agent/auth.json` manually.

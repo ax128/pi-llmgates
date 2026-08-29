@@ -1,8 +1,8 @@
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	registerCompatGateways,
 	type RegisterCompatGatewaysOptions,
@@ -524,6 +524,377 @@ describe("compat lifecycle", () => {
 				expect(provider.shutdown).toHaveBeenCalledTimes(1);
 			}
 		} finally {
+			cleanup();
+		}
+	});
+});
+
+/**
+ * Kept in its own describe with its own timer domain on purpose.
+ *
+ * The suite above runs on real timers (`vi.waitFor`, a real 1500ms sleep), and
+ * `registerCompatGateways` is called from three test files without always
+ * emitting `session_shutdown`. Every `session_start` now leaves a live poll
+ * timer behind, so `advanceTimersByTime` in a shared domain would also fire
+ * timers a previous case leaked — statSync'ing an already-removed temp dir,
+ * producing a `missing` sentinel and triggering a cleanup out of nowhere.
+ * `.unref()` only covers process exit, not this. Hence: fake timers scoped
+ * here, and every registration in this block ends with `session_shutdown`.
+ */
+describe("auth cleanup reconciliation", () => {
+	beforeEach(() => {
+		// setImmediate stays real on purpose: the cleanup path awaits fs work, and
+		// fs callbacks land in the I/O phase, not the microtask queue. `settle()`
+		// below needs a real macrotask to get there.
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+		});
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** A watcher that never fires unless the test makes it fire. */
+	function silentWatcher() {
+		const listeners: Array<(event: string, filename: string) => void> = [];
+		const errorHandlers: Array<(error: unknown) => void> = [];
+		const closes: number[] = [];
+		const watcher = {
+			close: () => closes.push(1),
+			on(event: string, handler: (error: unknown) => void) {
+				if (event === "error") errorHandlers.push(handler);
+				return watcher;
+			},
+		} as unknown as ReturnType<typeof watch>;
+		const watchImpl = ((_dir: string, _options: unknown, listener: (event: string, filename: string) => void) => {
+			listeners.push(listener);
+			return watcher;
+		}) as unknown as typeof watch;
+		return {
+			watchImpl,
+			closes,
+			emitFileEvent: () => {
+				for (const listener of listeners) listener("change", "auth.json");
+			},
+			emitError: (error: unknown) => {
+				for (const handler of errorHandlers) handler(error);
+			},
+		};
+	}
+
+	/**
+	 * Drain the async cleanup chain. `pruneOrphanedInstances` awaits real fs work
+	 * (a proper-lockfile acquire among it), which lands in the event loop's I/O
+	 * phase — flushing microtasks alone never reaches the assertion point — while
+	 * the retry budget it may schedule lives on the fake clock. So each turn does
+	 * both: yield a real macrotask, then nudge the fake clock. The 20ms step keeps
+	 * the total well under the 60s poll interval so a drain never fabricates the
+	 * poll tick a test is trying to prove.
+	 */
+	async function settle(turns = 60): Promise<void> {
+		for (let i = 0; i < turns; i++) {
+			await new Promise((resolve) => setImmediate(resolve));
+			await vi.advanceTimersByTimeAsync(20);
+		}
+	}
+
+	/** Same drain, but stops as soon as the expected state is reached. */
+	async function settleUntil(reached: () => boolean): Promise<void> {
+		for (let i = 0; i < 500; i++) {
+			if (reached()) return;
+			await new Promise((resolve) => setImmediate(resolve));
+			await vi.advanceTimersByTimeAsync(20);
+		}
+	}
+
+	it("cleans up after a silent watcher once the poll interval elapses", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const fakes = fakeProviderFactory();
+		const instance = INSTANCES[0]!;
+		const watcher = silentWatcher();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir, {
+				watchImpl: watcher.watchImpl,
+				createProvider: fakes.createProvider,
+			});
+			await pi.emit("session_start", { reason: "start" });
+			await settle();
+			expect(listInstances(agentDir)).toEqual([instance]);
+
+			// The watcher stays silent — exactly the fs.watch failure mode with no
+			// error to catch.
+			writeJson(join(agentDir, "auth.json"), {});
+			await vi.advanceTimersByTimeAsync(60_000);
+			await settleUntil(() => listInstances(agentDir).length === 0);
+
+			expect(listInstances(agentDir)).toEqual([]);
+
+			await pi.emit("session_shutdown");
+		} finally {
+			for (const provider of fakes.providers.values()) provider.completeRefresh();
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	// Guards the risk this item actually adds: not a new deletion path, but the
+	// existing one running more often.
+	it("never deletes an instance whose auth entry has not changed", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const fakes = fakeProviderFactory();
+		const instance = INSTANCES[0]!;
+		const watcher = silentWatcher();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir, {
+				watchImpl: watcher.watchImpl,
+				createProvider: fakes.createProvider,
+			});
+			await pi.emit("session_start", { reason: "start" });
+			await settle();
+
+			for (let round = 0; round < 5; round++) {
+				await vi.advanceTimersByTimeAsync(60_000);
+				await settle();
+			}
+
+			expect(listInstances(agentDir)).toEqual([instance]);
+			expect(warn).not.toHaveBeenCalled();
+
+			await pi.emit("session_shutdown");
+		} finally {
+			for (const provider of fakes.providers.values()) provider.completeRefresh();
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	// Asserts observable side effects (warn count, instance survival) rather than
+	// listInstances call counts: compat/index.ts imports that binding directly
+	// from ./storage.js, so a test-side import cannot observe its calls and
+	// module-mocking storage would leak across this whole file.
+	it("does not re-warn every minute while auth.json stays unreadable", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const fakes = fakeProviderFactory();
+		const instance = INSTANCES[0]!;
+		const watcher = silentWatcher();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir, {
+				watchImpl: watcher.watchImpl,
+				createProvider: fakes.createProvider,
+			});
+			writeFileSync(join(agentDir, "auth.json"), "{");
+			await pi.emit("session_start", { reason: "start" });
+			await settle();
+			// Let the existing 3-step retry budget drain first — those warns belong
+			// to the retry path and predate this change.
+			await vi.advanceTimersByTimeAsync(10_000);
+			await settle();
+			const afterRetryBudget = warn.mock.calls.filter((call) =>
+				/temporarily unreadable/i.test(String(call[0])),
+			).length;
+			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/stayed unreadable after 3/i));
+
+			// From here the fingerprint never changes, so the poll must add nothing:
+			// no further cleanup, no per-minute noise.
+			await vi.advanceTimersByTimeAsync(5 * 60_000);
+			await settle();
+
+			expect(
+				warn.mock.calls.filter((call) => /temporarily unreadable/i.test(String(call[0]))),
+			).toHaveLength(afterRetryBudget);
+			expect(listInstances(agentDir)).toEqual([instance]);
+
+			await pi.emit("session_shutdown");
+		} finally {
+			for (const provider of fakes.providers.values()) provider.completeRefresh();
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("polls even when the watcher could not be established at all", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const fakes = fakeProviderFactory();
+		const instance = INSTANCES[0]!;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir, {
+				watchImpl: (() => {
+					throw new Error("ENOSPC: watch limit reached");
+				}) as unknown as typeof watch,
+				createProvider: fakes.createProvider,
+			});
+			await pi.emit("session_start", { reason: "start" });
+			await settle();
+			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/could not watch auth\.json/i));
+
+			writeJson(join(agentDir, "auth.json"), {});
+			await vi.advanceTimersByTimeAsync(60_000);
+			await settleUntil(() => listInstances(agentDir).length === 0);
+
+			expect(listInstances(agentDir)).toEqual([]);
+
+			await pi.emit("session_shutdown");
+		} finally {
+			for (const provider of fakes.providers.values()) provider.completeRefresh();
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("closes a watcher that emits an error and keeps polling", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const fakes = fakeProviderFactory();
+		const instance = INSTANCES[0]!;
+		const watcher = silentWatcher();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir, {
+				watchImpl: watcher.watchImpl,
+				createProvider: fakes.createProvider,
+			});
+			await pi.emit("session_start", { reason: "start" });
+			await settle();
+
+			watcher.emitError(new Error("watcher exploded"));
+			expect(watcher.closes).toHaveLength(1);
+			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/watcher stopped/i));
+
+			writeJson(join(agentDir, "auth.json"), {});
+			await vi.advanceTimersByTimeAsync(60_000);
+			await settleUntil(() => listInstances(agentDir).length === 0);
+
+			expect(listInstances(agentDir)).toEqual([]);
+
+			await pi.emit("session_shutdown");
+		} finally {
+			for (const provider of fakes.providers.values()) provider.completeRefresh();
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("recovers from a missing and from an unreadable auth.json once it is readable", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const fakes = fakeProviderFactory();
+		const instance = INSTANCES[0]!;
+		const watcher = silentWatcher();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir, {
+				watchImpl: watcher.watchImpl,
+				createProvider: fakes.createProvider,
+			});
+			rmSync(join(agentDir, "auth.json"));
+			await pi.emit("session_start", { reason: "start" });
+			await settle();
+			expect(listInstances(agentDir)).toEqual([instance]);
+
+			// missing -> unreadable: still no deletion.
+			writeFileSync(join(agentDir, "auth.json"), "{");
+			await vi.advanceTimersByTimeAsync(60_000);
+			await settle();
+			expect(listInstances(agentDir)).toEqual([instance]);
+
+			// unreadable -> readable: the poll notices and the cleanup completes.
+			writeJson(join(agentDir, "auth.json"), {});
+			await vi.advanceTimersByTimeAsync(60_000);
+			await settleUntil(() => listInstances(agentDir).length === 0);
+			expect(listInstances(agentDir)).toEqual([]);
+
+			await pi.emit("session_shutdown");
+		} finally {
+			for (const provider of fakes.providers.values()) provider.completeRefresh();
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	// The watcher keeps today's unconditional trigger: two identical events with
+	// no metadata change must both reach requestOrphanCleanup, and the existing
+	// in-flight merge is what prevents duplicate work.
+	it("does not gate watcher events on the fingerprint", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const fakes = fakeProviderFactory();
+		const instance = INSTANCES[0]!;
+		const watcher = silentWatcher();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir, {
+				watchImpl: watcher.watchImpl,
+				createProvider: fakes.createProvider,
+			});
+			rmSync(join(agentDir, "auth.json"));
+			await pi.emit("session_start", { reason: "start" });
+			await settle();
+			warn.mockClear();
+
+			// Fingerprint is the stable `missing` sentinel across both events, so a
+			// gated watcher would fire zero times. The unconditional one warns twice.
+			watcher.emitFileEvent();
+			await settle();
+			watcher.emitFileEvent();
+			await settle();
+
+			expect(
+				warn.mock.calls.filter((call) => /auth\.json is missing/i.test(String(call[0]))),
+			).toHaveLength(2);
+			expect(listInstances(agentDir)).toEqual([instance]);
+
+			await pi.emit("session_shutdown");
+		} finally {
+			for (const provider of fakes.providers.values()) provider.completeRefresh();
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("leaves no timer and closes the watcher exactly once on session_shutdown", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const fakes = fakeProviderFactory();
+		const instance = INSTANCES[0]!;
+		const watcher = silentWatcher();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			seedStartup(agentDir, [instance]);
+			registerCompatGateways(pi.pi, agentDir, {
+				watchImpl: watcher.watchImpl,
+				createProvider: fakes.createProvider,
+			});
+			await pi.emit("session_start", { reason: "start" });
+			await settle();
+			expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+			await pi.emit("session_shutdown");
+			expect(vi.getTimerCount()).toBe(0);
+			expect(watcher.closes).toHaveLength(1);
+
+			// Nothing after shutdown may act on the file any more.
+			writeJson(join(agentDir, "auth.json"), {});
+			await vi.advanceTimersByTimeAsync(5 * 60_000);
+			await settle();
+			expect(listInstances(agentDir)).toEqual([instance]);
+		} finally {
+			for (const provider of fakes.providers.values()) provider.completeRefresh();
+			warn.mockRestore();
 			cleanup();
 		}
 	});

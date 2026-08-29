@@ -157,7 +157,7 @@ pi
 ### 删除实例
 
 - `/llmgates remove <id>`：删除该实例及其 registry / auth / endpoint override 记录。
-- `/logout`：在选择器中选择实例的显示名称，Pi 会删除 `auth.json` 凭证；本扩展监听该文件变更并异步删除对应的 registry 记录、停止 provider 和 endpoint override。该实例不会保留为可恢复配置；若当前进程无法监听文件，执行 `/reload` 或重启会完成清理。
+- `/logout`：在选择器中选择实例的显示名称，Pi 会删除 `auth.json` 凭证；本扩展监听该文件变更并异步删除对应的 registry 记录、停止 provider 和 endpoint override。该实例不会保留为可恢复配置；监听建立不起来、或建立了却静默漏掉事件时，扩展每 60 秒的低频核对最多延迟一个周期补做清理，`/reload` 或重启仍可立刻触发一次。
 
 ### 分网关简明教程
 
@@ -205,7 +205,7 @@ pi
 
 ### 已知限制
 
-- Pi 的 `/logout` 不提供扩展清理回调；本扩展通过监听 `auth.json` 变更清理已登出的 registry、provider 和 endpoint override。若监听未运行，`/reload` 或重启会补做清理；不会保留原实例作为可恢复配置。
+- Pi 的 `/logout` 不提供扩展清理回调；本扩展通过监听 `auth.json` 变更清理已登出的 registry、provider 和 endpoint override。监听是即时路径；它建立不起来、或建立了却静默漏事件（网络文件系统和部分挂载上 Node 不保证事件送达）时，还有一条每 60 秒的低频核对兜底——它只比对文件元数据（不读取、不解析凭证内容），变化了才触发同一套清理。`/reload` 或重启仍可立刻触发一次，但不再是唯一的恢复方式。不会保留原实例作为可恢复配置。
 - 若 `auth.json` 整体缺失或暂时损坏（如手动重置凭证、同步工具改写中途），本轮清理会被跳过以防止误删全部实例；文件恢复可读后清理自动继续。
 - `/llmgates remove <id>` 后该实例的模型会立即消失；受 Pi 扩展 API 限制，`/logout` 仍可能短暂列出已删除的 ID，执行 `/reload` 后会完成清理。
 - 若 `auth.json` 中存在没有对应 registry 记录的孤儿 auth key，`/llmgates remove` 无法处理，须手动删除 `~/.pi/agent/auth.json` 中对应 ID 的条目。
