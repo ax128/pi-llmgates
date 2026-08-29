@@ -767,18 +767,18 @@ export async function syncModelPricingCache(
 		);
 	}
 
-	// Derived from the assembled result, not from the pre-fetch gaps: a dimension
-	// that this table filled must drop its record, and one still empty afterwards
-	// is a confirmed upstream miss. Only reached on a successful, structurally
-	// valid table — a fetch or validation failure returns above without recording
-	// anything, so a bad round never suppresses the next one.
-	for (const ref of catalog) {
-		recordPricingMissProbe(agentDir, "rate", ref, nowMs, !hasCachedRate(next, ref));
-		recordPricingMissProbe(agentDir, "context", ref, nowMs, !hasCachedContextWindow(next, ref));
-	}
-
 	try {
 		writeModelPricingFile(agentDir, next);
+		// Commit miss probes only after the matching cache state is durable. Every
+		// refresh re-reads pricing.json first; recording a miss for a result that
+		// failed to persist could make the next refresh short-circuit on the stale
+		// disk file and overwrite freshly resolved in-memory rates for up to an hour.
+		// Fetch/validation failures return above, and write failures land in the
+		// catch below, so no failed round suppresses its successor.
+		for (const ref of catalog) {
+			recordPricingMissProbe(agentDir, "rate", ref, nowMs, !hasCachedRate(next, ref));
+			recordPricingMissProbe(agentDir, "context", ref, nowMs, !hasCachedContextWindow(next, ref));
+		}
 	} catch (error) {
 		logPricingSyncIssue(
 			"write",

@@ -1103,4 +1103,64 @@ describe("pricing miss suppression", () => {
 			warn.mockRestore();
 		}
 	});
+
+	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"does not let a failed cache write suppress the next refresh from stale disk state",
+		async () => {
+			const agentDir = tempAgentDir("pricing-miss-write-failure-");
+			const cacheDir = dirname(join(agentDir, MODEL_PRICING_CACHE_FILE));
+			const catalog = [
+				{ id: "priced-model", capability_tags: ["chat"] },
+				{ id: "gateway-custom-model", capability_tags: ["chat"] },
+			];
+			let priced = {
+				input_cost_per_token: 1e-6,
+				output_cost_per_token: 2e-6,
+				max_input_tokens: 100_000,
+			};
+			let calls = 0;
+			const load = async () => {
+				calls += 1;
+				return { "priced-model": priced } as never;
+			};
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				await syncModelPricingCache(agentDir, catalog, {
+					now: () => 1_000_000,
+					loadLiteLLMTable: load,
+				});
+				priced = {
+					input_cost_per_token: 9e-6,
+					output_cost_per_token: 18e-6,
+					max_input_tokens: 100_000,
+				};
+
+				// Keep the old file readable while preventing atomicWriteJson from
+				// creating its temp file. The fetched result still applies in memory.
+				chmodSync(cacheDir, 0o500);
+				const retryAt = 1_000_000 + PRICING_MISS_RETRY_MS + 1;
+				const failedWrite = await syncModelPricingCache(agentDir, catalog, {
+					now: () => retryAt,
+					loadLiteLLMTable: load,
+				});
+				expect(failedWrite?.rates["priced-model"]).toMatchObject({ input: 9, output: 18 });
+
+				// A miss recorded before the failed write would suppress this load and
+				// re-apply the old on-disk rate instead.
+				const next = await syncModelPricingCache(agentDir, catalog, {
+					now: () => retryAt + 1,
+					loadLiteLLMTable: load,
+				});
+				expect(calls).toBe(3);
+				expect(next?.rates["priced-model"]).toMatchObject({ input: 9, output: 18 });
+				expect(readModelPricingFile(agentDir)?.rates["priced-model"]).toMatchObject({
+					input: 1,
+					output: 2,
+				});
+			} finally {
+				chmodSync(cacheDir, 0o700);
+				warn.mockRestore();
+			}
+		},
+	);
 });
