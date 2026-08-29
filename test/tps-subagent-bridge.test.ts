@@ -1,6 +1,3 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
@@ -12,7 +9,6 @@ import {
 import type { SubagentUsageRecord } from "../extensions/tps-subagent.js";
 
 const UUID_RUN = "1d706627-aada-4828-9207-bbab8fad3864";
-const BRIDGE_WORKSPACE = "/tmp/pi-llmgates-bridge-test";
 
 function createMemoryEventBus() {
 	const handlers = new Map<string, Set<(data: unknown) => void>>();
@@ -72,7 +68,6 @@ describe("tps-subagent-bridge", () => {
 		const observed: string[] = [];
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: (records) => {
 				batches.push([...records]);
 			},
@@ -108,7 +103,6 @@ describe("tps-subagent-bridge", () => {
 		const observed: string[] = [];
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: () => {},
 			onRunObserved: (runId) => observed.push(runId),
 		});
@@ -132,7 +126,6 @@ describe("tps-subagent-bridge", () => {
 		const observed: string[] = [];
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: () => {},
 			onRunObserved: (runId) => observed.push(runId),
 		});
@@ -154,7 +147,6 @@ describe("tps-subagent-bridge", () => {
 		const observed: string[] = [];
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: () => {},
 			onRunObserved: (runId) => observed.push(runId),
 		});
@@ -175,7 +167,6 @@ describe("tps-subagent-bridge", () => {
 		const observed: string[] = [];
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: (records) => {
 				batches.push([...records]);
 			},
@@ -216,7 +207,6 @@ describe("tps-subagent-bridge", () => {
 		let called = 0;
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: () => {
 				called += 1;
 			},
@@ -246,7 +236,6 @@ describe("tps-subagent-bridge", () => {
 		const foregroundRuns: string[] = [];
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: () => {
 				recordsCalls += 1;
 			},
@@ -285,7 +274,6 @@ describe("tps-subagent-bridge", () => {
 		let observedCalls = 0;
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: () => {},
 			onRunObserved: () => {
 				observedCalls += 1;
@@ -309,7 +297,6 @@ describe("tps-subagent-bridge", () => {
 		let called = 0;
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
-			workspaceRoot: BRIDGE_WORKSPACE,
 			enabled: false,
 			onRecords: () => {
 				called += 1;
@@ -325,38 +312,6 @@ describe("tps-subagent-bridge", () => {
 		unregister();
 	});
 
-	it("rejects filesystem fallbacks outside workspaceRoot", () => {
-		const root = mkdtempSync(join(tmpdir(), "bridge-path-"));
-		const outside = mkdtempSync(join(tmpdir(), "bridge-outside-"));
-		const sessionFile = join(outside, "child.jsonl");
-		writeFileSync(
-			sessionFile,
-			JSON.stringify({
-				role: "assistant",
-				usage: { input: 99, output: 1, cacheRead: 0, cacheWrite: 0 },
-			}),
-		);
-
-		const bus = createMemoryEventBus();
-		const batches: SubagentUsageRecord[][] = [];
-		const unregister = registerSubagentUsageBridge(bus, {
-			sessionId: "sess-1",
-			workspaceRoot: root,
-			onRecords: (records) => {
-				batches.push([...records]);
-			},
-		});
-
-		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-			sessionId: "sess-1",
-			runId: UUID_RUN,
-			results: [{ agent: "worker", index: 0, sessionFile }],
-		});
-
-		expect(batches).toHaveLength(0);
-		unregister();
-	});
-
 	it("delivers async-complete when the event identifies the session by file path", () => {
 		const sessionId = "019fffd6-3903-7569-9b4b-dc3401db7348";
 		const sessionFile = `/home/yxz/.pi/agent/sessions/proj/2026-08-14T10-34-17-220Z_${sessionId}.jsonl`;
@@ -366,7 +321,6 @@ describe("tps-subagent-bridge", () => {
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId,
 			sessionFile,
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: (records) => {
 				batches.push([...records]);
 			},
@@ -402,7 +356,6 @@ describe("tps-subagent-bridge", () => {
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId,
 			sessionFile,
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: () => {},
 			onRunObserved: (runId) => observed.push(runId),
 			onForegroundComplete: (runId) => foregroundRuns.push(runId),
@@ -421,7 +374,6 @@ describe("tps-subagent-bridge", () => {
 		let handlerReturned = false;
 		const unregister = registerSubagentUsageBridge(bus, {
 			sessionId: "sess-1",
-			workspaceRoot: BRIDGE_WORKSPACE,
 			onRecords: (batch) => {
 				records.push([...batch]);
 			},

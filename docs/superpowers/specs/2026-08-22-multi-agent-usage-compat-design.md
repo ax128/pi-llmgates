@@ -1,12 +1,19 @@
 # 多代理生态用量统计兼容方案
 
 **状态：** **P0 已实施**（2026-08-23）——P0-a `ece1469`、P0-b `9bca2d8`、P0-c `93c1f93`。入口 F（§4.3）与 P2（§9）**未实施**，仍为方案。
-**日期：** 2026-08-22（rev 2 / rev 3：2026-08-23 两轮复核后修正；rev 4：2026-08-24 落地后结案）
+**日期：** 2026-08-22（rev 2 / rev 3：2026-08-23 两轮复核后修正；rev 4：2026-08-24 落地后结案；**rev 5：2026-08-29 生态复核**，见下方修订说明）
 **关联模块：** `extensions/tps.ts`（新增订阅）、`extensions/tps-stats.ts`（**唯一被改动的既有实现**，§6.1 的定价提取）、`extensions/tps-subagent.ts` / `extensions/tps-subagent-bridge.ts`（只读复用）、新增 `extensions/tps-usage-inlets.ts`
 **外部依赖：** 全部可选。未安装对应包时不订阅、不产生 IO
-**核对基线：** pi 0.81.1（`package.json` 锁定版本，`@earendil-works/pi-agent-core@0.81.1` 为其嵌套依赖）；pi-subagents 0.54.0；本仓行号以 commit `9afe18d` 为准
+**核对基线：** pi 0.81.1（`package.json` 锁定版本，`@earendil-works/pi-agent-core@0.81.1` 为其嵌套依赖）；pi-subagents 0.54.0；本仓行号以 commit `9afe18d` 为准。**rev 5 的生态复核基线：** pi-subagents 0.59.0（本机 `~/.pi/agent/npm/node_modules`）、`@tintinweb/pi-subagents` 0.19.0、`@quintinshaw/pi-dynamic-workflows` 3.9.1、`pi-background-tasks` 2.4.2、`@mjasnikovs/pi-task` 0.38.29、`pi-goal-x` 0.30.5、`@narumitw/pi-goal` 0.54.3、`pi-goal-list-loop-audit` 0.35.71（后七个为 npm tarball 只读解包）
 **版本 range 说明：** `package.json` 允许 `>=0.81.0 <0.85.0`。本文所有 pi 行号取自 0.81.1；**range 上限（0.84.x）未验证**，实施时若 node_modules 已升版须重新确认 §11 的行号与字段。
 
+> **2026-08-29 修订（生态复核，rev 4 → rev 5）**
+>
+> 1. **入口 B/C/D/E 的判定在 pi-subagents 0.59.0 上仍然成立，且排除集挡住了一次真会双计的上游变更。** 0.59.0（#1662）给 `subagent_wait` 的工具结果加上了顶层 `usage`（已完成 async 子代理的池化用量，`src/runs/background/subagent-wait.ts:319-345`）——0.54.0 没有。§3.3 把这个名字划进「无人认领（刻意）」、D 的排除集含它，所以它没有和 C 双计。同一批的 #1666「parent compaction usage」只进对方自己的 `/subagent-cost`（`src/slash/slash-commands.ts:380-384,484`），不进工具结果，与入口 E 无交集。
+> 2. **`@tintinweb/pi-subagents` 0.19.0 新增了第四个工具 `SubagentWorkflow`，但它没有被 `withUsageReporting` 包**（包的只有 `Agent` / `get_subagent_result` / `steer_subagent`，`src/index.ts:2301/2732/2821`），所以 §3.3 的三名单仍与「会带 usage 的工具集合」精确重合，不需要补。`reportUsage` 仍默认 `false`（`src/index.ts:410`）。**§4.3 前置条件①现已证实**：`subagents:completed` / `:failed` 确实发在 `pi.events` 上（`src/index.ts:579-581`），载荷带 pi `Usage`。其余前置条件未变，F 仍不排期。
+> 3. **§1.3 的一处分类错误已订正**：`@mjasnikovs/pi-task` 会 spawn 子 `pi --mode json`（`dist/task/child-runner.js:145`），且只把子进程的 `message_end.usage` 用于上下文窗口显示（`dist/shared/child-process.js:100-105`），从不挂到工具结果上——它的子进程花费属于 §10，不是「已覆盖」。生态新出现的 `pi-goal-list-loop-audit` 同类（spawn `pi --mode rpc` 跑独立审计，`scripts/goal-auditor-worker.mjs:525-545`），一并进 §10。`@narumitw/pi-goal` 为纯主会话驱动（A 覆盖）；`dynamic-workflows` 3.9.1 与 `pi-background-tasks` 2.4.2 的结论不变。
+> 4. **C 的两条文件系统兜底已删除**（`status.json` 与子 `session.jsonl`）。它们受「只读工作区内路径」的 fail-closed 门禁约束（2026-07-24 方案 §7），而 pi-subagents 把 asyncDir 放在 `os.tmpdir()/pi-subagents-<scope>/`、子会话在 `~/.pi/agent/sessions/`，两者恒在工作区外——**这两条兜底在默认布局下从未生效**。真机核对（10 个 async run、28 个 `_meta.json`）确认可用的来源只有事件载荷与 `_meta.json`。删除范围：`extractSubagentUsageFromAsyncStatus`、`extractSubagentRunAggregateFromAsyncStatus`、`extractSubagentUsageFromSessionFile`、`readJsonFile`、`isSubagentPathWithinWorkspace`、`resolveSubagentWorkspaceRoot`、`sessionFileSourceKey`、`MAX_SUBAGENT_SESSION_BYTES`，以及 bridge / `tps.ts` 上的 `workspaceRoot` 参数与对应测试。
+>
 > **2026-08-23 修订（第二轮复核后修正，rev 2 → rev 3）**
 >
 > 1. **§3.4.1 修正一个会污染 pi 自身账目的公式（阻塞级）。** rev 2 写的 `calculateCost({cost: rates}, usage).total` 把**事件载荷里的原 usage** 直接传了进去，而 `calculateCost` 是**原地写入**（`pi-ai/dist/models.js:371-390` 逐字段写 `usage.cost.*`）。入口 D 的 `event.result.usage` 与 pi 落盘的 `toolResultMessage.usage` 是同一个对象、且 `tool_execution_end` 先于 `createToolResultMessage` 发出，入口 E 的 `entry.usage` 是已 append 的会话条目——照写会把我们的估算值写进 pi 的 `/cost`（`usage-totals.js:10-15` 读 `usage.cost.total`）。且步骤 3 恰在 `usage.cost` 为 `undefined` / 数字时触发，`usage.cost.input = …` 在 ESM 严格模式下直接抛 TypeError。现改为**必须先构造零 cost 的副本**，并把估算体下沉为 `tps-stats.ts` 的共享 `estimateCostFromRates`（§3.4.1、§6）。
@@ -69,7 +76,7 @@ tool.execute() → finalized.result                       (pi-agent-core/dist/ag
 | --- | --- | --- | --- |
 | A `message_end` | `tps.ts:525-537` → `tps-stats.ts:234-245` | pi 的第 1 类 | **否**（直写 `turnStats`，按 message 天然唯一） |
 | B `tool_execution_end` | `tps.ts:512-523` | **仅**工具名 `subagent` / `task`（`tps-subagent.ts:21`），其余工具的 `result.usage` 被丢弃 | 是 |
-| C pi-subagents 事件 + `_meta.json` / `status.json` / 子 `session.jsonl` | `tps.ts:438-510`、`tps-subagent-bridge.ts` | pi 自己都不算的子代理用量（我们的加分项） | 是 |
+| C pi-subagents 事件 + `_meta.json` | `tps.ts:438-510`、`tps-subagent-bridge.ts` | pi 自己都不算的子代理用量（我们的加分项） | 是 |
 
 共同门槛：`hasUI && mode === "tui"`（`tps.ts:54-56`；`ExtensionMode = "tui" | "rpc" | "json" | "print"`，`types.d.ts:207`）。
 
@@ -89,7 +96,9 @@ tool.execute() → finalized.result                       (pi-agent-core/dist/ag
 | `pi-goal-x` 0.27.4 | 独立完成审计用 `createAgentSession`（`goal-completion.ts`、`goal-auditor.ts`） | 无 | ❌ 结构性不可见 | — §10 |
 | `pi-vision` 0.9.8 | `completeSimple()` 直连视觉模型（`src/describer.ts`） | 自定义 session entry（`src/usage.ts:178`） | ❌ 结构性不可见 | — §10 |
 | pi 内置压缩 / 分支摘要、`pi-safe-compact`、`@thunstack/auto-compact` | `completeSimple()` 直连（`dist/core/compaction/compaction.js:8`） | `compaction` / `branch_summary` 条目的 `usage` | ❌ 漏计 | **E** |
-| 主会话驱动型：`@dietrichgebert/ponytail`、`bigpowers`、`@reddb-io/red-skills-*`、`@mjasnikovs/pi-task`、`pi-simplify`、`pi-web-search`、`pi-mcp-adapter`、`pi-lens`、`pi-memory` 等 | 主会话 | assistant `usage` | ✅ 已覆盖 | A 不变 |
+| `@mjasnikovs/pi-task` 0.38.29 | 子 pi 进程 `pi --mode json`（`dist/task/child-runner.js:145`） | 无——子进程的 `message_end.usage` 只用于上下文窗口显示（`dist/shared/child-process.js:100-105`） | ❌ 子进程部分漏计（主会话部分 A 覆盖） | — §10（rev 5 订正） |
+| `pi-goal-list-loop-audit` 0.35.71 | 子 pi 进程 `pi --mode rpc`（`scripts/goal-auditor-worker.mjs:525-545`） | 无 | ❌ 审计子进程漏计（主会话循环 A 覆盖） | — §10（rev 5 新增） |
+| 主会话驱动型：`@dietrichgebert/ponytail`、`bigpowers`、`@reddb-io/red-skills-*`、`@narumitw/pi-goal`、`pi-simplify`、`pi-web-search`、`pi-mcp-adapter`、`pi-lens`、`pi-memory` 等 | 主会话 | assistant `usage` | ✅ 已覆盖 | A 不变 |
 
 **入口价值排序**（决定 §9 分期）：
 
@@ -141,8 +150,8 @@ tool.execute() → finalized.result                       (pi-agent-core/dist/ag
             // 不产生 SubagentUsageRecord、不经去重闸。
             // 唯一性来自 pi：每条 assistant 消息只 emit 一次 message_end。
             // 二者的交集为空：A 只认**本会话**的 assistant 消息，B–F 都不碰本会话的
-            // assistant 消息（C 的兜底路径 extractSubagentUsageFromSessionFile 确实
-            // 解析 assistant 行，但读的是**子**会话的 session.jsonl，tps-subagent.ts:996）。
+            // assistant 消息（rev 5 之前 C 还有一条解析**子**会话 session.jsonl 的兜底，
+            // 那条已随门禁一起删除，见本文顶部 rev 5 第 4 条）。
             // 所以 A 不在闸内不构成双计风险——但论证 G2 时必须分开谈。
 ```
 
@@ -156,7 +165,6 @@ tool.execute() → finalized.result                       (pi-agent-core/dist/ag
 | --- | --- | --- |
 | `meta:{runId}` / `meta:{runId}:{agent}:{index}` | B/C（现有） | pi-subagents runId + 跨粒度互斥（`tps-subagent.ts:369,380`） |
 | `async:{dir}:{agent}:{index}` / `async:unknown:{agent}:{index}` | C（现有兜底） | async 目录名（`:399`、`:1079`） |
-| `session:{absPath}` | C（现有兜底） | 子会话文件绝对路径（`:403`） |
 | **`tool:{toolCallId}:{index}` / `tool:{toolCallId}:aggregate`** | **B（现有，rev 1 漏记）** | 工具结果无 runId 时的兜底（`:449`、`:643`） |
 | **`toolusage:{toolCallId}`** | **D（新）** | pi 的 toolCallId，每次工具调用唯一 |
 | **`compact:{entryId}`** / **`branch:{entryId}`** | **E（新）** | session entry `id`（`SessionEntryBase.id`，`session-manager.d.ts:17-22`；同一会话内由 `generateId(this.byId)` 保证唯一） |
@@ -315,7 +323,7 @@ import { SUBAGENT_TOOL_NAMES } from "./tps-subagent.js";
 
 /**
  * pi-subagents 的管理类工具：结果里出现的是**已完成 run** 的数据，
- * 计了必与 C 路径（async-complete / status.json / _meta.json）双计。
+ * 计了必与 C 路径（async-complete / _meta.json）双计。
  * 既有不变量，勿删：tps-subagent.ts:17-21、test/tps-subagent.test.ts:928-933。
  */
 const PI_SUBAGENTS_MANAGEMENT_TOOL_NAMES = ["subagent_wait", "subagent_supervisor", "intercom"] as const;
@@ -646,7 +654,7 @@ rev 2 的「P0 / P0.5」不是两个里程碑（编号本身就说明了这点�
 - [ ] 走 [pre-publish-gate](../../pre-publish-gate.md)：其中 §4 功能验证至少覆盖「长会话触发一次自动压缩后 `/calls` 出现 `compact/*` 行」——**这是 P0 唯一未消化的收尾项，发版前必做**
 
 **P2① 的现状（2026-08-24 复核补记）：** 它修的缺口是真实存在且已可定位的——子代理只拿到 token 兜底时 cost 恒为 0
-（`tps-subagent.ts:250` 的 `mapTokenUsageToUsage`、`:1064` 的 session.jsonl 兜底都显式写 `cost: 0`），而记录里已经带着
+（`tps-subagent.ts:250` 的 `mapTokenUsageToUsage` 显式写 `cost: 0`；rev 5 之前的 session.jsonl 兜底同样如此，那条已删除），而记录里已经带着
 `modelLabel`（真实模型 id），定价依据其实是齐的。仍不排期的理由不变：它会改变**已展示**的费用数字，且第三方 payload 里的
 model id 是任意字符串，落 `DEFAULT_MODEL_COST` 就违背 G8「不造钱」。做之前需要一份真实 async 子代理的 fixture 来确认
 `modelLabel` 的可信度。该少算已在两份 README 的「统计范围」如实披露。
@@ -664,6 +672,9 @@ model id 是任意字符串，落 `DEFAULT_MODEL_COST` 就违背 G8「不造钱�
 | **同一会话内两次压缩产出字节相同的摘要** | pi 用 `newEntries.find(e => e.type === "compaction" && e.summary === summary)` 取条目（`agent-session.js:1439`、`:1685`），会命中**第一条**同文摘要 → 事件携带旧 entry id → E 按 id 去重把这次压缩静默丢掉 | 概率极低，且方向是**少算**而非多算，符合「宁可漏，不可撞键」的既定取舍。不修，记录在案 |
 | pi-subagents 深度 ≥ 2 的孙代理 | `NestedRunSummary` 不带 token 字段（`src/shared/types.ts:1237-1290` 已核对），孙代理产物落在子会话目录 | rev 2 曾为此设「入口 G」（递归 `results[].children[]` 与 `data.nestedChildren`，`tps-subagent-bridge.ts:88-106`）；但它只覆盖 `artifactDir: "project"` 布局的一部分，默认 `artifactDir: "session"` 下仍拿不到——收益自证有限，rev 3 降级为 §9 的 P2 备选，不再占一个入口编号 |
 | **`@tintinweb` 工具结果（F 未落地期间）** | D 的排除集自 P0-c 起就含那三个工具名，而 F 默认不排期（§9）；若用户手动开了对方默认关闭的 `reportUsage`，这部分 usage 无人认领 | 方向是**少算**而非双计。触发条件要求用户主动改第三方设置，接受；若最终决定不做 F，须把这条写进 README 的「统计范围」 |
+| **spawn 子 pi 进程但不回报用量的扩展**（`@mjasnikovs/pi-task`、`pi-goal-list-loop-audit`） | 子进程的用量只被对方用于自己的显示，不按 pi 约定挂到工具结果上；pi 的 `/cost` 同样看不到 | README 写明；缓解同第一行——按约定挂 `usage` 即可 |
+| **`artifactDir: "temp"` 布局的 `_meta.json`** | 落在 `os.tmpdir()/pi-subagents-<scope>/artifacts`（或 `PI_SUBAGENTS_TEMP_ROOT`），`resolveSubagentArtifactDirs` 只覆盖项目目录与会话文件旁的 `subagent-artifacts/` | 默认是 `artifactDir: "session"`；事件载荷自带 usage 的场景不受影响。要覆盖只需往候选目录里加一条 |
+| **无子序号的 `<runId>_<agent>_meta.json`** | `metaFileSourceKey` 要求文件名以 `_<index>_meta.json` 结尾，而 pi-subagents 在 `index` 缺省时会写出不带序号的形式（`src/shared/artifacts.ts:182-192`、`src/runs/foreground/execution.ts:1852`） | 真机 28 个 meta 里只有 1 个是这种形式，且内容不含 usage（单跑 async run 的数字在 status.json 里）。方向是少算 |
 | headless（`rpc` / `json` / `print`）会话 | `isPrimaryUiSession` 门槛（设计如此，§2.2） | `/calls` 已提示「仅交互会话统计」 |
 | D 的池化 usage 的 calls 计数 | 一条工具结果可能聚合多次 LLM 调用，无 `turns` 字段时只能记 1 | token / cost 正确，calls 保守偏低（§3.4.4） |
 

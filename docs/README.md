@@ -26,7 +26,7 @@
 | 文档 | 说明 | 未落地的部分 |
 | --- | --- | --- |
 | [2026-08-23-input-history-design.md](./superpowers/specs/2026-08-23-input-history-design.md) | 输入历史持久化（`/input-history`）设计方案（rev 2）。记录走 `pi.on("input")`、预填走 `ctx.ui.setEditorComponent()` 装饰器，落盘 `~/.pi/agent/llmgates/input-history/`；含 pi 侧三个坑（会话重放、包装 submit 路径、工厂抛错清空输入框）的取证与规避。§6 为实施记录，§6.1 记录合并前复核的四条修订——其中前两条推翻了本文的原始判断（pi 的历史何时清空、由此掩盖的「进程内历史寿命变短」代价） | §6.2：`pre-publish-gate.md` §4.2 的输入历史清单**尚未在真实 pi 上跑过**，属发版门禁范围 |
-| [2026-08-22-multi-agent-usage-compat-design.md](./superpowers/specs/2026-08-22-multi-agent-usage-compat-design.md) | 多代理生态用量统计兼容方案（rev 3/4）。2026-08-22 逐包审查 pi.dev 生态（pi-subagents / @tintinweb/pi-subagents / pi-background-tasks / dynamic-workflows / piolium / pi-goal-x / pi-vision / 压缩类）后，补齐 pi 自身口径中我们缺失的两类来源。**P0 三步已全部实施**：§6.1 共享定价助手（`ece1469`）、§4.2 入口 E 压缩 / 分支摘要（`9bca2d8`）、§4.1 入口 D 通用工具结果（`93c1f93`）。含 §3.2 命名空间登记表、§3.3 归属表与 §5 逐条双计论证 | §4.3 入口 F（`@tintinweb` 完成事件）默认不排期；§9 P2① 回填既有 subagent 记录的 cost 需单独决策；§9 的压缩功能验证仍待在门禁里跑 |
+| [2026-08-22-multi-agent-usage-compat-design.md](./superpowers/specs/2026-08-22-multi-agent-usage-compat-design.md) | 多代理生态用量统计兼容方案（rev 3/4/5）。2026-08-22 逐包审查 pi.dev 生态（pi-subagents / @tintinweb/pi-subagents / pi-background-tasks / dynamic-workflows / piolium / pi-goal-x / pi-vision / 压缩类）后，补齐 pi 自身口径中我们缺失的两类来源。**rev 5（2026-08-29）**按当前版本重做了一遍生态复核（pi-subagents 0.59.0 / @tintinweb 0.19.0 等），订正了 `@mjasnikovs/pi-task` 的分类、补入 `pi-goal-list-loop-audit`，并删除了 C 的两条从未生效的文件系统兜底。**P0 三步已全部实施**：§6.1 共享定价助手（`ece1469`）、§4.2 入口 E 压缩 / 分支摘要（`9bca2d8`）、§4.1 入口 D 通用工具结果（`93c1f93`）。含 §3.2 命名空间登记表、§3.3 归属表与 §5 逐条双计论证 | §4.3 入口 F（`@tintinweb` 完成事件）默认不排期；§9 P2① 回填既有 subagent 记录的 cost 需单独决策；§9 的压缩功能验证仍待在门禁里跑 |
 
 ### 纯历史存档（无待办）
 
