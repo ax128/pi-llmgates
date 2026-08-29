@@ -23,11 +23,20 @@
 
 ### 变更
 
+- **LiteLLM 定价同步不再为同一个「上游没有这个模型」反复下载整张表。** 网关自定义的模型 id 基本不会出现在 LiteLLM 里，而此前只要 catalog 里还有一个查不到价格或上下文窗口的 id，每一次 catalog 刷新（前台刷新、5 分钟后台刷新、`/llmgates-reload`）都会重新下载并解析约 1.9 MiB 的整表，只为再确认一次同样的缺失。
+  - 现在**按「实例目录 + 维度 + 模型键」在内存里记住已确认的缺失**，同一进程内最多每 1 小时重探一次。「缺价格」与「缺上下文窗口」是两个独立维度，不会互相冒充；两个实例各自的记录并存，不会互相覆盖。
+  - **不新增任何 `pricing.json` 字段，也不改文件格式**：记录只在内存里，重启 pi 就重新探测，降级或回滚都不需要迁移文件。
+  - **代价**：长时间运行的进程里，一个已知缺失的模型即使上游刚刚补上定价，最多也要 1 小时才会被发现（重启立刻生效）。新出现的模型键仍然立即探测，24h 的正缓存刷新也不受任何 miss 记录阻挡。
+  - 同时**收紧了对下载结果的校验**：整表里结构上像定价条目的成员少于 50 条时整张表作废，保留旧缓存并按既有的 `LiteLLM pricing sync failed` 提示一次。这挡的是被代理页、GitHub 错误对象之类替换掉的响应——它不是对表身份的认证，只是畸形响应防线；也正因为畸形表在有了 miss 抑制之后会把缺失记录冻结 1 小时，这条校验必须和上面一起生效。（2026-08-29 实测官方表 3,365 条、其中 2,986 条结构可信，50 条约为其 1.7%。）
+
 - **删掉了 async 子代理用量的两条文件系统兜底（`status.json` 与子会话 `session.jsonl`）。** 它们只允许读工作区（pi session `cwd`）内的路径，而 pi-subagents 把 async run 目录放在 `os.tmpdir()/pi-subagents-<scope>/`、子会话放在 `~/.pi/agent/sessions/`——两者恒在工作区之外，所以这两条兜底自加入起在默认布局下就没有生效过。**统计数字不变**：async 子代理的用量本来就来自完成事件自带的 `usage` / `modelAttempts` / `totalCost` / `tokens`，以及项目目录或会话文件旁 `subagent-artifacts/` 里的 `_meta.json`。README 的「统计范围」已按实际口径改写。
   - 顺带删除的内部 API：`extractSubagentUsageFromAsyncStatus`、`extractSubagentRunAggregateFromAsyncStatus`、`extractSubagentUsageFromSessionFile`、`isSubagentPathWithinWorkspace`、`resolveSubagentWorkspaceRoot`、`sessionFileSourceKey`、`MAX_SUBAGENT_SESSION_BYTES`，以及 `SubagentUsageBridgeOptions.workspaceRoot`。本扩展不对外导出这些符号，只影响直接引用源码的人。
   - 已知少算随之写进两份 README：`artifactDir: "temp"` 布局下的 `_meta.json` 不在扫描目录里；`@mjasnikovs/pi-task`、`pi-goal-list-loop-audit` 这类 spawn 子 pi 进程却不按 pi 约定回报用量的扩展同样统计不到（pi 自己的 `/cost` 也看不到）。
 
 ### 修复
+
+- **「每 24h 刷新定价」以前在不少网关上其实永远不会触发。** miss 驱动的同步每轮都把 `lastAutoSyncAt` 推到当前时间，于是只要 catalog 里有一个 LiteLLM 永不收录的 id（网关自定义 id 很常见），已经有价格的模型就再也等不到那次全量刷新。现在**任何一次成功取到整表的同步都会用它复核当前 catalog 的全部模型**，不再只补缺失项，推进 `lastAutoSyncAt` 才名副其实。
+  - 随之而来的代价：手工写进 `rates`（而不是 `overrides`）的条目，从「持久 miss 场景下实际不会被覆盖」变成最快每小时被整表值覆盖一次。覆盖本身一直是文档承诺的行为（自动同步只写 `rates`），变的是频率——要钉死价格请用 `overrides`。
 
 - **`pi --thinking <档位>` 不再被模型恢复静默吃掉。** 0.5.0 起就有：恢复真的切换了模型时，pi 自己的 `setModel` 会按 `settings.json` 的 `defaultThinkingLevel` 重新推导档位并夹到新模型上，命令行钉的那一档就此消失——`pi --thinking high` 实际跑在 `defaultThinkingLevel` 那一档上，而且没有任何提示。现在恢复模型之后会把命令行那一档原样设回去。只在模型真的换了、档位确实被改掉时才设，模型没换不动它（避免多一条 `thinking_level_change` 会话条目）。判定行仍是 `thinking=cli-thinking`——它表示的是「档位来自命令行而非记录」，不变。
 

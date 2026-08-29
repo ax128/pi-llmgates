@@ -21,6 +21,7 @@ import {
 	writeProviderOAuthCredential,
 } from "../extensions/compat/storage.js";
 import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
+import { plausibleLiteLLMTable } from "./helpers/litellm-table.js";
 import type { CompatInstance } from "../extensions/compat/types.js";
 import { scriptedAuthInteraction } from "./helpers/auth-interaction.js";
 import { createMemoryStore } from "./helpers/fake-store.js";
@@ -582,13 +583,13 @@ describe("compat instance provider", () => {
 			}
 			if (url === LITELLM_PRICING_URL) {
 				await pricingGate;
-				return new Response(JSON.stringify({
+				return new Response(JSON.stringify(plausibleLiteLLMTable({
 					"priced-model": {
 						input_cost_per_token: 0.000002,
 						output_cost_per_token: 0.000004,
 						max_input_tokens: 222_222,
 					},
-				}));
+				})));
 			}
 			throw new Error(`unexpected URL: ${url}`);
 		};
@@ -652,7 +653,7 @@ describe("compat instance provider", () => {
 					}
 					if (url === LITELLM_PRICING_URL) {
 						await pricingGate;
-						return new Response(JSON.stringify({
+						return new Response(JSON.stringify(plausibleLiteLLMTable({
 							"openai/vendor-cache-sentinel": {
 								input_cost_per_token: 0.000017,
 								output_cost_per_token: 0.000029,
@@ -660,7 +661,7 @@ describe("compat instance provider", () => {
 								cache_creation_input_token_cost: 0.000023,
 								max_input_tokens: exactContextWindow,
 							},
-						}));
+						})));
 					}
 					throw new Error(`unexpected URL: ${url}`);
 				},
