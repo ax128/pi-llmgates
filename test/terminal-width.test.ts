@@ -108,7 +108,7 @@ describe("terminal-width", () => {
  * is just CI noise.
  *
  * Cost: ~190k candidates out of 1.11M code points, two `visibleWidth` calls each
- * (both sides run Intl.Segmenter). Measured 2.7s on Node 24.13.1, inside the 20s
+ * (both sides run Intl.Segmenter). Measured 3.5s on Node 22.19.0, inside the 20s
  * testTimeout in vitest.config.ts. If it ever grows well past that, profile it
  * before touching it — turning it into `it.skip` would just restore the crash
  * risk it exists to catch.
