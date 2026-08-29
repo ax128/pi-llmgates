@@ -451,12 +451,16 @@ export function registerCompatGateways(
 
 	function startAuthWatcher(): void {
 		if (authWatcher) return;
+		let watcherForThisStart: FSWatcher | undefined;
 		try {
-			authWatcher = watchImpl(
+			watcherForThisStart = watchImpl(
 				agentDir,
 				{ persistent: false },
 				(_event, filename) => {
-					if (stopped) return;
+					// A callback already queued when an older watcher was closed must not
+					// act on a later session's watcher generation.
+					if (stopped || !watcherForThisStart || authWatcher !== watcherForThisStart)
+						return;
 					if (filename && filename.toString() !== "auth.json") return;
 					// Deliberately NOT fingerprint-gated. Today every auth.json event
 					// triggers cleanup, and a metadata-invisible write (coarse mtime,
@@ -468,17 +472,27 @@ export function registerCompatGateways(
 					requestOrphanCleanup();
 				},
 			);
-			authWatcher.on("error", (error) => {
-				const failed = authWatcher;
+			authWatcher = watcherForThisStart;
+			watcherForThisStart.on("error", (error) => {
+				const failed = watcherForThisStart;
+				if (!failed || authWatcher !== failed) return;
 				authWatcher = undefined;
 				try {
-					failed?.close();
+					failed.close();
 				} catch {
 					// Already torn down by the same failure; nothing to release.
 				}
 				logWarn(`auth.json watcher stopped: ${errorText(error)}`);
 			});
 		} catch (error) {
+			if (watcherForThisStart && authWatcher === watcherForThisStart) {
+				authWatcher = undefined;
+				try {
+					watcherForThisStart.close();
+				} catch {
+					// Setup already failed; preserve the original error below.
+				}
+			}
 			logWarn(
 				`Could not watch auth.json for logout cleanup: ${errorText(error)}`,
 			);
@@ -486,8 +500,9 @@ export function registerCompatGateways(
 	}
 
 	function stopAuthWatcher(): void {
-		authWatcher?.close();
+		const watcher = authWatcher;
 		authWatcher = undefined;
+		watcher?.close();
 	}
 
 	function rollbackStartupInstances(

@@ -582,6 +582,35 @@ describe("auth cleanup reconciliation", () => {
 		};
 	}
 
+	/** A distinct watcher object for every session_start, with stale callbacks retained. */
+	function generationalWatchers() {
+		const generations: Array<{
+			closes: number;
+			emitError: (error: unknown) => void;
+		}> = [];
+		const watchImpl = ((_dir: string, _options: unknown, _listener: (event: string, filename: string) => void) => {
+			const errorHandlers: Array<(error: unknown) => void> = [];
+			const generation = {
+				closes: 0,
+				emitError: (error: unknown) => {
+					for (const handler of errorHandlers) handler(error);
+				},
+			};
+			const watcher = {
+				close: () => {
+					generation.closes += 1;
+				},
+				on(event: string, handler: (error: unknown) => void) {
+					if (event === "error") errorHandlers.push(handler);
+					return watcher;
+				},
+			} as unknown as ReturnType<typeof watch>;
+			generations.push(generation);
+			return watcher;
+		}) as unknown as typeof watch;
+		return { watchImpl, generations };
+	}
+
 	/**
 	 * Drain the async cleanup chain. `pruneOrphanedInstances` awaits real fs work
 	 * (a proper-lockfile acquire among it), which lands in the event loop's I/O
@@ -782,6 +811,35 @@ describe("auth cleanup reconciliation", () => {
 			await pi.emit("session_shutdown");
 		} finally {
 			for (const provider of fakes.providers.values()) provider.completeRefresh();
+			warn.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("ignores a stale watcher error after a later session starts", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const pi = createPi();
+		const watchers = generationalWatchers();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			registerCompatGateways(pi.pi, agentDir, { watchImpl: watchers.watchImpl });
+			await pi.emit("session_start", { reason: "start" });
+			expect(watchers.generations).toHaveLength(1);
+
+			await pi.emit("session_shutdown");
+			expect(watchers.generations[0]?.closes).toBe(1);
+			await pi.emit("session_start", { reason: "new" });
+			expect(watchers.generations).toHaveLength(2);
+
+			// A native callback already queued before close can arrive after the new
+			// generation exists. It must not close or detach that new watcher.
+			watchers.generations[0]?.emitError(new Error("stale watcher error"));
+			expect(watchers.generations[1]?.closes).toBe(0);
+			expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/stale watcher error/i));
+
+			await pi.emit("session_shutdown");
+			expect(watchers.generations[1]?.closes).toBe(1);
+		} finally {
 			warn.mockRestore();
 			cleanup();
 		}
