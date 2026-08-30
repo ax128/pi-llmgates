@@ -7,9 +7,61 @@ const URL_ERROR_ZH: Readonly<Record<string, string>> = {
 	"remote HTTP is not allowed; use HTTPS or loopback HTTP":
 		"远程 HTTP 不被允许，请改用 HTTPS 或本机 loopback HTTP",
 	"URL host is not allowed": "URL 主机不被允许",
+	"URL host is a private or link-local address":
+		"URL 指向内网或链路本地 IP，已被 LLMGATES_BLOCK_PRIVATE_URLS 拦截",
 	"baseUrl is empty": "网关地址不能为空",
 	"baseUrl is invalid": "网关地址无效",
 };
+
+/**
+ * Failures raised by `extensions/http.ts` during the `/login` credential probe.
+ *
+ * They all carry the internal operation label as a prefix (`models failed: HTTP
+ * 401 Unauthorized`, `models returned invalid JSON`, ...). That label means
+ * nothing to the person typing an API key, so it is dropped — but an HTTP status
+ * is kept, because it is the one detail worth quoting to whoever runs the
+ * gateway. Returns undefined for anything it does not recognise, so the caller
+ * can fall through to the raw text rather than guess.
+ */
+function translateGatewayProbeError(message: string): string | undefined {
+	const status = /^\S+ failed: HTTP (\d{3})\b/.exec(message);
+	if (status) {
+		const code = Number(status[1]);
+		if (code === 401)
+			return "API Key 无效或已过期（HTTP 401），请检查后重新输入";
+		if (code === 403)
+			return "网关拒绝了这个凭证（HTTP 403）：可能是该 Key 无权访问模型列表，或已被禁用";
+		if (code === 404)
+			// Deliberately not "地址要以 /v1 结尾": README documents that the base URL
+			// may omit it and the extension normalises to /v1/models itself.
+			return "网关上没有模型列表接口（HTTP 404）：请确认网关地址填的是网关根地址，且该网关确实提供 /v1/models";
+		if (code === 429)
+			return "请求过于频繁，被网关限流（HTTP 429），请稍后重试";
+		if (code >= 500)
+			return `网关自身出错（HTTP ${code}），不是本地配置问题；请稍后重试或联系网关管理员`;
+		return `网关拒绝了模型列表请求（HTTP ${code}）`;
+	}
+	if (/^\S+ returned invalid JSON$/.test(message)) {
+		// Per InvalidJsonError's own note: gateways commonly answer an unrouted path
+		// with their web UI instead of a 404, so this almost always means "wrong URL".
+		return "网关返回的不是 JSON：通常是网关地址写错，把网关首页或错误页当成了模型列表接口";
+	}
+	const timedOut = /^\S+ timed out after (\d+)ms$/.exec(message);
+	if (timedOut) {
+		return `请求网关超时（${timedOut[1]}ms）：请检查网络，或确认网关地址可达`;
+	}
+	if (/^\S+ refused cross-origin redirect$/.test(message)) {
+		return "网关把请求重定向到了另一个源，出于安全已拒绝；请直接填写重定向后的最终地址";
+	}
+	const redirects = /^\S+ exceeded max redirects \((\d+)\)$/.exec(message);
+	if (redirects) {
+		return `网关重定向次数超过上限（${redirects[1]} 次）；请直接填写重定向后的最终地址`;
+	}
+	if (/^\S+ redirect missing Location header$/.test(message)) {
+		return "网关返回了重定向，却没有给出 Location 头，无法继续";
+	}
+	return undefined;
+}
 
 export function translateLoginError(message: string): string {
 	const trimmed = message.trim();
@@ -18,7 +70,7 @@ export function translateLoginError(message: string): string {
 	if (trimmed.startsWith("baseUrl")) {
 		const suffix = trimmed.slice("baseUrl".length);
 		const mapped = URL_ERROR_ZH[`URL${suffix}`];
-		if (mapped) return mapped.replace(/^URL/, "网关地址");
+		if (mapped) return mapped.replace(/^URL\s*/, "网关地址");
 	}
 	if (/^Instance ID "/.test(trimmed) && /is reserved$/.test(trimmed)) {
 		return trimmed.replace(
@@ -47,6 +99,14 @@ export function translateLoginError(message: string): string {
 	if (trimmed === "API key is required") return "API Key 不能为空";
 	if (trimmed === "Invalid base URL") return "网关地址无效";
 	if (trimmed === "Login validation failed") return "登录验证失败";
+	// Both catalog-shaped rejections a gateway can trigger during the probe. The
+	// member guard's counts are the only actionable detail, so they are kept.
+	if (
+		trimmed ===
+		"Invalid models catalog: expected array or object with data/models array"
+	) {
+		return "网关返回的内容不是模型目录：顶层既不是数组，也没有 data / models 数组";
+	}
 	// The empty-catalog guard in compat/catalog.ts. It fires on the /login
 	// credential probe as well as on refresh, and a login is the one moment a
 	// user is watching the result — leaving the raw English here would undercut
@@ -62,7 +122,7 @@ export function translateLoginError(message: string): string {
 			"这份响应已按损坏处理；请检查网关 /v1/models 的返回内容，或确认网关地址是否正确"
 		);
 	}
-	return trimmed;
+	return translateGatewayProbeError(trimmed) ?? trimmed;
 }
 
 export function formatLoginValidationFailure(
