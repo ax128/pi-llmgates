@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	formatLoginValidationFailure,
+	loginFailureError,
 	translateLoginError,
 } from "../extensions/login-ui.js";
 import { HttpStatusError, InvalidJsonError, RequestTimeoutError } from "../extensions/http.js";
@@ -131,5 +132,35 @@ describe("translateLoginError: boundaries", () => {
 		expect(formatLoginValidationFailure(1, 5, new Error(raw))).toBe(
 			"验证失败（1/5）：API Key 无效或已过期（HTTP 401），请检查后重新输入",
 		);
+	});
+});
+
+describe("loginFailureError", () => {
+	it("translates the verdict and keeps the original on cause", () => {
+		const raw = new HttpStatusError("models", 401, "Unauthorized");
+		const shown = loginFailureError(raw);
+
+		expect(shown.message).toBe("API Key 无效或已过期（HTTP 401），请检查后重新输入");
+		// Logs and later diagnosis must still reach the upstream text and class.
+		expect(shown.cause).toBe(raw);
+		expect((shown.cause as HttpStatusError).status).toBe(401);
+	});
+
+	// Re-wrapping an unrecognised message buys nothing and costs the error class,
+	// so the original instance is returned untouched.
+	it("returns the original error when there is no translation to offer", () => {
+		const raw = new HttpStatusError("models", 418, "I'm a teapot");
+		expect(loginFailureError(new Error("gateway said no"))).toBeInstanceOf(Error);
+		expect(loginFailureError(new Error("gateway said no")).message).toBe("gateway said no");
+		expect(loginFailureError(new Error("gateway said no")).cause).toBeUndefined();
+		// 418 does have a translation, so this one is wrapped — the class survives
+		// on cause rather than on the thrown error.
+		expect(loginFailureError(raw).cause).toBe(raw);
+	});
+
+	it("survives a non-Error and an absent error", () => {
+		expect(loginFailureError("plain string").message).toBe("plain string");
+		expect(loginFailureError(undefined).message).toBe("登录验证失败");
+		expect(loginFailureError(null).message).toBe("登录验证失败");
 	});
 });

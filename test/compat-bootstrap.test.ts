@@ -709,7 +709,9 @@ describe("runCompatInstanceLogin", () => {
 				now: () => NOW,
 				onValidated: vi.fn(async () => {}),
 			}),
-		).rejects.toThrow(/HTTP 401|login validation failed/i);
+			// The verdict thrown after the last attempt is translated too, not just
+			// the progress lines; the raw HttpStatusError is kept on `cause`.
+		).rejects.toThrow(/API Key 无效或已过期（HTTP 401）/);
 		expect(interaction.messages.at(-1)).toMatch(/验证失败/);
 	});
 });
@@ -732,7 +734,7 @@ describe("login validation against catalog member damage", () => {
 				now: () => NOW,
 				onValidated,
 			}),
-		).rejects.toThrow(/member|login validation failed/i);
+		).rejects.toThrow(/1 个成员没有一个能解析成可用模型/);
 		expect(onValidated).not.toHaveBeenCalled();
 		expect(interaction.messages.at(-1)).toMatch(/验证失败（5\/5）/);
 		// Hard-failing this path was only defensible because the user can read the
