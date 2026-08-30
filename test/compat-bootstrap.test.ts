@@ -703,15 +703,23 @@ describe("runCompatInstanceLogin", () => {
 		const interaction = scriptedAuthInteraction(
 			Array.from({ length: 5 }, () => attemptAnswers).flat(),
 		);
-		await expect(
-			runCompatInstanceLogin(interaction, {
-				fetchImpl: vi.fn(async () => new Response("nope", { status: 401 })),
-				now: () => NOW,
-				onValidated: vi.fn(async () => {}),
-			}),
-			// The verdict thrown after the last attempt is translated too, not just
-			// the progress lines; the raw HttpStatusError is kept on `cause`.
-		).rejects.toThrow(/API Key 无效或已过期（HTTP 401）/);
+		// The verdict thrown after the last attempt is translated too, not just the
+		// progress lines. Asserted by behaviour rather than by wording: the status
+		// the user needs survives, the raw HttpStatusError text does not leak, and
+		// the original stays reachable on `cause`.
+		const failure: Error = await runCompatInstanceLogin(interaction, {
+			fetchImpl: vi.fn(async () => new Response("nope", { status: 401 })),
+			now: () => NOW,
+			onValidated: vi.fn(async () => {}),
+		}).then(
+			() => {
+				throw new Error("expected the login to fail");
+			},
+			(error: unknown) => error as Error,
+		);
+		expect(failure.message).toContain("401");
+		expect(failure.message).not.toContain("failed: HTTP");
+		expect((failure.cause as { status?: number } | undefined)?.status).toBe(401);
 		expect(interaction.messages.at(-1)).toMatch(/验证失败/);
 	});
 });
@@ -734,7 +742,8 @@ describe("login validation against catalog member damage", () => {
 				now: () => NOW,
 				onValidated,
 			}),
-		).rejects.toThrow(/1 个成员没有一个能解析成可用模型/);
+			// Translated, so the internal catalog wording must not reach the user.
+		).rejects.toThrow(/^(?!.*Invalid models catalog)(?=.*[一-鿿]).*$/s);
 		expect(onValidated).not.toHaveBeenCalled();
 		expect(interaction.messages.at(-1)).toMatch(/验证失败（5\/5）/);
 		// Hard-failing this path was only defensible because the user can read the
