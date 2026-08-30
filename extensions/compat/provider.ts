@@ -65,6 +65,7 @@ import {
 	compatInstanceAddedMessage,
 	compatInstanceLoginUi,
 	formatLoginValidationFailure,
+	loginFailureError,
 	translateLoginError,
 } from "../login-ui.js";
 import {
@@ -354,8 +355,7 @@ export async function runCompatInstanceLogin(
 			await options.onValidated({ instance, credential, initialCatalog });
 		} catch (error) {
 			if (error instanceof DOMException && error.name === "AbortError") throw error;
-			const failure = error instanceof Error ? error : new Error(String(error));
-			throw new Error(translateLoginError(failure.message), { cause: failure });
+			throw loginFailureError(error);
 		}
 		// The `default` scheme derives the instance id from the host, so the user
 		// cannot know it otherwise — and every scheme needs the id for `/login <id>`.
@@ -365,7 +365,7 @@ export async function runCompatInstanceLogin(
 		});
 		return instance;
 	}
-	throw lastError ?? new Error("Login validation failed");
+	throw loginFailureError(lastError);
 }
 
 export function createCompatBootstrapProvider(
@@ -1162,7 +1162,7 @@ export function createCompatProvider(
 		}
 
 		pending = null;
-		throw lastError ?? new Error("Login validation failed");
+		throw loginFailureError(lastError);
 	}
 
 	async function runEndpointForeground(): Promise<EndpointRefreshResult> {

@@ -125,6 +125,28 @@ export function translateLoginError(message: string): string {
 	return translateGatewayProbeError(trimmed) ?? trimmed;
 }
 
+/**
+ * The error a login flow finally ends on, worded for the person looking at it.
+ *
+ * Progress lines during the retries already go through
+ * `formatLoginValidationFailure`; this is for the verdict thrown after the last
+ * attempt, which is the last thing the user sees. The original error is kept on
+ * `cause`, so logs and later diagnosis still have the upstream text and class.
+ *
+ * When there is no translation to offer, the original error is returned
+ * untouched rather than re-wrapped — an unrecognised message is not improved by
+ * losing its class (`HttpStatusError` and friends stay `instanceof`-checkable).
+ */
+export function loginFailureError(error: unknown): Error {
+	const failure =
+		error instanceof Error
+			? error
+			: new Error(String(error ?? "Login validation failed"));
+	const translated = translateLoginError(failure.message);
+	if (translated === failure.message) return failure;
+	return new Error(translated, { cause: failure });
+}
+
 export function formatLoginValidationFailure(
 	attempt: number,
 	maxAttempts: number,

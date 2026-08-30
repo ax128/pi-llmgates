@@ -184,7 +184,10 @@ describe("extension registration and lifecycle", () => {
 
 			await expect(
 				bootstrap.auth.oauth!.login(scriptedAuthInteraction(answers)),
-			).rejects.toThrow(/reserved/i);
+				// The reserved-id wording was always mapped for the progress lines; the
+				// verdict thrown after the last attempt now goes through the same
+				// translation instead of falling back to the raw English.
+			).rejects.toThrow(/实例 ID「LLMGATES」为保留名称/);
 			expect(fetchSpy).not.toHaveBeenCalled();
 		} finally {
 			cleanup();
