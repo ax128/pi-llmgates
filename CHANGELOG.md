@@ -17,6 +17,7 @@
   - **仍是内存账本（除非显式打开持久化）**：重载/重启默认不恢复；第三方运行器与外部 CLI 的逐响应采集未认证，Coverage 不把它们标成已支持。
   - **可选持久化** `LLMGATES_TPS_PERSIST` / `tpsPersist`（默认关）：写入 `llmgates/usage/<root>/`，`0700`/`0600`。ENOSPC 或超限额标 `storage-exhausted` 并停止新增 journal；损坏/未知版本 checkpoint 不覆盖。
   - **pi-subagents 插件侧观测**：消费 `tool_execution_update`；增长中的 `_meta.json` 按 mtime 做快照替换。nested/fork/helper 仍为 partial——没有公开 child factory usage 钩子，不把调研清单写成已支持。
+  - **第三方 / 外部 CLI**：fail-closed EventBus probe 与 Coverage `unavailable` 行；usage 形 payload **不进入** All。无 Codex/Claude/Cursor JSONL fixture。证据表见 `docs/superpowers/specs/2026-09-07-usage-compat-matrix.md`。
 
 ## [0.6.0] — 2026-08-30
 

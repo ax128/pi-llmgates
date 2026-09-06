@@ -370,7 +370,7 @@ TUI 扩展状态行：
 - 设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与同步 `subagent` / Cursor `Task` 工具结果仍统计）。
 - 设 `LLMGATES_TPS_COMPACTION=0` 可关闭压缩 / 分支摘要统计。
 - 设 `LLMGATES_TPS_TOOL_USAGE=0` 可关闭通用工具结果用量统计（`subagent` / Cursor `Task` 仍统计）。
-- 用量聚合在后台任务链中执行，不阻塞 agent 循环；计数只在交互式父会话（TUI）进行。未开持久化时重载/重启不恢复用量。第三方运行器与外部 CLI 的逐响应采集尚未认证，Coverage 不会把它们标成已支持。
+- 用量聚合在后台任务链中执行，不阻塞 agent 循环；计数只在交互式父会话（TUI）进行。未开持久化时重载/重启不恢复用量。第三方运行器与外部 CLI **不是已支持清单**：Coverage 里它们标 `unavailable` / unverified（EventBus 只做 fail-closed probe，usage 形 payload 不进 All）。调研清单的目录匹配项不是兼容认证。
 
 ### 定价数据
 
@@ -516,6 +516,8 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | `LLMGATES_BLOCK_PRIVATE_URLS` | 设为 `1` / `true` / `yes` 时拒绝 **IP 字面量** 形式的 private / link-local 网关地址（loopback 仍允许）；hostname（如 `gateway.local`）不受此规则约束 |
 | `LLMGATES_TPS` | 用量采集总开关（默认启用；设为 `0` / `false` / `no` 时全部入口停） |
 | `LLMGATES_TPS_PERSIST` | 用量 journal/checkpoint（默认关；`1` / `true` / `yes` 开启；覆盖 `tpsPersist`） |
+| `LLMGATES_TPS_EXT` | 第三方 / 外部 Coverage probe（默认开；`0` 不注册 EventBus 观察。不把未认证来源计入 All） |
+| `LLMGATES_TPS_EXT_<ID>` | 按来源再关闭，例如 `LLMGATES_TPS_EXT_TINTINWEB=0`。不能放宽总开关 |
 | `LLMGATES_TPS_SUBAGENT` | 默认启用；设为 `0` / `false` / `no` 时关闭子代理 async 旁路与 meta 扫描 |
 | `LLMGATES_TPS_COMPACTION` | 默认启用；设为 `0` / `false` / `no` 时不统计压缩 / 分支摘要条目的用量 |
 | `LLMGATES_TPS_TOOL_USAGE` | 默认启用；设为 `0` / `false` / `no` 时不统计工具结果顶层 `usage`（`subagent` / Cursor `Task` 不受影响） |

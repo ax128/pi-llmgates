@@ -29,6 +29,7 @@ import {
 } from "./tps-subagent.js";
 import { extractCompactionUsage, extractToolResultUsage } from "./tps-usage-inlets.js";
 import { extractUsageFromToolUpdate, stampSnapshotRevision } from "./usage/adapters/pi-subagents.js";
+import { registerThirdPartyUsageProbes } from "./usage/adapters/third-party.js";
 import {
 	cloneModelUsageStats,
 	formatTpsStatusLine,
@@ -92,6 +93,7 @@ export default function (pi: ExtensionAPI) {
 	const subagentWatchers = new Map<string, FSWatcher>();
 	let subagentMetaScanTimer: ReturnType<typeof setTimeout> | undefined;
 	let unregisterSubagentBridge: (() => void) | undefined;
+	let unregisterThirdPartyProbes: (() => void) | undefined;
 	let usageCollector: UsageCollector | null = null;
 	let lastTurnElapsedSeconds = 0;
 	let usageRevisionClock = 0;
@@ -487,7 +489,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (scope === "Coverage") {
-			const lines = formatCoverageLines(usageCollector?.ledger.coverage() ?? []);
+			const lines = formatCoverageLines(usageCollector?.coverageRows() ?? []);
 			await ctx.ui.select("Coverage (snapshot; live totals are in the status line)", lines);
 			return;
 		}
@@ -562,6 +564,8 @@ export default function (pi: ExtensionAPI) {
 		usageRevisionClock = 0;
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
+		unregisterThirdPartyProbes?.();
+		unregisterThirdPartyProbes = undefined;
 		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
 		stopSubagentWatcher();
 		sessionArtifactDirs = [];
@@ -582,6 +586,12 @@ export default function (pi: ExtensionAPI) {
 			);
 			usageCollector?.restorePersisted();
 			syncStatsFromLedger();
+			if (usageCollector && pi.events) {
+				unregisterThirdPartyProbes = registerThirdPartyUsageProbes(pi.events, {
+					policy: loadUsagePolicy(),
+					onCoverage: (row) => usageCollector?.noteCoverage(row),
+				});
+			}
 		}
 		// LLMGATES_TPS_SUBAGENT=0 only skips the IO-costly bridge, watcher, and
 		// meta scan. Synchronous `subagent` / Cursor `Task` results on
@@ -825,6 +835,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
+		unregisterThirdPartyProbes?.();
+		unregisterThirdPartyProbes = undefined;
 		sessionActive = false;
 		sessionGeneration += 1;
 		clearRefreshTimer();

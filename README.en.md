@@ -372,7 +372,7 @@ The TUI extension status line shows:
 - Set `LLMGATES_TPS_SUBAGENT=0` to turn off the subagent bypass and the meta scan (the parent model and synchronous `subagent` / Cursor `Task` tool results are still counted).
 - Set `LLMGATES_TPS_COMPACTION=0` to stop counting compaction / branch-summary entries.
 - Set `LLMGATES_TPS_TOOL_USAGE=0` to stop counting generic tool-result usage (`subagent` / Cursor `Task` are still counted).
-- Aggregation runs in a background task chain and never blocks the agent loop; counting happens only in an interactive parent session (TUI). Without persistence, reload/restart does not restore usage. Per-response collection for third-party runners and external CLIs is not certified; Coverage will not mark them as supported.
+- Aggregation runs in a background task chain and never blocks the agent loop; counting happens only in an interactive parent session (TUI). Without persistence, reload/restart does not restore usage. Third-party runners and external CLIs are **not a support list**: Coverage marks them `unavailable` / unverified (EventBus probes are fail-closed and usage-shaped payloads do not enter All). Directory hits in the research inventory are not compatibility certifications.
 
 ### Pricing data
 
@@ -518,6 +518,8 @@ Config files live under `~/.pi/agent/llmgates/` (older flat files under `~/.pi/a
 | `LLMGATES_BLOCK_PRIVATE_URLS` | `1` / `true` / `yes` rejects private / link-local gateway addresses given as **IP literals** (loopback still allowed); hostnames such as `gateway.local` are not subject to this rule |
 | `LLMGATES_TPS` | Master usage-collection switch (enabled by default; `0` / `false` / `no` stops every inlet) |
 | `LLMGATES_TPS_PERSIST` | Usage journal/checkpoint (off by default; `1` / `true` / `yes` enables; overrides `tpsPersist`) |
+| `LLMGATES_TPS_EXT` | Third-party / external Coverage probes (on by default; `0` does not register EventBus observers. Uncertified sources never enter All) |
+| `LLMGATES_TPS_EXT_<ID>` | Per-source off switch, e.g. `LLMGATES_TPS_EXT_TINTINWEB=0`. Cannot widen the master switch |
 | `LLMGATES_TPS_SUBAGENT` | Enabled by default; `0` / `false` / `no` turns off the subagent async bypass and the meta scan |
 | `LLMGATES_TPS_COMPACTION` | Enabled by default; `0` / `false` / `no` stops counting compaction / branch-summary entry usage |
 | `LLMGATES_TPS_TOOL_USAGE` | Enabled by default; `0` / `false` / `no` stops counting top-level tool-result `usage` (`subagent` / Cursor `Task` are unaffected) |

@@ -26,7 +26,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [2026-09-06-all-subagent-live-usage-design.md](./superpowers/specs/2026-09-06-all-subagent-live-usage-design.md) | 全子代理准实时用量方案：统一账本、来源身份、self/subtree 去重、origin-turn 与 idle 更新；核对本机 pi-subagents 0.66.0 / Pi 0.85.1、15 个第三方包及三组外部 CLI。明确本插件可做与上游协作依赖，目标 usage 可见后 P95 ≤ 3s。附 [固定版本源码与目录发现清单](./superpowers/specs/2026-09-06-all-subagent-live-usage-inventory.json)（341 个目录匹配项只是发现结果，不是支持声明） |
-| [2026-09-07-usage-s0-freeze.md](./superpowers/specs/2026-09-07-usage-s0-freeze.md) | S0 冻结：`llmgates:usage:v1` 字段与质量规则、开关名称/默认值、存储限额、peer 不抬上界。实施计划见 [2026-09-07-all-subagent-live-usage.md](./superpowers/plans/2026-09-07-all-subagent-live-usage.md) |
+| [2026-09-07-usage-s0-freeze.md](./superpowers/specs/2026-09-07-usage-s0-freeze.md) | S0 冻结：`llmgates:usage:v1` 字段与质量规则、开关名称/默认值、存储限额、peer 不抬上界。实施计划见 [2026-09-07-all-subagent-live-usage.md](./superpowers/plans/2026-09-07-all-subagent-live-usage.md)。兼容证据表见 [2026-09-07-usage-compat-matrix.md](./superpowers/specs/2026-09-07-usage-compat-matrix.md)（不是支持清单） |
 
 ### 已实施，但仍带未落地的后续项
 
@@ -76,7 +76,7 @@
 | `extensions/login-ui.ts` | 登录文案、网关类型选项与错误中文化 |
 | `extensions/util.ts` | 原子写、文件锁、envFlag、legacy 配置迁移 |
 | `extensions/tps.ts` | TUI 统计与 `/calls` 命令 |
-| `extensions/usage/` | 准实时用量：S0 合同/开关、S1 内存账本与 TUI 接线、可选持久化、S2 插件侧 pi-subagents 观测（无 factory hook） |
+| `extensions/usage/` | 准实时用量：合同、账本、TUI、可选持久化、pi-subagents 插件侧观测、第三方 fail-closed probe |
 | `extensions/tps-stats.ts` | 状态行与 per-model 明细格式化 |
 | `extensions/tps-subagent.ts` | 子代理用量解析（tool / meta / async event） |
 | `extensions/tps-subagent-bridge.ts` | pi-subagents 事件桥接（async/foreground-complete） |
