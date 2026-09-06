@@ -558,7 +558,15 @@ export default function (pi: ExtensionAPI) {
 		sessionArtifactDirs = [];
 		if (isPrimaryUiSession(ctx)) {
 			const sessionId = ctx.sessionManager.getSessionId() ?? `session-${sessionGeneration}`;
-			usageCollector = createUsageCollector(sessionId, sessionId, loadUsagePolicy());
+			let agentDir = "";
+			try {
+				agentDir = getAgentDir();
+			} catch {
+				agentDir = "";
+			}
+			usageCollector = createUsageCollector(sessionId, sessionId, loadUsagePolicy(), agentDir);
+			usageCollector?.restorePersisted();
+			syncStatsFromLedger();
 		}
 		// LLMGATES_TPS_SUBAGENT=0 only skips the IO-costly bridge, watcher, and
 		// meta scan. Synchronous `subagent` / Cursor `Task` results on
@@ -782,6 +790,7 @@ export default function (pi: ExtensionAPI) {
 		sessionArtifactDirs = [];
 		subagentIngestState = createSubagentIngestState();
 		sessionRunIds = new Set();
+		const closing = usageCollector;
 		usageCollector = null;
 		lastTurnElapsedSeconds = 0;
 		const previousStatusCtx = statusCtx;
@@ -791,6 +800,9 @@ export default function (pi: ExtensionAPI) {
 		clearStatus(previousStatusCtx);
 		if (ctx !== previousStatusCtx) {
 			clearStatus(ctx);
+		}
+		if (closing) {
+			void closing.checkpointAndClose();
 		}
 	});
 }

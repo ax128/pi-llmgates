@@ -15,6 +15,11 @@ import {
 	type ObservationIdentity,
 } from "./legacy-adapter.js";
 import { parseMetaSourceKeyGranularity, type SubagentUsageRecord } from "../tps-subagent.js";
+import {
+	createUsagePersist,
+	persistToLedgerState,
+	type UsagePersist,
+} from "./persist.js";
 
 /** Synthetic bucket before the first parent LLM turn. `/calls` This turn never shows it. */
 const PRE_TURN_ID = "turn-0";
@@ -35,8 +40,10 @@ export class UsageCollector {
 		readonly rootSessionId: string,
 		readonly sessionId: string,
 		readonly policy: UsagePolicy,
+		private readonly persist: UsagePersist,
 	) {
 		this.ledger = new UsageLedger(rootSessionId);
+		this.ledger.setPersistState(persistToLedgerState(persist.status()));
 	}
 
 	beginTurn(): string {
@@ -74,7 +81,7 @@ export class UsageCollector {
 			this.identity("parent-assistant", observedAt, originTurnId),
 		);
 		if (!obs) return false;
-		return this.ledger.ingest(obs).accepted;
+		return this.accept(obs);
 	}
 
 	ingestLegacyRecords(
@@ -101,13 +108,26 @@ export class UsageCollector {
 				childId: record.sourceKey,
 			});
 			if (!obs) continue;
-			if (this.ledger.ingest(obs).accepted) n += 1;
+			if (this.accept(obs)) n += 1;
 		}
 		return n;
 	}
 
 	ingestObservation(observation: UsageObservationV1): boolean {
-		return this.ledger.ingest(observation).accepted;
+		return this.accept(observation);
+	}
+
+	restorePersisted(): void {
+		for (const observation of this.persist.load()) {
+			this.ledger.ingest(observation);
+		}
+		this.ledger.setPersistState(persistToLedgerState(this.persist.status()));
+	}
+
+	async checkpointAndClose(): Promise<void> {
+		if (!this.persist.enabled) return;
+		const status = await this.persist.writeCheckpoint(this.ledger.snapshot());
+		this.ledger.setPersistState(persistToLedgerState(status));
 	}
 
 	sessionTotals(): LedgerTotals {
@@ -124,6 +144,16 @@ export class UsageCollector {
 
 	turnModelStats(originTurnId = assignableOriginTurnId(this.originTurnId)) {
 		return this.ledger.finalizedModelStats({ originTurnId });
+	}
+
+	private accept(observation: UsageObservationV1): boolean {
+		const accepted = this.ledger.ingest(observation).accepted;
+		if (accepted && this.persist.enabled) {
+			void this.persist.append(observation).then((status) => {
+				this.ledger.setPersistState(persistToLedgerState(status));
+			});
+		}
+		return accepted;
 	}
 
 	private identity(producerId: string, observedAt: number, originTurnId = this.originTurnId): ObservationIdentity {
@@ -143,7 +173,13 @@ export function createUsageCollector(
 	rootSessionId: string,
 	sessionId: string,
 	policy: UsagePolicy,
+	agentDir = "",
 ): UsageCollector | null {
 	if (!policy.collect) return null;
-	return new UsageCollector(rootSessionId, sessionId, policy);
+	return new UsageCollector(
+		rootSessionId,
+		sessionId,
+		policy,
+		createUsagePersist(agentDir, rootSessionId, policy.persist),
+	);
 }

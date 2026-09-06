@@ -257,6 +257,10 @@ export class UsageLedger {
 		return false;
 	}
 
+	snapshot(): UsageObservationV1[] {
+		return [...this.records.values()].map((row) => row.observation);
+	}
+
 	finalizedModelStats(filter: { originTurnId?: string } = {}): Map<string, LedgerTotals> {
 		const groups = new Map<string, UsageObservationV1[]>();
 		for (const obs of this.finalizedRecords()) {

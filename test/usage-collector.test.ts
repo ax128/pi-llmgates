@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { UsageCollector } from "../extensions/usage/collector.js";
 import { resolveUsagePolicy } from "../extensions/usage/policy.js";
+import { createUsagePersist } from "../extensions/usage/persist.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
 
 function collector() {
@@ -8,7 +9,7 @@ function collector() {
 	const policy = resolveUsagePolicy(agentDir);
 	return {
 		cleanup,
-		session: new UsageCollector("root-1", "sess-1", policy),
+		session: new UsageCollector("root-1", "sess-1", policy, createUsagePersist(agentDir, "root-1", false)),
 	};
 }
 

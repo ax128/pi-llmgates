@@ -366,10 +366,11 @@ TUI 扩展状态行：
 - 上下文压缩与分支摘要那次 LLM 调用计入 `compact/<模型>` 一行（pi 自己也算这笔，我们此前漏计）。自动压缩、手动 `/compact`、上下文溢出恢复压缩与分支摘要都覆盖。由其他扩展代管的压缩（pi 标记为 `fromHook`）计入 `compact/unknown`，且只认它自报的费用——它用的是哪个模型我们看不到，不会按会话模型的费率估价；完全不上报用量的仍无从统计。
 - **结构性统计不到的**（不是 bug，也没有开关）：在自己进程内起子会话、又不按 pi 约定挂 `usage` 的扩展（dynamic-workflows、piolium、pi-goal-x 一类）——它们的消息不进父会话消息流，pi 自己的 `/cost` 同样看不到；`pi-vision` 这类直连模型并自建会话条目的扩展；spawn 子 pi 进程但不回报用量的扩展（`@mjasnikovs/pi-task` 的 `pi --mode json` worker、`pi-goal-list-loop-audit` 的 `pi --mode rpc` 审计子进程）；以及 pi-subagents 深度 ≥ 2 的孙代理。pi-subagents 把 `artifactDir` 设成 `temp`（或拿不到会话文件）时 `_meta.json` 落进临时目录，不在扫描范围内；个别写成 `<runId>_<agent>_meta.json`（不带子序号）的 meta 文件也不解析。第三方扩展想被统计，按 pi 约定在工具结果顶层挂一个 `usage` 即可，会同时进 pi 的 `/cost` 与这里。
 - 设 `LLMGATES_TPS=0` 可关闭**全部**用量采集（父 assistant、子代理、压缩、工具嵌套）。默认开启。
+- 设 `LLMGATES_TPS_PERSIST=1` 或 `config.json` 的 `"tpsPersist": true` 才写用量 journal/checkpoint（默认关）。目录 `~/.pi/agent/llmgates/usage/<root>/`（`0700`/`0600`）。磁盘满或超限额时停止新增写入并标 `storage-exhausted`；损坏或未知版本的 checkpoint **不会被覆盖或“修复”**。未开启时仍是内存账本，重载不恢复。
 - 设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与同步 `subagent` / Cursor `Task` 工具结果仍统计）。
 - 设 `LLMGATES_TPS_COMPACTION=0` 可关闭压缩 / 分支摘要统计。
 - 设 `LLMGATES_TPS_TOOL_USAGE=0` 可关闭通用工具结果用量统计（`subagent` / Cursor `Task` 仍统计）。
-- 用量聚合在后台任务链中执行，不阻塞 agent 循环；计数只在交互式父会话（TUI）进行。本版本是内存账本：重载/重启不恢复用量。第三方运行器与外部 CLI 的逐响应采集尚未认证，Coverage 不会把它们标成已支持。
+- 用量聚合在后台任务链中执行，不阻塞 agent 循环；计数只在交互式父会话（TUI）进行。未开持久化时重载/重启不恢复用量。第三方运行器与外部 CLI 的逐响应采集尚未认证，Coverage 不会把它们标成已支持。
 
 ### 定价数据
 
@@ -514,6 +515,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | `LLMGATES_DEBUG` | 设为 `1` / `true` / `yes` 时输出调试日志 |
 | `LLMGATES_BLOCK_PRIVATE_URLS` | 设为 `1` / `true` / `yes` 时拒绝 **IP 字面量** 形式的 private / link-local 网关地址（loopback 仍允许）；hostname（如 `gateway.local`）不受此规则约束 |
 | `LLMGATES_TPS` | 用量采集总开关（默认启用；设为 `0` / `false` / `no` 时全部入口停） |
+| `LLMGATES_TPS_PERSIST` | 用量 journal/checkpoint（默认关；`1` / `true` / `yes` 开启；覆盖 `tpsPersist`） |
 | `LLMGATES_TPS_SUBAGENT` | 默认启用；设为 `0` / `false` / `no` 时关闭子代理 async 旁路与 meta 扫描 |
 | `LLMGATES_TPS_COMPACTION` | 默认启用；设为 `0` / `false` / `no` 时不统计压缩 / 分支摘要条目的用量 |
 | `LLMGATES_TPS_TOOL_USAGE` | 默认启用；设为 `0` / `false` / `no` 时不统计工具结果顶层 `usage`（`subagent` / Cursor `Task` 不受影响） |
