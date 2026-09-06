@@ -95,6 +95,7 @@ export class UsageCollector {
 		if (!this.enabled(category)) return 0;
 		let n = 0;
 		for (const record of records) {
+<<<<<<< HEAD
 			const parsedRunId = parseMetaSourceKeyGranularity(record.sourceKey)?.runId;
 			const boundOrigin =
 				(parsedRunId && this.runOrigin.get(parsedRunId)) ||
@@ -102,12 +103,18 @@ export class UsageCollector {
 				fallbackOriginTurnId;
 			const originTurnId = assignableOriginTurnId(boundOrigin);
 			const recordRunId = (parsedRunId && this.runOrigin.has(parsedRunId) ? parsedRunId : undefined) ?? runId ?? parsedRunId;
-			const obs = observationFromLegacyRecord(record, {
-				...this.identity(record.sourceKey, observedAt, originTurnId),
-				executionId: record.sourceKey,
-				runId: recordRunId ?? record.sourceKey,
-				childId: record.sourceKey,
-			});
+			const obs = observationFromLegacyRecord(
+				record,
+				{
+					...this.identity(record.sourceKey, observedAt, originTurnId),
+					executionId: record.sourceKey,
+					runId: recordRunId ?? record.sourceKey,
+					childId: record.sourceKey,
+				},
+				record.revision
+					? { kind: "snapshot", snapshotEpoch: record.sourceKey, revision: record.revision }
+					: undefined,
+			);
 			if (!obs) continue;
 			if (this.accept(obs)) n += 1;
 		}

@@ -76,7 +76,7 @@
 | `extensions/login-ui.ts` | 登录文案、网关类型选项与错误中文化 |
 | `extensions/util.ts` | 原子写、文件锁、envFlag、legacy 配置迁移 |
 | `extensions/tps.ts` | TUI 统计与 `/calls` 命令 |
-| `extensions/usage/` | 准实时用量：S0 合同/开关、S1 内存账本与 TUI 接线、可选 journal/checkpoint 持久化 |
+| `extensions/usage/` | 准实时用量：S0 合同/开关、S1 内存账本与 TUI 接线、可选持久化、S2 插件侧 pi-subagents 观测（无 factory hook） |
 | `extensions/tps-stats.ts` | 状态行与 per-model 明细格式化 |
 | `extensions/tps-subagent.ts` | 子代理用量解析（tool / meta / async event） |
 | `extensions/tps-subagent-bridge.ts` | pi-subagents 事件桥接（async/foreground-complete） |

@@ -845,6 +845,24 @@ describe("tps subagent usage", () => {
 		expect(state2.keys.has(aggregate.sourceKey)).toBe(true);
 	});
 
+	it("selectFreshSubagentRecords replaces the same sourceKey when revision grows", () => {
+		const state = createSubagentIngestState();
+		const first = {
+			sourceKey: "tool:call-live",
+			modelLabel: "subagent/worker",
+			calls: 1,
+			input: 5,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			costUsd: 0,
+			revision: 1,
+		};
+		const later = { ...first, input: 20, output: 5, revision: 2 };
+		expect(selectFreshSubagentRecords(state, [first])).toEqual([first]);
+		expect(selectFreshSubagentRecords(state, [{ ...first }])).toEqual([]);
+		expect(selectFreshSubagentRecords(state, [later])).toEqual([later]);
+	});
 });
 
 describe("tps subagent async child runId keys", () => {
@@ -1080,6 +1098,52 @@ describe("tps subagent meta scan rescheduling", () => {
 		}
 		expect(found).toHaveLength(1);
 		expect(found[0]?.input).toBe(42);
+	});
+
+	it("re-reads a growing meta snapshot when mtime increases", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-grow-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const metaPath = join(artifactsDir, "cccc0001_worker_0_meta.json");
+		const writeMeta = (input: number) => {
+			writeFileSync(
+				metaPath,
+				JSON.stringify({
+					agent: "worker",
+					model: "llmgates/gpt-5.6-sol",
+					usage: { turns: 1, input, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
+				}),
+			);
+		};
+		writeMeta(4);
+		const state = createSubagentIngestState();
+		const startedAtMs = Date.now() - 60_000;
+		const first = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			startedAtMs,
+			state.keys,
+			undefined,
+			undefined,
+			state.pendingNullMeta,
+			state.metaMtimeMs,
+		);
+		expect(first[0]?.input).toBe(4);
+		expect(selectFreshSubagentRecords(state, first)).toHaveLength(1);
+
+		writeMeta(40);
+		const later = Date.now() / 1000 + 2;
+		utimesSync(metaPath, later, later);
+		const second = collectPiSubagentsMetaUsage(
+			artifactsDir,
+			startedAtMs,
+			state.keys,
+			undefined,
+			undefined,
+			state.pendingNullMeta,
+			state.metaMtimeMs,
+		);
+		expect(second[0]?.input).toBe(40);
+		expect(selectFreshSubagentRecords(state, second)).toHaveLength(1);
 	});
 
 	it("revives a meta that was truncated then completed", () => {

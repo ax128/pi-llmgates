@@ -391,6 +391,42 @@ describe("tps runtime subagent ordering", () => {
 		}
 	});
 
+	it("replaces tool_execution_update usage with the later end payload", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-tool-update-"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			runtime.emitNow("tool_execution_update", {
+				toolName: "subagent",
+				toolCallId: "call-live",
+				partialResult: {
+					usage: { input: 5, output: 1, turns: 1 },
+					model: "live-model",
+				},
+			});
+			runtime.emitNow("tool_execution_end", {
+				toolName: "subagent",
+				toolCallId: "call-live",
+				result: {
+					usage: { input: 20, output: 5, turns: 2 },
+					model: "live-model",
+				},
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This turn");
+			await calls.handler("", runtime.ctx);
+			const rows = runtime.selections[0] ?? [];
+			expect(rows.some((line) => line.includes("live-model") && line.includes("in 20"))).toBe(true);
+			expect(rows.some((line) => line.includes("in 5"))).toBe(false);
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("stops re-queuing the truncated meta scan once it can no longer make progress", async () => {
 		// The re-queue exists because a backlog already on disk emits no watcher or
 		// tool event of its own. Its gate must be forward progress in `ingested`, not
