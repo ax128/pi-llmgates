@@ -229,6 +229,12 @@ export interface LLMGatesConfigFile {
 	inputHistoryScope?: InputHistoryScope;
 	/** When true (default), start every fresh session on the model last used. */
 	restoreLastModel?: boolean;
+	/** When true (default), collect usage into the live ledger. */
+	tps?: boolean;
+	/** When true, persist usage journals/checkpoints. Default false. */
+	tpsPersist?: boolean;
+	/** When true (default), allow third-party usage adapters. */
+	tpsExt?: boolean;
 	[key: string]: unknown;
 }
 
@@ -269,6 +275,15 @@ export function loadValidatedConfigFile(agentDir: string): LLMGatesConfigFile {
 			typeof config.restoreLastModel !== "boolean"
 		) {
 			throw new Error(`${CONFIG_FILE_NAME}.restoreLastModel must be a boolean`);
+		}
+		if (config.tps !== undefined && typeof config.tps !== "boolean") {
+			throw new Error(`${CONFIG_FILE_NAME}.tps must be a boolean`);
+		}
+		if (config.tpsPersist !== undefined && typeof config.tpsPersist !== "boolean") {
+			throw new Error(`${CONFIG_FILE_NAME}.tpsPersist must be a boolean`);
+		}
+		if (config.tpsExt !== undefined && typeof config.tpsExt !== "boolean") {
+			throw new Error(`${CONFIG_FILE_NAME}.tpsExt must be a boolean`);
 		}
 		return config;
 	} catch (error) {

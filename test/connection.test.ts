@@ -171,4 +171,25 @@ describe("llmgates/config.json", () => {
 			cleanup();
 		}
 	});
+
+	it("honours usage collection keys from file and rejects non-booleans", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			writeJson(join(agentDir, "llmgates/config.json"), {
+				tps: false,
+				tpsPersist: true,
+				tpsExt: false,
+			});
+			expect(loadValidatedConfigFile(agentDir)).toMatchObject({
+				tps: false,
+				tpsPersist: true,
+				tpsExt: false,
+			});
+
+			writeJson(join(agentDir, "llmgates/config.json"), { tps: "0" });
+			expect(() => loadValidatedConfigFile(agentDir)).toThrow(/tps must be a boolean/);
+		} finally {
+			cleanup();
+		}
+	});
 });
