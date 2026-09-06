@@ -1,0 +1,35 @@
+import { describe, expect, it } from "vitest";
+import { formatCostWithQuality, formatTpsScopeWithQuality } from "../extensions/usage/format.js";
+import type { LedgerTotals } from "../extensions/usage/ledger.js";
+
+function totals(overrides: Partial<LedgerTotals> = {}): LedgerTotals {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cacheWrite1h: 0,
+		totalTokens: 0,
+		calls: 2,
+		costUsd: 0.01,
+		inputQuality: "reported",
+		outputQuality: "reported",
+		cacheReadQuality: "unknown",
+		cacheWriteQuality: "unknown",
+		cacheWrite1hQuality: "unknown",
+		totalTokensQuality: "unknown",
+		callsQuality: "reported",
+		costQuality: "estimated",
+		hasUnknown: true,
+		...overrides,
+	};
+}
+
+describe("usage format", () => {
+	it("prefixes estimated cost with ~ and does not treat unused unknown metrics as + ?", () => {
+		expect(formatCostWithQuality(0.01, "estimated")).toBe("~$0.010");
+		expect(formatCostWithQuality(0, "unknown")).toBe("?");
+		expect(formatTpsScopeWithQuality("turn", 45, totals())).toBe("Turn 45s.2c.~$0.010");
+		expect(formatTpsScopeWithQuality("all", 3661, totals())).toBe("All 1h1m.2c");
+	});
+});

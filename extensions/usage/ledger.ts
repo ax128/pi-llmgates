@@ -257,6 +257,22 @@ export class UsageLedger {
 		return false;
 	}
 
+	finalizedModelStats(filter: { originTurnId?: string } = {}): Map<string, LedgerTotals> {
+		const groups = new Map<string, UsageObservationV1[]>();
+		for (const obs of this.finalizedRecords()) {
+			if (filter.originTurnId && obs.originTurnId !== filter.originTurnId) continue;
+			const label = modelLabelOf(obs);
+			const list = groups.get(label) ?? [];
+			list.push(obs);
+			groups.set(label, list);
+		}
+		const out = new Map<string, LedgerTotals>();
+		for (const [label, rows] of groups) {
+			out.set(label, this.sumRecords(rows));
+		}
+		return out;
+	}
+
 	sourceIdentity(): UsageSourceIdentity | undefined {
 		const first = this.records.values().next().value as StoredRecord | undefined;
 		return first?.observation.source;
@@ -383,4 +399,11 @@ export class UsageLedger {
 
 export function sourcePackage(obs: UsageObservationV1): string {
 	return obs.source.package;
+}
+
+export function modelLabelOf(obs: UsageObservationV1): string {
+	const model = obs.model?.trim();
+	if (!model) return "unknown";
+	const provider = obs.provider?.trim();
+	return provider ? `${provider}/${model}` : model;
 }

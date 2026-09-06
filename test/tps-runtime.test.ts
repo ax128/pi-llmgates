@@ -323,6 +323,20 @@ describe("tps runtime subagent ordering", () => {
 		}
 	});
 
+	it("lists Coverage as a snapshot-only /calls item", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-coverage-"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			const calls = runtime.commands.get("calls")!;
+			await calls.handler("", runtime.ctx);
+			expect(runtime.selections[0]).toEqual(["This turn", "This session", "Coverage"]);
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("settles owned meta into both turn and session while excluding unowned artifacts", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-"));
 		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");
