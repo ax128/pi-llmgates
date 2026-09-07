@@ -42,6 +42,14 @@ function readCostUsd(raw: Record<string, unknown>): number | undefined {
 	return undefined;
 }
 
+function parentCallId(message: Record<string, unknown>, identity: ObservationIdentity): string {
+	if (typeof message.id === "string") {
+		const id = message.id.trim();
+		if (id) return `assistant:${id}`;
+	}
+	return `assistant:${identity.originTurnId}:${identity.sequence}`;
+}
+
 function copyPresentCounters(raw: unknown, present: ReadonlySet<string>): UsageCounters {
 	const usage: UsageCounters = {};
 	if (!isPlainObject(raw)) return usage;
@@ -112,7 +120,7 @@ export function observationFromAssistantMessage(
 		sequence: identity.sequence,
 		observedAt: identity.observedAt,
 		kind: "response",
-		callId: `assistant:${identity.sequence}`,
+		callId: parentCallId(message, identity),
 		model,
 		provider,
 		phase: "final",

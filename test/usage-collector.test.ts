@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { UsageCollector } from "../extensions/usage/collector.js";
 import { resolveUsagePolicy } from "../extensions/usage/policy.js";
@@ -142,6 +143,98 @@ describe("UsageCollector origin-turn binding", () => {
 			);
 			expect(session.turnTotals("turn-1").input).toBe(10);
 			expect(session.turnTotals("turn-2").input).toBe(20);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("UsageCollector persistence restore", () => {
+	it("resumes sequence, turn, and run origin so a new parent call is not swallowed", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const policy = resolveUsagePolicy(agentDir);
+			const first = new UsageCollector("root-1", "sess-1", policy, createUsagePersist(agentDir, "root-1", true));
+			first.beginTurn();
+			first.bindRun("run-a");
+			first.ingestAssistant(
+				{
+					role: "assistant",
+					provider: "test",
+					model: "parent-1",
+					usage: { input: 3, output: 1 },
+				},
+				1_000,
+			);
+			first.beginTurn();
+			first.ingestLegacyRecords(
+				[
+					{
+						sourceKey: "meta:run-a",
+						modelLabel: "subagent/worker",
+						calls: 2,
+						input: 9,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						costUsd: 0,
+					},
+				],
+				"pi-subagents",
+				"run-a",
+			);
+			await first.checkpointAndClose();
+
+			const second = new UsageCollector("root-1", "sess-1", policy, createUsagePersist(agentDir, "root-1", true));
+			second.restorePersisted();
+			expect(second.turnTotals("turn-1").input).toBe(12);
+			expect(second.currentOriginTurnId()).toBe("turn-1");
+			expect(second.beginTurn()).toBe("turn-2");
+			second.ingestAssistant(
+				{
+					role: "assistant",
+					provider: "test",
+					model: "parent-1",
+					usage: { input: 4, output: 1 },
+				},
+				2_000,
+			);
+			expect(second.sessionTotals().input).toBe(16);
+			expect(second.turnTotals("turn-1").input).toBe(12);
+			expect(second.turnTotals("turn-2").input).toBe(4);
+			await second.checkpointAndClose();
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("does not append an idempotent restored observation to the journal", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const policy = resolveUsagePolicy(agentDir);
+			const first = new UsageCollector("root-1", "sess-1", policy, createUsagePersist(agentDir, "root-1", true));
+			first.beginTurn();
+			first.ingestAssistant(
+				{
+					role: "assistant",
+					provider: "test",
+					model: "parent-1",
+					usage: { input: 3, output: 1 },
+				},
+				1_000,
+			);
+			await first.checkpointAndClose();
+
+			const persist = createUsagePersist(agentDir, "root-1", true);
+			const second = new UsageCollector("root-1", "sess-1", policy, persist);
+			second.restorePersisted();
+			const journalPath = (persist as { journalPath: string }).journalPath;
+			const before = readFileSync(journalPath, "utf8");
+			for (const observation of persist.load()) {
+				second.ingestObservation(observation);
+			}
+			expect(readFileSync(journalPath, "utf8")).toBe(before);
+			await second.checkpointAndClose();
 		} finally {
 			cleanup();
 		}

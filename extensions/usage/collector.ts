@@ -6,6 +6,7 @@ import type { UsageObservationV1 } from "./contract.js";
 import { UsageLedger, type LedgerTotals } from "./ledger.js";
 import {
 	isUsageCategoryEnabled,
+	isUsagePersistEnabled,
 	type UsagePolicy,
 	type UsageSwitchCategory,
 } from "./policy.js";
@@ -118,16 +119,21 @@ export class UsageCollector {
 	}
 
 	restorePersisted(): void {
-		for (const observation of this.persist.load()) {
+		this.persist.acquireWriter();
+		const loaded = this.persist.load();
+		for (const observation of loaded) {
 			this.ledger.ingest(observation);
 		}
+		this.restoreCounters(loaded);
 		this.ledger.setPersistState(persistToLedgerState(this.persist.status()));
 	}
 
 	async checkpointAndClose(): Promise<void> {
-		if (!this.persist.enabled) return;
-		const status = await this.persist.writeCheckpoint(this.ledger.snapshot());
-		this.ledger.setPersistState(persistToLedgerState(status));
+		if (this.persist.enabled) {
+			const status = await this.persist.writeCheckpoint(() => this.ledger.snapshot());
+			this.ledger.setPersistState(persistToLedgerState(status));
+		}
+		await this.persist.close();
 	}
 
 	sessionTotals(): LedgerTotals {
@@ -146,14 +152,31 @@ export class UsageCollector {
 		return this.ledger.finalizedModelStats({ originTurnId });
 	}
 
+	private restoreCounters(loaded: readonly UsageObservationV1[]): void {
+		let maxSequence = this.sequence;
+		let maxTurn = this.turnSeq;
+		for (const observation of loaded) {
+			if (observation.sequence > maxSequence) maxSequence = observation.sequence;
+			const turnMatch = /^turn-(\d+)$/.exec(observation.originTurnId);
+			if (turnMatch) maxTurn = Math.max(maxTurn, Number(turnMatch[1]));
+			const runId = observation.runId?.trim();
+			if (runId && !this.runOrigin.has(runId)) {
+				this.runOrigin.set(runId, assignableOriginTurnId(observation.originTurnId));
+			}
+		}
+		this.sequence = maxSequence;
+		this.turnSeq = maxTurn;
+		this.originTurnId = maxTurn > 0 ? `turn-${maxTurn}` : PRE_TURN_ID;
+	}
+
 	private accept(observation: UsageObservationV1): boolean {
-		const accepted = this.ledger.ingest(observation).accepted;
-		if (accepted && this.persist.enabled) {
+		const result = this.ledger.ingest(observation);
+		if (result.accepted && result.reason !== "idempotent" && this.persist.enabled) {
 			void this.persist.append(observation).then((status) => {
 				this.ledger.setPersistState(persistToLedgerState(status));
 			});
 		}
-		return accepted;
+		return result.accepted;
 	}
 
 	private identity(producerId: string, observedAt: number, originTurnId = this.originTurnId): ObservationIdentity {
@@ -180,6 +203,6 @@ export function createUsageCollector(
 		rootSessionId,
 		sessionId,
 		policy,
-		createUsagePersist(agentDir, rootSessionId, policy.persist),
+		createUsagePersist(agentDir, rootSessionId, isUsagePersistEnabled(policy)),
 	);
 }

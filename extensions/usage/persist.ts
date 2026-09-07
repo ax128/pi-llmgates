@@ -1,20 +1,32 @@
 /**
  * Opt-in usage journal / checkpoint. Default off: this module must not create
- * files unless `policy.persist` is true. Failures degrade to
+ * files unless persistence is enabled. Failures degrade to
  * `storage-exhausted` or stay non-durable; a corrupt checkpoint is never overwritten.
+ *
+ * One process holds a session-long writer lease on `.writer`. Append and
+ * checkpoint run under that lease — they must not take a second lock on the
+ * same path. Snapshot for checkpoint is taken after the lease is held.
  */
 
-import { appendFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	lstatSync,
+	readdirSync,
+	readFileSync,
+	writeFileSync,
+	type Stats,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import * as lockfile from "proper-lockfile";
 import {
 	atomicWriteJson,
 	createFileIfMissingMode,
 	ensureDirMode,
 	isPlainObject,
+	LOCK_OPTIONS,
 	SECRET_DIR_MODE,
 	SECRET_FILE_MODE,
-	withFileLock,
 } from "../util.js";
 import { parseUsageObservationV1, type UsageObservationV1 } from "./contract.js";
 import { USAGE_DIR_NAME, USAGE_LIMITS } from "./policy.js";
@@ -26,15 +38,24 @@ export type PersistStatus = "off" | "memory" | "durable" | "storage-exhausted";
 export interface UsagePersist {
 	readonly enabled: boolean;
 	status(): PersistStatus;
+	acquireWriter(): boolean;
 	load(): UsageObservationV1[];
 	append(observation: UsageObservationV1): Promise<PersistStatus>;
-	writeCheckpoint(observations: readonly UsageObservationV1[]): Promise<PersistStatus>;
+	writeCheckpoint(observations: readonly UsageObservationV1[] | (() => readonly UsageObservationV1[])): Promise<PersistStatus>;
+	close(): Promise<void>;
 }
 
 type CheckpointFile = {
 	version: typeof USAGE_CHECKPOINT_VERSION;
 	rootSessionId: string;
 	observations: UsageObservationV1[];
+};
+
+const WRITER_LOCK_OPTIONS: lockfile.LockOptions = {
+	realpath: false,
+	stale: 30_000,
+	onCompromised: LOCK_OPTIONS.onCompromised,
+	retries: 0,
 };
 
 function sanitizeRootId(id: string): string {
@@ -48,26 +69,48 @@ function isEnospc(error: unknown): boolean {
 	return code === "ENOSPC" || code === "EDQUOT" || code === "EFBIG";
 }
 
-function fileSize(path: string): number {
+function lstatOrNull(path: string): Stats | null {
 	try {
-		return statSync(path).size;
-	} catch {
-		return 0;
+		return lstatSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		return null;
 	}
 }
 
-function directoryBytes(dir: string): number {
-	if (!existsSync(dir)) return 0;
+function pathIsUnsafe(path: string, kind: "file" | "dir"): boolean {
+	const stats = lstatOrNull(path);
+	if (!stats) return false;
+	if (stats.isSymbolicLink()) return true;
+	if (kind === "dir") return !stats.isDirectory();
+	return !stats.isFile();
+}
+
+function regularFileSize(path: string): number {
+	const stats = lstatOrNull(path);
+	if (!stats || stats.isSymbolicLink() || !stats.isFile()) return 0;
+	return stats.size;
+}
+
+function directoryBytes(dir: string, seen = new Set<string>()): number {
+	const stats = lstatOrNull(dir);
+	if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) return 0;
+	const key = `${stats.dev}:${stats.ino}`;
+	if (seen.has(key)) return 0;
+	seen.add(key);
 	let total = 0;
-	for (const name of readdirSync(dir)) {
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch {
+		return 0;
+	}
+	for (const name of names) {
 		const path = join(dir, name);
-		try {
-			const stats = statSync(path);
-			if (stats.isDirectory()) total += directoryBytes(path);
-			else total += stats.size;
-		} catch {
-			// Skip entries we cannot stat; a later write still checks ENOSPC.
-		}
+		const child = lstatOrNull(path);
+		if (!child || child.isSymbolicLink()) continue;
+		if (child.isDirectory()) total += directoryBytes(path, seen);
+		else if (child.isFile()) total += child.size;
 	}
 	return total;
 }
@@ -78,6 +121,9 @@ class NoopPersist implements UsagePersist {
 	status(): PersistStatus {
 		return this.persistStatus;
 	}
+	acquireWriter(): boolean {
+		return false;
+	}
 	load(): UsageObservationV1[] {
 		return [];
 	}
@@ -87,6 +133,7 @@ class NoopPersist implements UsagePersist {
 	async writeCheckpoint(): Promise<PersistStatus> {
 		return this.persistStatus;
 	}
+	async close(): Promise<void> {}
 }
 
 export type PersistIo = {
@@ -107,6 +154,9 @@ export class FsUsagePersist implements UsagePersist {
 	readonly lockPath: string;
 	private persistStatus: PersistStatus = "memory";
 	private checkpointWritable = true;
+	private isWriter = false;
+	private writerFailed = false;
+	private writerUnlock: (() => void) | undefined;
 
 	constructor(
 		readonly agentDir: string,
@@ -128,7 +178,39 @@ export class FsUsagePersist implements UsagePersist {
 		return this.persistStatus;
 	}
 
+	acquireWriter(): boolean {
+		if (this.isWriter) return true;
+		if (this.writerFailed) return false;
+		const usageDir = join(this.agentDir, USAGE_DIR_NAME);
+		if (pathIsUnsafe(usageDir, "dir") || pathIsUnsafe(this.rootDir, "dir")) {
+			this.writerFailed = true;
+			this.persistStatus = "memory";
+			return false;
+		}
+		try {
+			this.ensureLayout();
+		} catch {
+			this.writerFailed = true;
+			this.persistStatus = "memory";
+			return false;
+		}
+		if (this.layoutIsUnsafe()) {
+			this.writerFailed = true;
+			this.persistStatus = "memory";
+			return false;
+		}
+		try {
+			this.writerUnlock = lockfile.lockSync(this.lockPath, WRITER_LOCK_OPTIONS);
+			this.isWriter = true;
+			return true;
+		} catch {
+			this.persistStatus = "memory";
+			return false;
+		}
+	}
+
 	load(): UsageObservationV1[] {
+		if (this.layoutIsUnsafe()) return [];
 		const fromCheckpoint = this.readCheckpointObservations();
 		const fromJournal = this.readJournalObservations();
 		return [...fromCheckpoint, ...fromJournal];
@@ -136,24 +218,25 @@ export class FsUsagePersist implements UsagePersist {
 
 	async append(observation: UsageObservationV1): Promise<PersistStatus> {
 		if (this.persistStatus === "storage-exhausted") return this.persistStatus;
+		if (!this.acquireWriter()) return this.persistStatus;
+		if (this.layoutIsUnsafe()) {
+			this.persistStatus = "memory";
+			return this.persistStatus;
+		}
 		try {
-			this.ensureLayout();
-			return await withFileLock(this.lockPath, () => {
-				if (this.persistStatus === "storage-exhausted") return this.persistStatus;
-				const line = `${JSON.stringify(observation)}\n`;
-				const lineBytes = Buffer.byteLength(line);
-				if (fileSize(this.journalPath) + lineBytes > this.limits.maxJournalBytesPerRoot) {
-					this.persistStatus = "storage-exhausted";
-					return this.persistStatus;
-				}
-				if (directoryBytes(join(this.agentDir, USAGE_DIR_NAME)) + lineBytes > this.limits.maxGlobalUsageBytes) {
-					this.persistStatus = "storage-exhausted";
-					return this.persistStatus;
-				}
-				this.io.appendJournal(this.journalPath, line);
-				this.persistStatus = "durable";
+			const line = `${JSON.stringify(observation)}\n`;
+			const lineBytes = Buffer.byteLength(line);
+			if (regularFileSize(this.journalPath) + lineBytes > this.limits.maxJournalBytesPerRoot) {
+				this.persistStatus = "storage-exhausted";
 				return this.persistStatus;
-			});
+			}
+			if (directoryBytes(join(this.agentDir, USAGE_DIR_NAME)) + lineBytes > this.limits.maxGlobalUsageBytes) {
+				this.persistStatus = "storage-exhausted";
+				return this.persistStatus;
+			}
+			this.io.appendJournal(this.journalPath, line);
+			this.persistStatus = "durable";
+			return this.persistStatus;
 		} catch (error) {
 			if (isEnospc(error)) {
 				this.persistStatus = "storage-exhausted";
@@ -164,34 +247,35 @@ export class FsUsagePersist implements UsagePersist {
 		}
 	}
 
-	async writeCheckpoint(observations: readonly UsageObservationV1[]): Promise<PersistStatus> {
+	async writeCheckpoint(
+		observations: readonly UsageObservationV1[] | (() => readonly UsageObservationV1[]),
+	): Promise<PersistStatus> {
 		if (!this.checkpointWritable) return this.persistStatus;
 		if (this.persistStatus === "storage-exhausted") return this.persistStatus;
+		if (!this.acquireWriter()) return this.persistStatus;
+		if (this.layoutIsUnsafe() || !this.inspectCheckpoint()) {
+			this.checkpointWritable = false;
+			this.persistStatus = this.persistStatus === "durable" ? "durable" : "memory";
+			return this.persistStatus;
+		}
+		const rows = typeof observations === "function" ? observations() : observations;
 		const payload: CheckpointFile = {
 			version: USAGE_CHECKPOINT_VERSION,
 			rootSessionId: this.rootSessionId,
-			observations: [...observations],
+			observations: [...rows],
 		};
 		const encoded = `${JSON.stringify(payload, null, 2)}\n`;
 		if (Buffer.byteLength(encoded) > this.limits.checkpointTmpBudgetBytes) {
 			return this.persistStatus;
 		}
 		try {
-			this.ensureLayout();
-			return await withFileLock(this.lockPath, () => {
-				if (!this.checkpointWritable) return this.persistStatus;
-				if (!this.inspectCheckpoint()) {
-					this.checkpointWritable = false;
-					return this.persistStatus;
-				}
-				atomicWriteJson(this.checkpointPath, payload, {
-					fileMode: SECRET_FILE_MODE,
-					dirMode: SECRET_DIR_MODE,
-				});
-				writeFileSync(this.journalPath, "", { mode: SECRET_FILE_MODE });
-				this.persistStatus = "durable";
-				return this.persistStatus;
+			atomicWriteJson(this.checkpointPath, payload, {
+				fileMode: SECRET_FILE_MODE,
+				dirMode: SECRET_DIR_MODE,
 			});
+			writeFileSync(this.journalPath, "", { mode: SECRET_FILE_MODE });
+			this.persistStatus = "durable";
+			return this.persistStatus;
 		} catch (error) {
 			if (isEnospc(error)) {
 				this.persistStatus = "storage-exhausted";
@@ -202,6 +286,18 @@ export class FsUsagePersist implements UsagePersist {
 		}
 	}
 
+	async close(): Promise<void> {
+		const unlock = this.writerUnlock;
+		this.writerUnlock = undefined;
+		this.isWriter = false;
+		if (!unlock) return;
+		try {
+			unlock();
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException | undefined)?.code === "ERELEASED") return;
+		}
+	}
+
 	private ensureLayout(): void {
 		ensureDirMode(join(this.agentDir, USAGE_DIR_NAME), SECRET_DIR_MODE);
 		ensureDirMode(this.rootDir, SECRET_DIR_MODE);
@@ -209,8 +305,21 @@ export class FsUsagePersist implements UsagePersist {
 		createFileIfMissingMode(this.journalPath, "", SECRET_FILE_MODE);
 	}
 
+	private layoutIsUnsafe(): boolean {
+		const usageDir = join(this.agentDir, USAGE_DIR_NAME);
+		return (
+			pathIsUnsafe(usageDir, "dir") ||
+			pathIsUnsafe(this.rootDir, "dir") ||
+			pathIsUnsafe(this.journalPath, "file") ||
+			pathIsUnsafe(this.checkpointPath, "file") ||
+			pathIsUnsafe(this.lockPath, "file")
+		);
+	}
+
 	private inspectCheckpoint(): boolean {
-		if (!existsSync(this.checkpointPath)) return true;
+		const stats = lstatOrNull(this.checkpointPath);
+		if (!stats) return true;
+		if (stats.isSymbolicLink() || !stats.isFile()) return false;
 		try {
 			const raw: unknown = JSON.parse(readFileSync(this.checkpointPath, "utf8"));
 			return checkpointIsVerifiable(raw, this.rootSessionId);
@@ -220,7 +329,10 @@ export class FsUsagePersist implements UsagePersist {
 	}
 
 	private readCheckpointObservations(): UsageObservationV1[] {
-		if (!existsSync(this.checkpointPath) || !this.checkpointWritable) return [];
+		if (!this.checkpointWritable) return [];
+		const stats = lstatOrNull(this.checkpointPath);
+		if (!stats) return [];
+		if (stats.isSymbolicLink() || !stats.isFile()) return [];
 		try {
 			const raw: unknown = JSON.parse(readFileSync(this.checkpointPath, "utf8"));
 			if (!checkpointIsVerifiable(raw, this.rootSessionId)) return [];
@@ -232,7 +344,8 @@ export class FsUsagePersist implements UsagePersist {
 	}
 
 	private readJournalObservations(): UsageObservationV1[] {
-		if (!existsSync(this.journalPath)) return [];
+		const stats = lstatOrNull(this.journalPath);
+		if (!stats || stats.isSymbolicLink() || !stats.isFile()) return [];
 		let text: string;
 		try {
 			text = readFileSync(this.journalPath, "utf8");

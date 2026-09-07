@@ -30,6 +30,21 @@ describe("legacy usage adapter", () => {
 		expect(obs!.metricQuality?.costUsd).toBe("estimated");
 		expect(obs!.usage?.calls).toBe(1);
 		expect(obs!.metricQuality?.calls).toBe("reported");
+		expect(obs!.callId).toBe("assistant:turn-1:1");
+	});
+
+	it("prefers a message id over the collector sequence for parent callId", () => {
+		const obs = observationFromAssistantMessage(
+			{
+				id: "msg-stable",
+				role: "assistant",
+				provider: "llmgates",
+				model: "gpt-test",
+				usage: { input: 10, output: 5, cost: { total: 0.01 } },
+			},
+			identity,
+		);
+		expect(obs!.callId).toBe("assistant:msg-stable");
 	});
 
 	it("does not treat SDK-filled zeros as reported", () => {

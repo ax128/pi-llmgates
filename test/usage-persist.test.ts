@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { USAGE_SCHEMA_VERSION } from "../extensions/usage/contract.js";
@@ -78,6 +78,7 @@ describe("usage persist", () => {
 			expect(await persist.append(obs(1))).toBe("durable");
 			expect(await persist.writeCheckpoint([obs(1)])).toBe("durable");
 			const checkpoint = readFileSync(persist.checkpointPath, "utf8");
+			await persist.close();
 
 			const failing = new FsUsagePersist(agentDir, "root-1", USAGE_LIMITS, {
 				appendJournal() {
@@ -88,6 +89,7 @@ describe("usage persist", () => {
 			});
 			expect(await failing.append(obs(2))).toBe("storage-exhausted");
 			expect(readFileSync(persist.checkpointPath, "utf8")).toBe(checkpoint);
+			await failing.close();
 		} finally {
 			cleanup();
 		}
@@ -127,6 +129,60 @@ describe("usage persist", () => {
 			expect(await persist.append(obs(1))).toBe("durable");
 			expect(await persist.append(obs(2))).toBe("storage-exhausted");
 			expect(persist.load().some((row) => row.callId === "call-2")).toBe(false);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("keeps a second live persist instance read-only until the writer is released", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const writer = createUsagePersist(agentDir, "root-1", true) as FsUsagePersist;
+			expect(await writer.append(obs(1))).toBe("durable");
+			const contender = createUsagePersist(agentDir, "root-1", true) as FsUsagePersist;
+			expect(await contender.append(obs(2))).not.toBe("durable");
+			expect(contender.load().some((row) => row.callId === "call-2")).toBe(false);
+			await writer.close();
+			expect(await contender.append(obs(2))).toBe("durable");
+			await contender.close();
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("does not follow a checkpoint symlink or write through it", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const persist = new FsUsagePersist(agentDir, "root-1");
+			mkdirSync(persist.rootDir, { recursive: true, mode: 0o700 });
+			const outside = join(agentDir, "outside-checkpoint.json");
+			const planted = `${JSON.stringify({
+				version: USAGE_CHECKPOINT_VERSION,
+				rootSessionId: "root-1",
+				observations: [],
+			})}\n`;
+			writeFileSync(outside, planted, { mode: 0o600 });
+			symlinkSync(outside, persist.checkpointPath);
+			expect(await persist.writeCheckpoint([obs(1)])).not.toBe("durable");
+			expect(readFileSync(outside, "utf8")).toBe(planted);
+			await persist.close();
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("does not truncate the journal when a checkpoint would exceed the tmp budget", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const persist = new FsUsagePersist(agentDir, "root-1", {
+				...USAGE_LIMITS,
+				checkpointTmpBudgetBytes: 16,
+			});
+			expect(await persist.append(obs(1))).toBe("durable");
+			const journal = readFileSync(persist.journalPath, "utf8");
+			expect(await persist.writeCheckpoint([obs(1), obs(2)])).toBe("durable");
+			expect(readFileSync(persist.journalPath, "utf8")).toBe(journal);
+			await persist.close();
 		} finally {
 			cleanup();
 		}
