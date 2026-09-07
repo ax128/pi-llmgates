@@ -162,4 +162,103 @@ describe("UsageLedger", () => {
 		expect(ledger.failedAttempts()).toBe(1);
 		expect(ledger.modelKeys().sort()).toEqual(["model-a", "model-b"]);
 	});
+
+	it("does not drop in-flight provisional responses when a final snapshot arrives", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(
+			obs({
+				phase: "provisional",
+				callId: "live-call",
+				usage: { input: 40, calls: 1 },
+			}),
+		);
+		ledger.ingest(
+			obs({
+				kind: "snapshot",
+				phase: "final",
+				callId: undefined,
+				snapshotEpoch: "execution:exec-1",
+				sequence: 2,
+				revision: 1,
+				usage: { input: 100, calls: 2 },
+				metricQuality: { input: "reported", calls: "reported" },
+			}),
+		);
+		expect(ledger.provisionalTotals().input).toBe(40);
+		expect(ledger.finalizedTotals().input).toBe(100);
+	});
+
+	it("does not add a self snapshot on top of self responses for the same execution", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(obs({ usage: { input: 10, calls: 1 } }));
+		ledger.ingest(
+			obs({
+				kind: "snapshot",
+				scope: "self",
+				callId: undefined,
+				snapshotEpoch: "execution:exec-1",
+				sequence: 2,
+				revision: 1,
+				usage: { input: 100, calls: 4 },
+				metricQuality: { input: "reported", calls: "reported" },
+			}),
+		);
+		expect(ledger.finalizedTotals().input).toBe(10);
+		expect(ledger.finalizedTotals().calls).toBe(1);
+	});
+
+	it("does not add a non-zero unknown metric into confirmed totals", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(
+			obs({
+				usage: { input: 10, output: 99, costUsd: 1.23 },
+				metricQuality: { input: "reported", output: "unknown", costUsd: "unknown" },
+			}),
+		);
+		const totals = ledger.finalizedTotals();
+		expect(totals.input).toBe(10);
+		expect(totals.output).toBe(0);
+		expect(totals.costUsd).toBe(0);
+		expect(totals.outputQuality).toBe("unknown");
+		expect(totals.costQuality).toBe("unknown");
+		expect(totals.hasUnknown).toBe(true);
+	});
+
+	it("does not mark unseen metrics unknown when only some fields were reported", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(obs({ usage: { input: 10, calls: 1 }, metricQuality: { input: "reported", calls: "reported" } }));
+		const totals = ledger.finalizedTotals();
+		expect(totals.hasUnknown).toBe(false);
+		expect(totals.cacheReadQuality).toBe("unknown");
+	});
+
+	it("detects a 0-based sequence gap", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(obs({ sequence: 0, callId: "c0", usage: { input: 1, calls: 1 } }));
+		ledger.ingest(obs({ sequence: 1, callId: "c1", usage: { input: 1, calls: 1 } }));
+		ledger.ingest(obs({ sequence: 3, callId: "c3", usage: { input: 1, calls: 1 } }));
+		expect(ledger.coverage().some((row) => row.reason === "sequence-gap")).toBe(true);
+	});
+
+	it("marks coverage storage-exhausted when the memory cap cannot evict", () => {
+		const ledger = new UsageLedger("root-1");
+		for (let i = 0; i < 10_000; i++) {
+			ledger.ingest(
+				obs({
+					callId: `fill-${i}`,
+					executionId: `exec-${i}`,
+					sequence: i,
+					usage: { input: 1, calls: 1 },
+				}),
+			);
+		}
+		const result = ledger.ingest(
+			obs({ callId: "overflow", executionId: "exec-overflow", sequence: 10_000, usage: { input: 1, calls: 1 } }),
+		);
+		expect(result.accepted).toBe(false);
+		expect(result.reason).toBe("memory-exhausted");
+		expect(ledger.coverage().some((row) => row.status === "storage-exhausted" || row.persist === "storage-exhausted")).toBe(
+			true,
+		);
+	});
 });

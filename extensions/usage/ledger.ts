@@ -149,7 +149,7 @@ function isFinalizedPhase(obs: UsageObservationV1): boolean {
 
 export class UsageLedger {
 	private readonly records = new Map<string, StoredRecord>();
-	private readonly producerSeq = new Map<string, { seen: Set<number>; max: number }>();
+	private readonly producerSeq = new Map<string, { seen: Set<number>; min: number; max: number }>();
 	private persistState: CoverageRow["persist"] = "memory";
 	readonly collectedSinceMs: number;
 
@@ -185,14 +185,14 @@ export class UsageLedger {
 
 		if (!existing && this.records.size >= USAGE_LIMITS.maxMemoryObservations) {
 			if (!this.evictProvisional()) {
-				this.persistState = this.persistState === "durable" ? "storage-exhausted" : "memory";
+				this.persistState = "storage-exhausted";
 				return { accepted: false, reason: "memory-exhausted" };
 			}
 		}
 
 		this.records.set(identity, { observation: obs, identity });
 		this.trackSequence(obs);
-		if (isFinalizedPhase(obs) && (obs.phase === "final" || obs.callId)) {
+		if (isFinalizedPhase(obs) && obs.kind === "response") {
 			this.dropMatchingProvisional(obs);
 		}
 		return { accepted: true };
@@ -214,7 +214,7 @@ export class UsageLedger {
 		for (const { observation: obs } of this.records.values()) {
 			const key = `${obs.source.package}\0${obs.producerId}`;
 			const seq = this.producerSeq.get(obs.producerId);
-			const gap = seq ? seq.seen.size < seq.max : false;
+			const gap = seq ? seq.seen.size < seq.max - seq.min + 1 : false;
 			const status: CoverageStatus = this.coverageStatus(obs.kind, gap);
 			const current = byProducer.get(key);
 			const row: CoverageRow = {
@@ -264,9 +264,13 @@ export class UsageLedger {
 
 	private finalizedRecords(): UsageObservationV1[] {
 		const selfExecutions = new Set<string>();
+		const selfResponseExecutions = new Set<string>();
 		for (const { observation: obs } of this.records.values()) {
 			if (obs.scope === "self" && !isProvisional(obs) && obs.kind !== "lifecycle") {
 				selfExecutions.add(obs.executionId);
+			}
+			if (obs.scope === "self" && !isProvisional(obs) && obs.kind === "response") {
+				selfResponseExecutions.add(obs.executionId);
 			}
 		}
 		const out: UsageObservationV1[] = [];
@@ -274,6 +278,9 @@ export class UsageLedger {
 			if (isProvisional(obs)) continue;
 			if (obs.kind === "lifecycle" && !obs.usage) continue;
 			if (obs.scope === "subtree" && selfExecutions.has(obs.executionId)) continue;
+			if (obs.kind === "snapshot" && obs.scope === "self" && selfResponseExecutions.has(obs.executionId)) {
+				continue;
+			}
 			out.push(obs);
 		}
 		return out;
@@ -320,7 +327,7 @@ export class UsageLedger {
 		totals.totalTokensQuality = qualities.totalTokens ?? "unknown";
 		totals.callsQuality = qualities.calls ?? "unknown";
 		totals.costQuality = qualities.costUsd ?? "unknown";
-		totals.hasUnknown = USAGE_METRIC_KEYS.some((metric) => (qualities[metric] ?? "unknown") === "unknown");
+		totals.hasUnknown = USAGE_METRIC_KEYS.some((metric) => qualities[metric] === "unknown");
 		return totals;
 	}
 
@@ -332,8 +339,13 @@ export class UsageLedger {
 	}
 
 	private trackSequence(obs: UsageObservationV1): void {
-		const current = this.producerSeq.get(obs.producerId) ?? { seen: new Set<number>(), max: 0 };
+		const current = this.producerSeq.get(obs.producerId) ?? {
+			seen: new Set<number>(),
+			min: obs.sequence,
+			max: obs.sequence,
+		};
 		current.seen.add(obs.sequence);
+		current.min = Math.min(current.min, obs.sequence);
 		current.max = Math.max(current.max, obs.sequence);
 		this.producerSeq.set(obs.producerId, current);
 	}
@@ -344,7 +356,9 @@ export class UsageLedger {
 			if (row.observation.producerId !== finalObs.producerId) continue;
 			if (row.observation.executionId !== finalObs.executionId) continue;
 			if (row.observation.attemptId !== finalObs.attemptId) continue;
-			if (finalObs.callId && row.observation.callId && row.observation.callId !== finalObs.callId) {
+			if (finalObs.callId) {
+				if (row.observation.callId !== finalObs.callId) continue;
+			} else if (row.observation.callId) {
 				continue;
 			}
 			this.records.delete(key);
