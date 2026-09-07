@@ -9,6 +9,7 @@
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	isSubagentBridgeEnabled,
 	isSubagentToolAvailable,
@@ -21,7 +22,7 @@ import {
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromToolExecution,
 	normalizeSubagentSessionIdentity,
-	recordSubagentUsageRecords,
+	parseMetaSourceKeyGranularity,
 	resolveSubagentArtifactDirs,
 	selectFreshSubagentRecords,
 	type SubagentUsageRecord,
@@ -36,10 +37,12 @@ import {
 	formatUsageSummaryMessage,
 	mergeModelUsageStats,
 	totalModelCalls,
-	tryRecordAssistantUsage,
 	type ModelUsageStats,
 } from "./tps-stats.js";
 import { envFlag } from "./util.js";
+import { createUsageCollector, type UsageCollector } from "./usage/collector.js";
+import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, replaceModelUsageStats } from "./usage/format.js";
+import { resolveUsagePolicy } from "./usage/policy.js";
 
 const STATUS_KEY = "tps";
 const REFRESH_INTERVAL_MS = 1000;
@@ -88,6 +91,41 @@ export default function (pi: ExtensionAPI) {
 	const subagentWatchers = new Map<string, FSWatcher>();
 	let subagentMetaScanTimer: ReturnType<typeof setTimeout> | undefined;
 	let unregisterSubagentBridge: (() => void) | undefined;
+	let usageCollector: UsageCollector | null = null;
+	let lastTurnElapsedSeconds = 0;
+
+	function loadUsagePolicy() {
+		try {
+			return resolveUsagePolicy(getAgentDir());
+		} catch {
+			return resolveUsagePolicy("");
+		}
+	}
+
+	function syncStatsFromLedger(): void {
+		if (!usageCollector) return;
+		replaceModelUsageStats(sessionStats, usageCollector.sessionModelStats());
+		replaceModelUsageStats(turnStats, usageCollector.turnModelStats());
+	}
+
+	function formatTurnLine(totalSeconds: number, stats: ModelUsageStats): string {
+		if (usageCollector) {
+			return formatTpsScopeWithQuality("turn", totalSeconds, usageCollector.turnTotals());
+		}
+		return formatTpsStatusLine(totalSeconds, stats, { scope: "turn" });
+	}
+
+	function formatSettledLine(
+		sessionElapsed: number,
+		sessionStatsSnapshot: ModelUsageStats,
+		turnElapsed: number,
+		turnStatsSnapshot: ModelUsageStats,
+	): string {
+		if (usageCollector) {
+			return `${formatTpsScopeWithQuality("all", sessionElapsed, usageCollector.sessionTotals())}, ${formatTpsScopeWithQuality("turn", turnElapsed, usageCollector.turnTotals())}${formatIdleMarker(usageCollector.ledger.hasActiveProducers(), 2)}`;
+		}
+		return formatTpsSettledStatusLine(sessionElapsed, sessionStatsSnapshot, turnElapsed, turnStatsSnapshot);
+	}
 
 	function runUsageTask(task: () => void | Promise<void>): void {
 		const expectedGeneration = sessionGeneration;
@@ -164,7 +202,7 @@ export default function (pi: ExtensionAPI) {
 		safeUi(ctx, () => {
 			ctx.ui.setStatus(
 				STATUS_KEY,
-				ctx.ui.theme.fg("dim", formatTpsStatusLine(totalSeconds, stats, { scope: "turn" })),
+				ctx.ui.theme.fg("dim", formatTurnLine(totalSeconds, stats)),
 			);
 		});
 	}
@@ -181,7 +219,7 @@ export default function (pi: ExtensionAPI) {
 				STATUS_KEY,
 				ctx.ui.theme.fg(
 					"dim",
-					formatTpsSettledStatusLine(
+					formatSettledLine(
 						sessionElapsed,
 						sessionStatsSnapshot,
 						turnElapsed,
@@ -219,8 +257,13 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function refreshStatus(): void {
-		if (requestStartMs === null || !statusCtx) return;
-		scheduleStatusRefresh();
+		if (!statusCtx) return;
+		if (requestStartMs !== null) {
+			scheduleStatusRefresh();
+			return;
+		}
+		updateSessionElapsed();
+		setSettledStatus(statusCtx, sessionElapsedSeconds, sessionStats, lastTurnElapsedSeconds, lastSettledTurnStats);
 	}
 
 	function clearStatus(ctx?: ExtensionContext | null): void {
@@ -237,18 +280,59 @@ export default function (pi: ExtensionAPI) {
 	function applySubagentRecords(
 		records: readonly SubagentUsageRecord[],
 		targetStats: ModelUsageStats,
+		category: "pi-subagents" | "sync-subagent" | "tool-nested" | "compaction" = "pi-subagents",
+		originAtEvent?: string,
 	): void {
+		if (!usageCollector) {
+			// Master switch off (`LLMGATES_TPS=0`) or no TUI collector: do not fall
+			// back to the pre-ledger maps, which would ignore the freeze.
+			return;
+		}
+		if (!usageCollector.enabled(category)) {
+			return;
+		}
 		const fresh = selectFreshSubagentRecords(subagentIngestState, records);
 		if (fresh.length === 0) {
 			return;
 		}
-		recordSubagentUsageRecords(targetStats, fresh);
-		scheduleStatusRefresh(targetStats);
+		let runId: string | undefined;
+		for (const record of fresh) {
+			const meta = parseMetaSourceKeyGranularity(record.sourceKey);
+			if (meta) {
+				usageCollector.bindRun(meta.runId, originAtEvent ?? usageCollector.currentOriginTurnId());
+				runId = meta.runId;
+			}
+		}
+		usageCollector.ingestLegacyRecords(
+			fresh,
+			category,
+			runId,
+			Date.now(),
+			originAtEvent ?? usageCollector.currentOriginTurnId(),
+		);
+		syncStatsFromLedger();
+		if (requestStartMs !== null) {
+			scheduleStatusRefresh(targetStats);
+		} else if (statusCtx) {
+			lastSettledTurnStats = cloneModelUsageStats(turnStats);
+			updateSessionElapsed();
+			setSettledStatus(
+				statusCtx,
+				sessionElapsedSeconds,
+				sessionStats,
+				lastTurnElapsedSeconds,
+				lastSettledTurnStats,
+			);
+		}
 	}
 
-	function ingestSubagentRecords(records: readonly SubagentUsageRecord[]): void {
+	function ingestSubagentRecords(
+		records: readonly SubagentUsageRecord[],
+		category: "pi-subagents" | "sync-subagent" | "tool-nested" | "compaction" = "pi-subagents",
+	): void {
+		const originAtEvent = usageCollector?.currentOriginTurnId();
 		const targetStats = requestStartMs !== null ? turnStats : sessionStats;
-		runUsageTask(() => applySubagentRecords(records, targetStats));
+		runUsageTask(() => applySubagentRecords(records, targetStats, category, originAtEvent));
 	}
 
 	function scanSubagentMetaArtifacts(): void {
@@ -353,22 +437,29 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function showUsageBreakdown(ctx: ExtensionContext, stats: ModelUsageStats, scope: "turn" | "session"): Promise<void> {
-		if (totalModelCalls(stats) === 0) {
-			safeUi(ctx, () => {
-				ctx.ui.notify(
-					scope === "session"
-						? "No model calls recorded in this session."
-						: "No model calls recorded in this turn.",
-					"info",
-				);
-			});
-			return;
-		}
-
 		let options: string[];
 		let title: string;
 		try {
-			options = formatUsageBreakdownOptions(stats);
+			if (usageCollector) {
+				const models =
+					scope === "session" ? usageCollector.sessionModelStats() : usageCollector.turnModelStats();
+				options = formatUsageBreakdownFromLedger(models);
+			} else if (totalModelCalls(stats) === 0) {
+				options = [];
+			} else {
+				options = formatUsageBreakdownOptions(stats);
+			}
+			if (options.length === 0) {
+				safeUi(ctx, () => {
+					ctx.ui.notify(
+						scope === "session"
+							? "No model calls recorded in this session."
+							: "No model calls recorded in this turn.",
+						"info",
+					);
+				});
+				return;
+			}
 			title = formatUsageScopeTitle(scope, stats);
 		} catch (error) {
 			logTpsIssue(`TPS breakdown formatting failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -382,8 +473,14 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function showCallsMenu(ctx: ExtensionContext): Promise<void> {
-		const scope = await ctx.ui.select("Usage scope", ["This turn", "This session"]);
+		const scope = await ctx.ui.select("Usage scope", ["This turn", "This session", "Coverage"]);
 		if (!scope) {
+			return;
+		}
+
+		if (scope === "Coverage") {
+			const lines = formatCoverageLines(usageCollector?.ledger.coverage() ?? []);
+			await ctx.ui.select("Coverage (snapshot; live totals are in the status line)", lines);
 			return;
 		}
 
@@ -419,7 +516,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("calls", {
-		description: "Show per-model calls, token usage, and estimated cost (turn or session)",
+		description: "Show per-model calls, token usage, estimated cost, and a coverage snapshot",
 		handler: async (_args, ctx) => {
 			if (!isPrimaryUiSession(ctx)) {
 				notifyUsageText(ctx);
@@ -452,11 +549,17 @@ export default function (pi: ExtensionAPI) {
 		sessionStartedAtMs = Date.now();
 		subagentIngestState = createSubagentIngestState();
 		sessionRunIds = new Set();
+		usageCollector = null;
+		lastTurnElapsedSeconds = 0;
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
 		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
 		stopSubagentWatcher();
 		sessionArtifactDirs = [];
+		if (isPrimaryUiSession(ctx)) {
+			const sessionId = ctx.sessionManager.getSessionId() ?? `session-${sessionGeneration}`;
+			usageCollector = createUsageCollector(sessionId, sessionId, loadUsagePolicy());
+		}
 		// LLMGATES_TPS_SUBAGENT=0 only skips the IO-costly bridge, watcher, and
 		// meta scan. Synchronous `subagent` / Cursor `Task` results on
 		// tool_execution_end are still counted — they are already in the event
@@ -464,6 +567,7 @@ export default function (pi: ExtensionAPI) {
 		// save IO and would leave usage incomplete.
 		if (
 			isPrimaryUiSession(ctx) &&
+			usageCollector &&
 			isSubagentBridgeEnabled() &&
 			isSubagentToolAvailable(() => pi.getAllTools())
 		) {
@@ -482,15 +586,24 @@ export default function (pi: ExtensionAPI) {
 								}
 							: null,
 					);
+					const originAtEvent = usageCollector?.currentOriginTurnId();
+					const runId = typeof (data as { runId?: unknown }).runId === "string"
+						? (data as { runId: string }).runId
+						: undefined;
+					if (runId) {
+						usageCollector?.bindRun(runId, originAtEvent);
+						sessionRunIds.add(runId);
+					}
 					const targetStats = requestStartMs !== null ? turnStats : sessionStats;
 					runUsageTask(() => {
 						const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity);
 						if (records.length > 0) {
-							applySubagentRecords(records, targetStats);
+							applySubagentRecords(records, targetStats, "pi-subagents", originAtEvent);
 						}
 					});
 				},
 				onRunObserved: (runId) => {
+					usageCollector?.bindRun(runId);
 					ensureSubagentWatcher();
 					sessionRunIds.add(runId);
 					// A child's `_meta.json` is usually already on disk by the time its
@@ -509,10 +622,11 @@ export default function (pi: ExtensionAPI) {
 		ensureSubagentWatcher();
 		for (const runId of extractSubagentRunIdsFromToolExecution(event.toolName, event.result)) {
 			sessionRunIds.add(runId);
+			usageCollector?.bindRun(runId);
 		}
 		const records = extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId);
 		if (records.length > 0) {
-			ingestSubagentRecords(records);
+			ingestSubagentRecords(records, "sync-subagent");
 		}
 		// Inlet D: any other tool that follows pi's `result.usage` convention. Its switch
 		// is checked here rather than at session_start so that turning it off leaves the
@@ -521,7 +635,7 @@ export default function (pi: ExtensionAPI) {
 		if (envFlag("LLMGATES_TPS_TOOL_USAGE") !== false) {
 			const toolUsageRecords = extractToolResultUsage(event.toolName, event.result, event.toolCallId);
 			if (toolUsageRecords.length > 0) {
-				ingestSubagentRecords(toolUsageRecords);
+				ingestSubagentRecords(toolUsageRecords, "tool-nested");
 			}
 		}
 		scheduleSubagentMetaScan();
@@ -548,7 +662,7 @@ export default function (pi: ExtensionAPI) {
 		if (record) {
 			// Manual /compact fires outside a turn and automatic compaction inside one;
 			// ingestSubagentRecords picks the turn or session bucket on its own.
-			ingestSubagentRecords([record]);
+			ingestSubagentRecords([record], "compaction");
 		}
 	}
 
@@ -565,13 +679,14 @@ export default function (pi: ExtensionAPI) {
 		if (!isPrimaryUiSession(ctx)) return;
 		if (!isAssistantMessage(event.message)) return;
 		if (requestStartMs === null) return;
+		if (!usageCollector) return;
 
 		const message = event.message;
-		const targetStats = turnStats;
+		const originTurnId = usageCollector.currentOriginTurnId();
 		runUsageTask(() => {
-			if (tryRecordAssistantUsage(targetStats, message)) {
-				scheduleStatusRefresh(targetStats);
-			}
+			usageCollector?.ingestAssistant(message, Date.now(), originTurnId);
+			syncStatsFromLedger();
+			scheduleStatusRefresh(turnStats);
 		});
 	});
 
@@ -589,7 +704,11 @@ export default function (pi: ExtensionAPI) {
 
 		requestStartMs = Date.now();
 		statusCtx = ctx;
+		usageCollector?.beginTurn();
 		resetTurnStats();
+		if (usageCollector) {
+			syncStatsFromLedger();
+		}
 		setTurnStatus(ctx, 0, turnStats);
 
 		clearRefreshTimer();
@@ -604,10 +723,11 @@ export default function (pi: ExtensionAPI) {
 
 		ensureSubagentWatcher();
 		const turnElapsedSeconds = getTurnElapsedSeconds();
+		lastTurnElapsedSeconds = turnElapsedSeconds;
 
 		requestStartMs = null;
 		statusRefreshScheduled = false;
-		clearRefreshTimer();
+		// Keep the unref'd timer so background child usage can refresh All after parent settle.
 		// Drop pending debounce so a late timer cannot target sessionStats before/after settle merge.
 		if (subagentMetaScanTimer !== undefined) {
 			clearTimeout(subagentMetaScanTimer);
@@ -632,9 +752,13 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 			const settledStats = cloneModelUsageStats(settledTurnStats);
-			mergeModelUsageStats(sessionStats, settledTurnStats);
+			if (usageCollector) {
+				syncStatsFromLedger();
+			} else {
+				mergeModelUsageStats(sessionStats, settledTurnStats);
+			}
 			if (turnStats === settledTurnStats && requestStartMs === null) {
-				lastSettledTurnStats = settledStats;
+				lastSettledTurnStats = usageCollector ? cloneModelUsageStats(turnStats) : settledStats;
 				updateSessionElapsed();
 				setSettledStatus(
 					ctx,
@@ -658,6 +782,8 @@ export default function (pi: ExtensionAPI) {
 		sessionArtifactDirs = [];
 		subagentIngestState = createSubagentIngestState();
 		sessionRunIds = new Set();
+		usageCollector = null;
+		lastTurnElapsedSeconds = 0;
 		const previousStatusCtx = statusCtx;
 		requestStartMs = null;
 		statusCtx = null;

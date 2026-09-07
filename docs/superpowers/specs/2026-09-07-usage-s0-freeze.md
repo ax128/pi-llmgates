@@ -50,7 +50,8 @@
 | 总采集 | `LLMGATES_TPS` | `tps` | 开 | 全部入口停：父 assistant、子代理、压缩、工具嵌套、第三方、持久化写入 |
 | 持久化 | `LLMGATES_TPS_PERSIST` | `tpsPersist` | **关** | 不创建 journal/checkpoint；内存采集可继续（若总开关仍开） |
 | 第三方 adapter | `LLMGATES_TPS_EXT` | `tpsExt` | 开 | 不注册第三方 EventBus 观察；不影响 pi-subagents / 父模型 |
-| pi-subagents | `LLMGATES_TPS_SUBAGENT` | （沿用既有，无新 config 键） | 开 | 新 child observer、跨进程旁路、watcher、补扫关闭；同步 `subagent` / `Task` 工具结果仍计 |
+| pi-subagents IO | `LLMGATES_TPS_SUBAGENT` | （沿用既有，无新 config 键） | 开 | 新 child observer、跨进程旁路、watcher、补扫关闭 |
+| 同步 `subagent` / `Task` | （无独立 env） | — | 随总开关 | 类别 `sync-subagent`，只受 `LLMGATES_TPS` 约束；`SUBAGENT=0` 仍计 |
 | 压缩/分支摘要 | `LLMGATES_TPS_COMPACTION` | （既有） | 开 | 所有入口都不计该类别；无法剥离的混合汇总整段不计并标 partial |
 | 通用工具嵌套 LLM | `LLMGATES_TPS_TOOL_USAGE` | （既有） | 开 | 不计顶层 tool usage；`subagent` / `Task` 例外保持 |
 

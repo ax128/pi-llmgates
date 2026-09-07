@@ -72,6 +72,7 @@ export type UsageExtSourceId = (typeof USAGE_EXT_SOURCE_IDS)[number];
 
 export type UsageSwitchCategory =
 	| "parent-assistant"
+	| "sync-subagent"
 	| "pi-subagents"
 	| "compaction"
 	| "tool-nested"
@@ -143,6 +144,8 @@ export function isUsageCategoryEnabled(
 	if (!policy.collect) return false;
 	switch (category) {
 		case "parent-assistant":
+			return true;
+		case "sync-subagent":
 			return true;
 		case "pi-subagents":
 			// Gates new child observers / watchers / meta scans. Synchronous

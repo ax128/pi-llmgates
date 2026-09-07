@@ -162,6 +162,14 @@ describe("usage S0 policy freeze", () => {
 			expect(isUsageCategoryEnabled("tool-nested", toolOff)).toBe(false);
 			expect(isUsageCategoryEnabled("compaction", toolOff)).toBe(true);
 			expect(isUsageCategoryEnabled("pi-subagents", toolOff)).toBe(true);
+			expect(isUsageCategoryEnabled("sync-subagent", toolOff)).toBe(true);
+
+			delete process.env.LLMGATES_TPS_TOOL_USAGE;
+			process.env.LLMGATES_TPS_SUBAGENT = "0";
+			const subagentIoOff = resolveUsagePolicy(agentDir);
+			expect(isUsageCategoryEnabled("pi-subagents", subagentIoOff)).toBe(false);
+			expect(isUsageCategoryEnabled("sync-subagent", subagentIoOff)).toBe(true);
+			expect(isUsageCategoryEnabled("parent-assistant", subagentIoOff)).toBe(true);
 		} finally {
 			cleanup();
 		}

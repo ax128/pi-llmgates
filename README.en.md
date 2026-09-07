@@ -98,7 +98,7 @@ pi -e npm:@llmgates_api/pi-llmgates-provider
 | `/balance [instance-id]` | Query gateway quota (all instances when no argument is given) |
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | Switch or clear the inference endpoint of **one** model |
 | `/endpoint-setting` | Interactive multi-select to switch endpoints in bulk across instances |
-| `/calls` | Per-model usage and cost breakdown for this turn or this session |
+| `/calls` | Per-model usage and cost for this turn or session, plus a coverage snapshot |
 | `/input-history [status]` | Show the input-history switch, scope, file path and how much is stored |
 | `/input-history on\|off` | Enable or disable persistent input history (writes `config.json`, effective immediately in this pi process) |
 | `/input-history scope <cwd\|global>` | Switch scope: one file per working directory (default) or one shared by all of them |
@@ -344,32 +344,34 @@ Each instance's override lives in **its own file**, `~/.pi/agent/llmgates/2api-m
 
 The TUI extension status line shows:
 
-- While the agent is **running**: only `Turn 17m.19c.$1.78` (turn elapsed · calls · cost)
-- **After the turn finishes or a cancel settles**: `All 1h1m.100c, Turn 30m.20c.$10.10` (`All` is the session's cumulative elapsed time and call count, `Turn` is the current turn); the next turn goes back to `Turn` only
+- While the agent is **running**: only `Turn 17m.19c.~$1.78` (turn elapsed · calls · cost). Parent-session cost is prefixed with `~` when it comes from the local rate table; unknown cost shows `?` rather than a free `$0`.
+- **After the turn finishes or a cancel settles**: `All 1h1m.100c, Turn 30m.20c.~$10.10` (`All` is the session's cumulative elapsed time and call count and **includes this turn's confirmed usage immediately**; `Turn` is the current turn). After the parent settles, the 1s status-line refresh keeps running so late child usage can still update All; `↻ 2s` appears only when the ledger has a `running` / `provisional` producer. The next turn goes back to `Turn` only.
 
-`/calls` shows the per-model breakdown; session cost is available under `/calls` → This session. Behaviour per session mode:
+`/calls` shows the per-model breakdown. This session includes the in-progress turn's confirmed numbers. Coverage is a snapshot taken when the menu opens (pi's `ui.select` cannot live-refresh an open menu); live totals stay on the status line. Behaviour per session mode:
 
 | Mode | `/calls` |
 | --- | --- |
-| TUI | Interactive menu (This turn / This session) |
+| TUI | Interactive menu (This turn / This session / Coverage) |
 | rpc | A text summary; when there are no records it appends *Usage is tracked in the interactive session only.* rather than staying silent |
 | `-p` / json | No UI channel (pi binds no `uiContext`, `ctx.hasUI === false`), so nothing is printed and script stdout stays clean |
 
 ### What is counted
 
-- Parent-session assistant usage is counted at `message_end`.
+- Parent-session assistant usage is counted at `message_end`, after skipping this plugin's `preprocessAssistantMessage` zero-fill. Zeros already filled by the Pi SDK stay unknown; missing fields are not treated as reported.
+- Subagent, compaction and tool usage stay on the parent turn that launched the run, not the turn during which the numbers later arrived. A run observed after session start but before the first `before_agent_start` is attributed to the first turn.
 - Synchronous pi `subagent` / Cursor `Task` tool results and `_meta.json` summaries feed the same counter; scanned directories are `.pi/subagents/artifacts` (pi-subagents ≥ 0.49), the legacy `.pi-subagents/artifacts`, and `subagent-artifacts/` next to the session file.
 - async / background subagents are collected through the `subagent:async-complete` / `subagent:foreground-complete` event bypass: the numbers come from the `usage` / `modelAttempts` / `totalCost` / `tokens` the event carries, and from the `_meta.json` files in the directories above when it carries none. **The `status.json` under pi-subagents' temp root and the child `session.jsonl` are not read** — in the default layout both sit outside the workspace (asyncDir under `os.tmpdir()`, child sessions under `~/.pi/`), and those two fallbacks were only ever allowed to read paths inside the workspace, so they never fired; they and that guard have been removed.
 - The `sessionId` in those events may be a bare ID, the full session file path, or its basename (pi-subagents identifies a session with `getSessionFile() ?? getSessionId()`); all three identity forms are matched.
 - A subagent row carries a **cost** only when the upstream reported money: the first of `usage.cost`, the sum of `modelAttempts[].usage.cost`, and `totalCost.costUsd` that has a value is taken as-is. When only tokens came through (`tokens` / `totalTokens`), **the tokens are counted and the cost is recorded as 0** rather than estimated at the parent model's rate. A subagent row with a low cost in `/calls` is therefore expected, not a lost token count.
 - Any tool that follows pi's convention of hanging a top-level `usage` on its result is counted — this is not tied to any one extension. A result that names its own model gets a `<provider>/<model>` row, merging with the parent model's row when the name matches; one that names no model lands under `tool/<toolName>` with a cost of 0. **A model id that is named but matches no pricing rule is still billed at the default rate** (`resolveModelCostRates` never returns zero rates). Tool names already claimed by the subagent path, or whose usage would double-count, are excluded: `subagent`, `task`, `subagent_wait`, `subagent_supervisor`, `intercom`, plus `@tintinweb/pi-subagents`' `Agent` / `get_subagent_result` / `steer_subagent`.
-- Two deliberate under-counts come with that. The three `@tintinweb/pi-subagents` names are currently **excluded with nobody claiming them** — the event inlet that would is not scheduled — so if you have manually enabled that package's `reportUsage` (off by default), its usage is not counted. And a tool result that pools several LLM calls without reporting a count is recorded as 1 call; its tokens and cost are unaffected. Under-counting is the safe direction; double counting is not.
+- Two deliberate under-counts come with that. The three `@tintinweb/pi-subagents` names are currently **excluded with nobody claiming them** — the event inlet that would is not scheduled — so if you have manually enabled that package's `reportUsage` (off by default), its usage is not counted. And a tool result that pools several LLM calls without reporting a count keeps **calls unknown** (the parser's defaulted `1` is not treated as an exact count); its tokens and cost are unaffected. Under-counting is the safe direction; double counting is not.
 - The LLM call behind a context compaction or a branch summary is counted under a `compact/<model>` row (pi bills it to the session too; we used to miss it). Automatic compaction, manual `/compact`, overflow-recovery compaction and branch summaries are all covered. A compaction owned by another extension (pi flags it `fromHook`) lands under `compact/unknown` and is charged only the cost it reports itself — the model it ran on is invisible to us, so its tokens are never priced at the session model's rate; one that reports no usage at all still cannot be counted.
 - **Structurally out of reach** (not a bug, and there is no switch for it): extensions that spin up a sub-session inside their own process without hanging a `usage` off a tool result the way pi's convention asks — dynamic-workflows, piolium, pi-goal-x and the like. Their messages never join the parent message stream, so pi's own `/cost` misses them too. The same goes for extensions such as `pi-vision` that call a model directly and write their own session entries, for extensions that spawn child pi processes without reporting their usage back (`@mjasnikovs/pi-task`'s `pi --mode json` workers, `pi-goal-list-loop-audit`'s `pi --mode rpc` auditor), and for pi-subagents grandchildren at depth ≥ 2. When pi-subagents is configured with `artifactDir: "temp"` (or has no session file to sit next to), its `_meta.json` files land in the temp root, which is not scanned; the occasional metadata file written as `<runId>_<agent>_meta.json`, without the child index, is not parsed either. A third-party extension that wants to be counted only has to put a top-level `usage` on its tool result — that lands in pi's `/cost` and here at the same time.
+- Set `LLMGATES_TPS=0` to turn off **all** usage collection (parent assistant, subagents, compaction, nested tools). Enabled by default.
 - Set `LLMGATES_TPS_SUBAGENT=0` to turn off the subagent bypass and the meta scan (the parent model and synchronous `subagent` / Cursor `Task` tool results are still counted).
 - Set `LLMGATES_TPS_COMPACTION=0` to stop counting compaction / branch-summary entries.
 - Set `LLMGATES_TPS_TOOL_USAGE=0` to stop counting generic tool-result usage (`subagent` / Cursor `Task` are still counted).
-- Aggregation runs in a background task chain and never blocks the agent loop; counting happens only in an interactive parent session (TUI).
+- Aggregation runs in a background task chain and never blocks the agent loop; counting happens only in an interactive parent session (TUI). This release is an in-memory ledger: reload/restart does not restore usage. Per-response collection for third-party runners and external CLIs is not certified; Coverage will not mark them as supported.
 
 ### Pricing data
 
@@ -513,6 +515,7 @@ Config files live under `~/.pi/agent/llmgates/` (older flat files under `~/.pi/a
 | `LLMGATES_RESTORE_LAST_MODEL` | Overrides `restoreLastModel` (default `true`; `0` / `false` stops fresh sessions from restoring the last used model and thinking level) |
 | `LLMGATES_DEBUG` | `1` / `true` / `yes` enables debug logging |
 | `LLMGATES_BLOCK_PRIVATE_URLS` | `1` / `true` / `yes` rejects private / link-local gateway addresses given as **IP literals** (loopback still allowed); hostnames such as `gateway.local` are not subject to this rule |
+| `LLMGATES_TPS` | Master usage-collection switch (enabled by default; `0` / `false` / `no` stops every inlet) |
 | `LLMGATES_TPS_SUBAGENT` | Enabled by default; `0` / `false` / `no` turns off the subagent async bypass and the meta scan |
 | `LLMGATES_TPS_COMPACTION` | Enabled by default; `0` / `false` / `no` stops counting compaction / branch-summary entry usage |
 | `LLMGATES_TPS_TOOL_USAGE` | Enabled by default; `0` / `false` / `no` stops counting top-level tool-result `usage` (`subagent` / Cursor `Task` are unaffected) |
