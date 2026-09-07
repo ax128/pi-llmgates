@@ -14,7 +14,8 @@
   - 估算费用带 `~`（例如 `Turn 45s.2c.~$0.010`）；未知费用显示 `?`，不会把缺数字写成免费 `$0`。
   - `/calls` 增加 **Coverage** 项：打开菜单时的来源快照。pi 的 `ui.select` 不能在菜单打开后 live 刷新，live 总额仍看状态行。
   - 新增总开关 `LLMGATES_TPS`（默认开）。既有 `LLMGATES_TPS_SUBAGENT` / `_COMPACTION` / `_TOOL_USAGE` 语义不变。
-  - **仍是内存账本**：重载/重启不恢复；第三方运行器与外部 CLI 的逐响应采集未认证，Coverage 不把它们标成已支持。
+  - **仍是内存账本（除非显式打开持久化）**：重载/重启默认不恢复；第三方运行器与外部 CLI 的逐响应采集未认证，Coverage 不把它们标成已支持。
+  - **可选持久化** `LLMGATES_TPS_PERSIST` / `tpsPersist`（默认关）：写入 `llmgates/usage/<root>/`，`0700`/`0600`。ENOSPC 或超限额标 `storage-exhausted` 并停止新增 journal；损坏/未知版本 checkpoint 不覆盖。
 
 ## [0.6.0] — 2026-08-30
 

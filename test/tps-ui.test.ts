@@ -101,7 +101,7 @@ describe("TPS UI", () => {
 		} finally {
 			if (previous === undefined) delete process.env.LLMGATES_TPS_SUBAGENT;
 			else process.env.LLMGATES_TPS_SUBAGENT = previous;
-			handlers.get("session_shutdown")?.({} as never, ctx);
+			await handlers.get("session_shutdown")?.({} as never, ctx);
 		}
 	});
 
@@ -192,7 +192,7 @@ describe("TPS UI", () => {
 			now.mockRestore();
 			if (previous === undefined) delete process.env.LLMGATES_TPS_SUBAGENT;
 			else process.env.LLMGATES_TPS_SUBAGENT = previous;
-			handlers.get("session_shutdown")?.({} as never, ctx);
+			await handlers.get("session_shutdown")?.({} as never, ctx);
 		}
 	});
 });
@@ -279,7 +279,7 @@ describe("/calls outside the primary TUI", () => {
 		} finally {
 			if (previous === undefined) delete process.env.LLMGATES_TPS_SUBAGENT;
 			else process.env.LLMGATES_TPS_SUBAGENT = previous;
-			handlers.get("session_shutdown")?.({} as never, ctx);
+			await handlers.get("session_shutdown")?.({} as never, ctx);
 		}
 	});
 
@@ -303,7 +303,7 @@ describe("/calls outside the primary TUI", () => {
 		} finally {
 			if (previous === undefined) delete process.env.LLMGATES_TPS_SUBAGENT;
 			else process.env.LLMGATES_TPS_SUBAGENT = previous;
-			handlers.get("session_shutdown")?.({} as never, ctx);
+			await handlers.get("session_shutdown")?.({} as never, ctx);
 		}
 	});
 
@@ -324,7 +324,7 @@ describe("/calls outside the primary TUI", () => {
 		} finally {
 			if (previous === undefined) delete process.env.LLMGATES_TPS_SUBAGENT;
 			else process.env.LLMGATES_TPS_SUBAGENT = previous;
-			handlers.get("session_shutdown")?.({} as never, ctx);
+			await handlers.get("session_shutdown")?.({} as never, ctx);
 		}
 	});
 });

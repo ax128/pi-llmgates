@@ -6,6 +6,7 @@ import type { UsageObservationV1 } from "./contract.js";
 import { UsageLedger, type LedgerTotals } from "./ledger.js";
 import {
 	isUsageCategoryEnabled,
+	isUsagePersistEnabled,
 	type UsagePolicy,
 	type UsageSwitchCategory,
 } from "./policy.js";
@@ -15,6 +16,11 @@ import {
 	type ObservationIdentity,
 } from "./legacy-adapter.js";
 import { parseMetaSourceKeyGranularity, type SubagentUsageRecord } from "../tps-subagent.js";
+import {
+	createUsagePersist,
+	persistToLedgerState,
+	type UsagePersist,
+} from "./persist.js";
 
 /** Synthetic bucket before the first parent LLM turn. `/calls` This turn never shows it. */
 const PRE_TURN_ID = "turn-0";
@@ -35,8 +41,10 @@ export class UsageCollector {
 		readonly rootSessionId: string,
 		readonly sessionId: string,
 		readonly policy: UsagePolicy,
+		private readonly persist: UsagePersist,
 	) {
 		this.ledger = new UsageLedger(rootSessionId);
+		this.ledger.setPersistState(persistToLedgerState(persist.status()));
 	}
 
 	beginTurn(): string {
@@ -74,7 +82,7 @@ export class UsageCollector {
 			this.identity("parent-assistant", observedAt, originTurnId),
 		);
 		if (!obs) return false;
-		return this.ledger.ingest(obs).accepted;
+		return this.accept(obs);
 	}
 
 	ingestLegacyRecords(
@@ -101,13 +109,31 @@ export class UsageCollector {
 				childId: record.sourceKey,
 			});
 			if (!obs) continue;
-			if (this.ledger.ingest(obs).accepted) n += 1;
+			if (this.accept(obs)) n += 1;
 		}
 		return n;
 	}
 
 	ingestObservation(observation: UsageObservationV1): boolean {
-		return this.ledger.ingest(observation).accepted;
+		return this.accept(observation);
+	}
+
+	restorePersisted(): void {
+		this.persist.acquireWriter();
+		const loaded = this.persist.load();
+		for (const observation of loaded) {
+			this.ledger.ingest(observation);
+		}
+		this.restoreCounters(loaded);
+		this.ledger.setPersistState(persistToLedgerState(this.persist.status()));
+	}
+
+	async checkpointAndClose(): Promise<void> {
+		if (this.persist.enabled) {
+			const status = await this.persist.writeCheckpoint(() => this.ledger.snapshot());
+			this.ledger.setPersistState(persistToLedgerState(status));
+		}
+		await this.persist.close();
 	}
 
 	sessionTotals(): LedgerTotals {
@@ -124,6 +150,33 @@ export class UsageCollector {
 
 	turnModelStats(originTurnId = assignableOriginTurnId(this.originTurnId)) {
 		return this.ledger.finalizedModelStats({ originTurnId });
+	}
+
+	private restoreCounters(loaded: readonly UsageObservationV1[]): void {
+		let maxSequence = this.sequence;
+		let maxTurn = this.turnSeq;
+		for (const observation of loaded) {
+			if (observation.sequence > maxSequence) maxSequence = observation.sequence;
+			const turnMatch = /^turn-(\d+)$/.exec(observation.originTurnId);
+			if (turnMatch) maxTurn = Math.max(maxTurn, Number(turnMatch[1]));
+			const runId = observation.runId?.trim();
+			if (runId && !this.runOrigin.has(runId)) {
+				this.runOrigin.set(runId, assignableOriginTurnId(observation.originTurnId));
+			}
+		}
+		this.sequence = maxSequence;
+		this.turnSeq = maxTurn;
+		this.originTurnId = maxTurn > 0 ? `turn-${maxTurn}` : PRE_TURN_ID;
+	}
+
+	private accept(observation: UsageObservationV1): boolean {
+		const result = this.ledger.ingest(observation);
+		if (result.accepted && result.reason !== "idempotent" && this.persist.enabled) {
+			void this.persist.append(observation).then((status) => {
+				this.ledger.setPersistState(persistToLedgerState(status));
+			});
+		}
+		return result.accepted;
 	}
 
 	private identity(producerId: string, observedAt: number, originTurnId = this.originTurnId): ObservationIdentity {
@@ -143,7 +196,13 @@ export function createUsageCollector(
 	rootSessionId: string,
 	sessionId: string,
 	policy: UsagePolicy,
+	agentDir = "",
 ): UsageCollector | null {
 	if (!policy.collect) return null;
-	return new UsageCollector(rootSessionId, sessionId, policy);
+	return new UsageCollector(
+		rootSessionId,
+		sessionId,
+		policy,
+		createUsagePersist(agentDir, rootSessionId, isUsagePersistEnabled(policy)),
+	);
 }

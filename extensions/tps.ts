@@ -557,8 +557,22 @@ export default function (pi: ExtensionAPI) {
 		stopSubagentWatcher();
 		sessionArtifactDirs = [];
 		if (isPrimaryUiSession(ctx)) {
-			const sessionId = ctx.sessionManager.getSessionId() ?? `session-${sessionGeneration}`;
-			usageCollector = createUsageCollector(sessionId, sessionId, loadUsagePolicy());
+			const stableSessionId = ctx.sessionManager.getSessionId();
+			const sessionId = stableSessionId ?? `session-${sessionGeneration}`;
+			let agentDir = "";
+			try {
+				agentDir = getAgentDir();
+			} catch {
+				agentDir = "";
+			}
+			usageCollector = createUsageCollector(
+				sessionId,
+				sessionId,
+				loadUsagePolicy(),
+				stableSessionId ? agentDir : "",
+			);
+			usageCollector?.restorePersisted();
+			syncStatsFromLedger();
 		}
 		// LLMGATES_TPS_SUBAGENT=0 only skips the IO-costly bridge, watcher, and
 		// meta scan. Synchronous `subagent` / Cursor `Task` results on
@@ -772,7 +786,7 @@ export default function (pi: ExtensionAPI) {
 		});
 	});
 
-	pi.on("session_shutdown", (_event, ctx) => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
 		sessionActive = false;
@@ -782,6 +796,7 @@ export default function (pi: ExtensionAPI) {
 		sessionArtifactDirs = [];
 		subagentIngestState = createSubagentIngestState();
 		sessionRunIds = new Set();
+		const closing = usageCollector;
 		usageCollector = null;
 		lastTurnElapsedSeconds = 0;
 		const previousStatusCtx = statusCtx;
@@ -791,6 +806,11 @@ export default function (pi: ExtensionAPI) {
 		clearStatus(previousStatusCtx);
 		if (ctx !== previousStatusCtx) {
 			clearStatus(ctx);
+		}
+		if (closing) {
+			// pi awaits this handler (same as input-history). Snapshot+journal
+			// truncation must finish before a /reload session_start restores.
+			await closing.checkpointAndClose();
 		}
 	});
 }
