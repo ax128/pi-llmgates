@@ -41,7 +41,7 @@ import {
 } from "./tps-stats.js";
 import { envFlag } from "./util.js";
 import { createUsageCollector, type UsageCollector } from "./usage/collector.js";
-import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, replaceModelUsageStats } from "./usage/format.js";
+import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, replaceModelUsageStats } from "./usage/format.js";
 import { resolveUsagePolicy } from "./usage/policy.js";
 
 const STATUS_KEY = "tps";
@@ -280,7 +280,7 @@ export default function (pi: ExtensionAPI) {
 	function applySubagentRecords(
 		records: readonly SubagentUsageRecord[],
 		targetStats: ModelUsageStats,
-		category: "pi-subagents" | "tool-nested" | "compaction" = "pi-subagents",
+		category: "pi-subagents" | "sync-subagent" | "tool-nested" | "compaction" = "pi-subagents",
 		originAtEvent?: string,
 	): void {
 		if (!usageCollector) {
@@ -314,6 +314,7 @@ export default function (pi: ExtensionAPI) {
 		if (requestStartMs !== null) {
 			scheduleStatusRefresh(targetStats);
 		} else if (statusCtx) {
+			lastSettledTurnStats = cloneModelUsageStats(turnStats);
 			updateSessionElapsed();
 			setSettledStatus(
 				statusCtx,
@@ -327,7 +328,7 @@ export default function (pi: ExtensionAPI) {
 
 	function ingestSubagentRecords(
 		records: readonly SubagentUsageRecord[],
-		category: "pi-subagents" | "tool-nested" | "compaction" = "pi-subagents",
+		category: "pi-subagents" | "sync-subagent" | "tool-nested" | "compaction" = "pi-subagents",
 	): void {
 		const originAtEvent = usageCollector?.currentOriginTurnId();
 		const targetStats = requestStartMs !== null ? turnStats : sessionStats;
@@ -436,22 +437,29 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function showUsageBreakdown(ctx: ExtensionContext, stats: ModelUsageStats, scope: "turn" | "session"): Promise<void> {
-		if (totalModelCalls(stats) === 0) {
-			safeUi(ctx, () => {
-				ctx.ui.notify(
-					scope === "session"
-						? "No model calls recorded in this session."
-						: "No model calls recorded in this turn.",
-					"info",
-				);
-			});
-			return;
-		}
-
 		let options: string[];
 		let title: string;
 		try {
-			options = formatUsageBreakdownOptions(stats);
+			if (usageCollector) {
+				const models =
+					scope === "session" ? usageCollector.sessionModelStats() : usageCollector.turnModelStats();
+				options = formatUsageBreakdownFromLedger(models);
+			} else if (totalModelCalls(stats) === 0) {
+				options = [];
+			} else {
+				options = formatUsageBreakdownOptions(stats);
+			}
+			if (options.length === 0) {
+				safeUi(ctx, () => {
+					ctx.ui.notify(
+						scope === "session"
+							? "No model calls recorded in this session."
+							: "No model calls recorded in this turn.",
+						"info",
+					);
+				});
+				return;
+			}
 			title = formatUsageScopeTitle(scope, stats);
 		} catch (error) {
 			logTpsIssue(`TPS breakdown formatting failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -559,6 +567,7 @@ export default function (pi: ExtensionAPI) {
 		// save IO and would leave usage incomplete.
 		if (
 			isPrimaryUiSession(ctx) &&
+			usageCollector &&
 			isSubagentBridgeEnabled() &&
 			isSubagentToolAvailable(() => pi.getAllTools())
 		) {
@@ -577,11 +586,19 @@ export default function (pi: ExtensionAPI) {
 								}
 							: null,
 					);
+					const originAtEvent = usageCollector?.currentOriginTurnId();
+					const runId = typeof (data as { runId?: unknown }).runId === "string"
+						? (data as { runId: string }).runId
+						: undefined;
+					if (runId) {
+						usageCollector?.bindRun(runId, originAtEvent);
+						sessionRunIds.add(runId);
+					}
 					const targetStats = requestStartMs !== null ? turnStats : sessionStats;
 					runUsageTask(() => {
 						const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity);
 						if (records.length > 0) {
-							applySubagentRecords(records, targetStats);
+							applySubagentRecords(records, targetStats, "pi-subagents", originAtEvent);
 						}
 					});
 				},
@@ -609,7 +626,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		const records = extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId);
 		if (records.length > 0) {
-			ingestSubagentRecords(records, "pi-subagents");
+			ingestSubagentRecords(records, "sync-subagent");
 		}
 		// Inlet D: any other tool that follows pi's `result.usage` convention. Its switch
 		// is checked here rather than at session_start so that turning it off leaves the

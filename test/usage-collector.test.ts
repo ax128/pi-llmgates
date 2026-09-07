@@ -103,4 +103,46 @@ describe("UsageCollector origin-turn binding", () => {
 			cleanup();
 		}
 	});
+
+	it("attributes each record in a batch to its own bound run origin", () => {
+		const { session, cleanup } = collector();
+		try {
+			session.beginTurn();
+			session.bindRun("aaa");
+			session.beginTurn();
+			session.bindRun("bbb");
+			session.ingestLegacyRecords(
+				[
+					{
+						sourceKey: "meta:aaa",
+						modelLabel: "subagent/worker",
+						calls: 2,
+						input: 10,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						costUsd: 0,
+					},
+					{
+						sourceKey: "meta:bbb",
+						modelLabel: "subagent/worker",
+						calls: 2,
+						input: 20,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						costUsd: 0,
+					},
+				],
+				"pi-subagents",
+				"bbb",
+				3_000,
+				"turn-2",
+			);
+			expect(session.turnTotals("turn-1").input).toBe(10);
+			expect(session.turnTotals("turn-2").input).toBe(20);
+		} finally {
+			cleanup();
+		}
+	});
 });

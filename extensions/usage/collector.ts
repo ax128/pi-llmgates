@@ -14,7 +14,7 @@ import {
 	observationFromLegacyRecord,
 	type ObservationIdentity,
 } from "./legacy-adapter.js";
-import type { SubagentUsageRecord } from "../tps-subagent.js";
+import { parseMetaSourceKeyGranularity, type SubagentUsageRecord } from "../tps-subagent.js";
 
 /** Synthetic bucket before the first parent LLM turn. `/calls` This turn never shows it. */
 const PRE_TURN_ID = "turn-0";
@@ -86,14 +86,18 @@ export class UsageCollector {
 	): number {
 		if (!this.enabled(category)) return 0;
 		let n = 0;
-		const originTurnId = assignableOriginTurnId(
-			(runId && this.runOrigin.get(runId)) || fallbackOriginTurnId,
-		);
 		for (const record of records) {
+			const parsedRunId = parseMetaSourceKeyGranularity(record.sourceKey)?.runId;
+			const boundOrigin =
+				(parsedRunId && this.runOrigin.get(parsedRunId)) ||
+				(runId && this.runOrigin.get(runId)) ||
+				fallbackOriginTurnId;
+			const originTurnId = assignableOriginTurnId(boundOrigin);
+			const recordRunId = (parsedRunId && this.runOrigin.has(parsedRunId) ? parsedRunId : undefined) ?? runId ?? parsedRunId;
 			const obs = observationFromLegacyRecord(record, {
 				...this.identity(record.sourceKey, observedAt, originTurnId),
 				executionId: record.sourceKey,
-				runId: runId ?? record.sourceKey,
+				runId: recordRunId ?? record.sourceKey,
 				childId: record.sourceKey,
 			});
 			if (!obs) continue;

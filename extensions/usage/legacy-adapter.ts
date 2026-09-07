@@ -164,16 +164,19 @@ export function observationFromLegacyRecord(
 		usage.costUsd = record.costUsd;
 		quality.costUsd = "reported";
 	}
-	if (
-		record.calls > 0 &&
-		(record.input > 0 ||
-			record.output > 0 ||
-			record.cacheRead > 0 ||
-			record.cacheWrite > 0 ||
-			record.costUsd > 0)
-	) {
+	const hasEvidence =
+		record.input > 0 ||
+		record.output > 0 ||
+		record.cacheRead > 0 ||
+		record.cacheWrite > 0 ||
+		record.costUsd > 0;
+	if (hasEvidence && record.calls > 1) {
 		usage.calls = record.calls;
 		quality.calls = "reported";
+	} else if (hasEvidence && record.calls >= 1) {
+		// Parser default of 1 is a lower bound, not an exact count (freeze §3).
+		usage.calls = record.calls;
+		quality.calls = "unknown";
 	}
 
 	const kind = options.kind ?? "response";

@@ -207,6 +207,27 @@ describe("UsageLedger", () => {
 		expect(ledger.finalizedTotals().calls).toBe(1);
 	});
 
+	it("keeps unknown calls as a lower bound and excludes other unknown metrics", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(
+			obs({
+				usage: { input: 10, output: 99, calls: 1, costUsd: 1.23 },
+				metricQuality: {
+					input: "reported",
+					output: "unknown",
+					calls: "unknown",
+					costUsd: "unknown",
+				},
+			}),
+		);
+		const totals = ledger.finalizedTotals();
+		expect(totals.input).toBe(10);
+		expect(totals.output).toBe(0);
+		expect(totals.costUsd).toBe(0);
+		expect(totals.calls).toBe(1);
+		expect(totals.callsQuality).toBe("unknown");
+	});
+
 	it("does not add a non-zero unknown metric into confirmed totals", () => {
 		const ledger = new UsageLedger("root-1");
 		ledger.ingest(
@@ -260,5 +281,13 @@ describe("UsageLedger", () => {
 		expect(ledger.coverage().some((row) => row.status === "storage-exhausted" || row.persist === "storage-exhausted")).toBe(
 			true,
 		);
+	});
+
+	it("marks finalized responses final-only rather than live", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(obs());
+		expect(ledger.coverage().every((row) => row.status === "final-only")).toBe(true);
+		ledger.ingest(obs({ phase: "provisional", callId: "live", sequence: 2, producerId: "streaming" }));
+		expect(ledger.coverage().some((row) => row.status === "live")).toBe(true);
 	});
 });

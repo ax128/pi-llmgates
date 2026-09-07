@@ -25,7 +25,7 @@ describe("legacy usage adapter", () => {
 		expect(obs!.usage?.input).toBe(10);
 		expect(obs!.usage?.output).toBe(5);
 		expect(obs!.usage?.cacheRead).toBeUndefined();
-		expect(obs!.metricQuality?.cacheRead).toBe("unknown");
+		expect(obs!.metricQuality?.cacheRead).toBeUndefined();
 		expect(obs!.metricQuality?.input).toBe("reported");
 		expect(obs!.metricQuality?.costUsd).toBe("estimated");
 		expect(obs!.usage?.calls).toBe(1);
@@ -50,9 +50,9 @@ describe("legacy usage adapter", () => {
 			{ ...identity, sequence: 2 },
 		);
 		expect(obs).not.toBeNull();
-		expect(obs!.metricQuality?.input).toBe("unknown");
+		expect(obs!.metricQuality?.input).toBeUndefined();
 		expect(obs!.usage?.input).toBeUndefined();
-		expect(obs!.metricQuality?.costUsd).toBe("unknown");
+		expect(obs!.metricQuality?.costUsd).toBeUndefined();
 	});
 
 	it("marks legacy default calls and zero tokens unknown", () => {
@@ -71,7 +71,7 @@ describe("legacy usage adapter", () => {
 		);
 		expect(obs).not.toBeNull();
 		expect(obs!.usage?.calls).toBeUndefined();
-		expect(obs!.metricQuality?.calls).toBe("unknown");
+		expect(obs!.metricQuality?.calls).toBeUndefined();
 		expect(obs!.usage?.input).toBeUndefined();
 	});
 
@@ -93,7 +93,26 @@ describe("legacy usage adapter", () => {
 		expect(obs!.metricQuality?.input).toBe("reported");
 		expect(obs!.usage?.calls).toBe(3);
 		expect(obs!.metricQuality?.calls).toBe("reported");
-		expect(obs!.metricQuality?.cacheWrite).toBe("unknown");
+		expect(obs!.metricQuality?.cacheWrite).toBeUndefined();
 		expect(obs!.metricQuality?.costUsd).toBe("reported");
+	});
+
+	it("keeps positive legacy token counters but treats a defaulted calls: 1 as unknown", () => {
+		const obs = observationFromLegacyRecord(
+			{
+				sourceKey: "toolusage:abc",
+				modelLabel: "tool/demo",
+				calls: 1,
+				input: 40,
+				output: 8,
+				cacheRead: 0,
+				cacheWrite: 0,
+				costUsd: 0.2,
+			},
+			{ ...identity, producerId: "toolusage:abc" },
+		);
+		expect(obs!.usage?.input).toBe(40);
+		expect(obs!.usage?.calls).toBe(1);
+		expect(obs!.metricQuality?.calls).toBe("unknown");
 	});
 });

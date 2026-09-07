@@ -6,6 +6,7 @@ import {
 	emptyModelUsageEntry,
 	formatCostUsd,
 	formatElapsed,
+	formatTokenCount,
 	type ModelUsageStats,
 } from "../tps-stats.js";
 import type { CoverageRow, LedgerTotals } from "./ledger.js";
@@ -79,4 +80,23 @@ export function formatTpsScopeWithQuality(
 		return `${prefix} ${elapsed}.${calls}`;
 	}
 	return `${prefix} ${elapsed}.${calls}.${formatCostWithQuality(totals.costUsd, totals.costQuality)}`;
+}
+
+export function formatUsageBreakdownFromLedger(models: ReadonlyMap<string, LedgerTotals>): string[] {
+	return [...models.entries()]
+		.sort(
+			(a, b) =>
+				b[1].costUsd - a[1].costUsd ||
+				b[1].output - a[1].output ||
+				b[1].calls - a[1].calls ||
+				a[0].localeCompare(b[0]),
+		)
+		.map(([model, totals]) => {
+			const callLabel = totals.calls === 1 ? "call" : "calls";
+			const calls =
+				totals.callsQuality === "unknown" && totals.calls > 0
+					? `≥${totals.calls.toLocaleString()} ${callLabel}`
+					: `${totals.calls.toLocaleString()} ${callLabel}`;
+			return `${model} · ${calls} · in ${formatTokenCount(totals.input)} out ${formatTokenCount(totals.output)} · cost ${formatCostWithQuality(totals.costUsd, totals.costQuality)}`;
+		});
 }

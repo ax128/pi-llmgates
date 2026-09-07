@@ -215,7 +215,7 @@ export class UsageLedger {
 			const key = `${obs.source.package}\0${obs.producerId}`;
 			const seq = this.producerSeq.get(obs.producerId);
 			const gap = seq ? seq.seen.size < seq.max - seq.min + 1 : false;
-			const status: CoverageStatus = this.coverageStatus(obs.kind, gap);
+			const status: CoverageStatus = this.coverageStatus(obs, gap);
 			const current = byProducer.get(key);
 			const row: CoverageRow = {
 				package: obs.source.package,
@@ -324,8 +324,13 @@ export class UsageLedger {
 				if (!hasUsage && !hasQuality) continue;
 				const q = qualityOf(obs, metric);
 				qualities[metric] = qualities[metric] ? worseQuality(qualities[metric]!, q) : q;
-				if (q === "unknown") continue;
 				const value = obs.usage?.[metric];
+				if (q === "unknown") {
+					if (metric === "calls" && typeof value === "number" && value > 0) {
+						totals.calls += value;
+					}
+					continue;
+				}
 				if (typeof value !== "number") continue;
 				if (metric === "costUsd") totals.costUsd += value;
 				else if (metric === "calls") totals.calls += value;
@@ -347,11 +352,12 @@ export class UsageLedger {
 		return totals;
 	}
 
-	private coverageStatus(kind: UsageKind, gap: boolean): CoverageStatus {
+	private coverageStatus(obs: { kind: UsageKind; phase: UsageObservationV1["phase"] }, gap: boolean): CoverageStatus {
 		if (this.persistState === "storage-exhausted") return "storage-exhausted";
 		if (gap) return "partial";
-		if (kind === "snapshot") return "partial";
-		return "live";
+		if (obs.kind === "snapshot") return "partial";
+		if (obs.phase === "provisional" || obs.phase === "running") return "live";
+		return "final-only";
 	}
 
 	private trackSequence(obs: UsageObservationV1): void {
