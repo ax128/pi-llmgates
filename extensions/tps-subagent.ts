@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync, type Stats } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, statSync, type Stats } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
 	emptyModelUsageEntry,
@@ -37,6 +37,8 @@ export interface SubagentUsageRecord extends SubagentModelUsage {
 	/** Stable dedup key for this logical child/run ingestion source. */
 	sourceKey: string;
 	modelBreakdown?: readonly SubagentModelUsage[];
+	/** When set and greater than the previous value, the same sourceKey replaces rather than first-wins. */
+	revision?: number;
 }
 
 export interface SubagentUsageCounters {
@@ -60,6 +62,16 @@ function normalizeCalls(value: unknown): number {
 		return 0;
 	}
 	return Math.max(0, Math.floor(value));
+}
+
+function lstatRegularFile(path: string): Stats | null {
+	try {
+		const stats = lstatSync(path);
+		if (stats.isSymbolicLink() || !stats.isFile()) return null;
+		return stats;
+	} catch {
+		return null;
+	}
 }
 
 function countersHaveSignal(usage: SubagentUsageCounters): boolean {
@@ -764,6 +776,7 @@ export function collectPiSubagentsMetaUsage(
 	allowedRunIds?: ReadonlySet<string>,
 	onTruncated?: () => void,
 	pendingNullMeta?: Map<string, number>,
+	metaMtimeMs?: Map<string, number>,
 ): SubagentUsageRecord[] {
 	const out: SubagentUsageRecord[] = [];
 	let reads = 0;
@@ -778,24 +791,33 @@ export function collectPiSubagentsMetaUsage(
 			continue;
 		}
 		if (ingested.has(sourceKey) && !pendingNullMeta?.has(sourceKey)) {
-			continue;
+			let grown = false;
+			const existing = lstatRegularFile(metaPath);
+			if (!existing) {
+				continue;
+			}
+			const prev = metaMtimeMs?.get(sourceKey);
+			if (prev !== undefined && existing.mtimeMs > prev) {
+				grown = true;
+			}
+			if (!grown) {
+				continue;
+			}
 		}
-		let stats: Stats;
-		try {
-			stats = statSync(metaPath);
-		} catch {
+		const stats = lstatRegularFile(metaPath);
+		if (!stats) {
 			continue;
 		}
 		if (stats.mtimeMs < sessionStartedAtMs) {
 			continue;
 		}
-		if (ingested.has(sourceKey)) {
-			const pendingMtime = pendingNullMeta?.get(sourceKey);
-			if (pendingMtime === undefined || pendingMtime === stats.mtimeMs) {
+		if (ingested.has(sourceKey) && pendingNullMeta?.has(sourceKey)) {
+			const pendingMtime = pendingNullMeta.get(sourceKey);
+			if (pendingMtime === stats.mtimeMs) {
 				continue;
 			}
 			ingested.delete(sourceKey);
-			pendingNullMeta?.delete(sourceKey);
+			pendingNullMeta.delete(sourceKey);
 		}
 		if (reads >= MAX_SUBAGENT_META_READS_PER_SCAN) {
 			// Not a silent truncation: everything skipped here is still un-ingested,
@@ -808,6 +830,8 @@ export function collectPiSubagentsMetaUsage(
 		const record = readPiSubagentsMetaUsage(metaPath, stats.size);
 		if (record) {
 			pendingNullMeta?.delete(sourceKey);
+			record.revision = Math.floor(stats.mtimeMs);
+			metaMtimeMs?.set(sourceKey, stats.mtimeMs);
 			out.push(record);
 		} else {
 			// Stable null (corrupt JSON, all-zero usage, oversize) must occupy a slot
@@ -828,6 +852,10 @@ export type SubagentIngestState = {
 	perChildRunIds: Set<string>;
 	/** sourceKey → mtimeMs for files ingested as stable-null; mtime change revives them. */
 	pendingNullMeta: Map<string, number>;
+	/** sourceKey → last ingested revision (mtime or tool-progress clock). */
+	revisions: Map<string, number>;
+	/** sourceKey → last successful meta mtime; growth re-reads the file. */
+	metaMtimeMs: Map<string, number>;
 };
 
 export function createSubagentIngestState(): SubagentIngestState {
@@ -836,6 +864,8 @@ export function createSubagentIngestState(): SubagentIngestState {
 		aggregateRunIds: new Set(),
 		perChildRunIds: new Set(),
 		pendingNullMeta: new Map(),
+		revisions: new Map(),
+		metaMtimeMs: new Map(),
 	};
 }
 
@@ -863,27 +893,47 @@ export function selectFreshSubagentRecords(
 ): SubagentUsageRecord[] {
 	const fresh: SubagentUsageRecord[] = [];
 	for (const record of records) {
+		const nextRev = record.revision ?? 0;
 		if (state.keys.has(record.sourceKey)) {
-			continue;
-		}
-		const meta = parseMetaSourceKeyGranularity(record.sourceKey);
-		if (meta) {
-			// A cross-granularity drop is permanent — the run is already counted at the
-			// other granularity — so record the key as seen rather than only skipping
-			// it. `state.keys` is what `collectPiSubagentsMetaUsage` filters candidates
-			// by, and a dropped key that never lands there means the file behind it is
-			// re-stat'd, re-read and re-parsed by every later scan, forever, competing
-			// for the per-scan read budget with files that still have something to add.
-			if (meta.kind === "aggregate" && state.perChildRunIds.has(meta.runId)) {
-				state.keys.add(record.sourceKey);
+			const prevRev = state.revisions.get(record.sourceKey) ?? 0;
+			if (prevRev === 0 || nextRev <= prevRev) {
 				continue;
 			}
-			if (meta.kind === "child" && state.aggregateRunIds.has(meta.runId)) {
-				state.keys.add(record.sourceKey);
-				continue;
+			const meta = parseMetaSourceKeyGranularity(record.sourceKey);
+			if (meta) {
+				if (meta.kind === "aggregate" && state.perChildRunIds.has(meta.runId)) {
+					state.revisions.set(record.sourceKey, nextRev);
+					continue;
+				}
+				if (meta.kind === "child" && state.aggregateRunIds.has(meta.runId)) {
+					state.revisions.set(record.sourceKey, nextRev);
+					continue;
+				}
+			}
+		} else {
+			const meta = parseMetaSourceKeyGranularity(record.sourceKey);
+			if (meta) {
+				// A cross-granularity drop is permanent — the run is already counted at the
+				// other granularity — so record the key as seen rather than only skipping
+				// it. `state.keys` is what `collectPiSubagentsMetaUsage` filters candidates
+				// by, and a dropped key that never lands there means the file behind it is
+				// re-stat'd, re-read and re-parsed by every later scan, forever, competing
+				// for the per-scan read budget with files that still have something to add.
+				if (meta.kind === "aggregate" && state.perChildRunIds.has(meta.runId)) {
+					state.keys.add(record.sourceKey);
+					state.revisions.set(record.sourceKey, nextRev);
+					continue;
+				}
+				if (meta.kind === "child" && state.aggregateRunIds.has(meta.runId)) {
+					state.keys.add(record.sourceKey);
+					state.revisions.set(record.sourceKey, nextRev);
+					continue;
+				}
 			}
 		}
 		state.keys.add(record.sourceKey);
+		state.revisions.set(record.sourceKey, nextRev);
+		const meta = parseMetaSourceKeyGranularity(record.sourceKey);
 		if (meta) {
 			if (meta.kind === "aggregate") {
 				state.aggregateRunIds.add(meta.runId);

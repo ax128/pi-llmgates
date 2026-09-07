@@ -28,6 +28,7 @@ import {
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
 import { extractCompactionUsage, extractToolResultUsage } from "./tps-usage-inlets.js";
+import { extractUsageFromToolUpdate, stampSnapshotRevision } from "./usage/adapters/pi-subagents.js";
 import {
 	cloneModelUsageStats,
 	formatTpsStatusLine,
@@ -93,6 +94,12 @@ export default function (pi: ExtensionAPI) {
 	let unregisterSubagentBridge: (() => void) | undefined;
 	let usageCollector: UsageCollector | null = null;
 	let lastTurnElapsedSeconds = 0;
+	let usageRevisionClock = 0;
+
+	function nextUsageRevision(): number {
+		usageRevisionClock += 1;
+		return usageRevisionClock;
+	}
 
 	function loadUsagePolicy() {
 		try {
@@ -359,6 +366,7 @@ export default function (pi: ExtensionAPI) {
 							truncated = true;
 						},
 						subagentIngestState.pendingNullMeta,
+						subagentIngestState.metaMtimeMs,
 					),
 					targetStats,
 				);
@@ -551,6 +559,7 @@ export default function (pi: ExtensionAPI) {
 		sessionRunIds = new Set();
 		usageCollector = null;
 		lastTurnElapsedSeconds = 0;
+		usageRevisionClock = 0;
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
 		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
@@ -631,6 +640,22 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("tool_execution_update", (event, ctx) => {
+		if (!isPrimaryUiSession(ctx)) return;
+		const { subagent, toolNested } = extractUsageFromToolUpdate(
+			event.toolName,
+			event.partialResult,
+			event.toolCallId,
+			nextUsageRevision(),
+		);
+		if (subagent.length > 0) {
+			ingestSubagentRecords(subagent, "pi-subagents");
+		}
+		if (envFlag("LLMGATES_TPS_TOOL_USAGE") !== false && toolNested.length > 0) {
+			ingestSubagentRecords(toolNested, "tool-nested");
+		}
+	});
+
 	pi.on("tool_execution_end", (event, ctx) => {
 		if (!isPrimaryUiSession(ctx)) return;
 		ensureSubagentWatcher();
@@ -638,7 +663,14 @@ export default function (pi: ExtensionAPI) {
 			sessionRunIds.add(runId);
 			usageCollector?.bindRun(runId);
 		}
-		const records = extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId);
+		const records = stampSnapshotRevision(
+			extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId),
+			nextUsageRevision(),
+		);
+		const toolCallId = event.toolCallId;
+		runUsageTask(() => {
+			usageCollector?.dropProgressForToolCall(toolCallId);
+		});
 		if (records.length > 0) {
 			ingestSubagentRecords(records, "sync-subagent");
 		}
@@ -647,7 +679,10 @@ export default function (pi: ExtensionAPI) {
 		// subagent / task parsing above running — both are zero-IO parses of a payload
 		// that already arrived, so there is no subscription to tear down either way.
 		if (envFlag("LLMGATES_TPS_TOOL_USAGE") !== false) {
-			const toolUsageRecords = extractToolResultUsage(event.toolName, event.result, event.toolCallId);
+			const toolUsageRecords = stampSnapshotRevision(
+				extractToolResultUsage(event.toolName, event.result, event.toolCallId),
+				nextUsageRevision(),
+			);
 			if (toolUsageRecords.length > 0) {
 				ingestSubagentRecords(toolUsageRecords, "tool-nested");
 			}
@@ -761,6 +796,7 @@ export default function (pi: ExtensionAPI) {
 						sessionRunIds,
 						undefined,
 						subagentIngestState.pendingNullMeta,
+						subagentIngestState.metaMtimeMs,
 					),
 					settledTurnStats,
 				);

@@ -57,6 +57,18 @@ export class UsageCollector {
 		return this.originTurnId;
 	}
 
+	dropProgressForToolCall(toolCallId: string): void {
+		const id = toolCallId.trim();
+		if (!id) return;
+		const progressKey = `toolprogress:${id}`;
+		const toolPrefix = `tool:${id}:`;
+		this.ledger.dropWhere((observation) => {
+			const exec = observation.executionId;
+			const epoch = observation.snapshotEpoch ?? "";
+			return exec === progressKey || epoch === progressKey || exec.startsWith(toolPrefix);
+		});
+	}
+
 	bindRun(runId: string, originTurnId = this.originTurnId): void {
 		const id = runId.trim();
 		if (!id || this.runOrigin.has(id)) return;
@@ -102,12 +114,18 @@ export class UsageCollector {
 				fallbackOriginTurnId;
 			const originTurnId = assignableOriginTurnId(boundOrigin);
 			const recordRunId = (parsedRunId && this.runOrigin.has(parsedRunId) ? parsedRunId : undefined) ?? runId ?? parsedRunId;
-			const obs = observationFromLegacyRecord(record, {
-				...this.identity(record.sourceKey, observedAt, originTurnId),
-				executionId: record.sourceKey,
-				runId: recordRunId ?? record.sourceKey,
-				childId: record.sourceKey,
-			});
+			const obs = observationFromLegacyRecord(
+				record,
+				{
+					...this.identity(record.sourceKey, observedAt, originTurnId),
+					executionId: record.sourceKey,
+					runId: recordRunId ?? record.sourceKey,
+					childId: record.sourceKey,
+				},
+				record.revision
+					? { kind: "snapshot", snapshotEpoch: record.sourceKey, revision: record.revision }
+					: undefined,
+			);
 			if (!obs) continue;
 			if (this.accept(obs)) n += 1;
 		}
