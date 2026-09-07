@@ -21,7 +21,6 @@ import {
 	persistToLedgerState,
 	type UsagePersist,
 } from "./persist.js";
-import { declaredThirdPartyCoverage } from "./adapters/third-party.js";
 import { declaredExternalCoverage } from "./adapters/external.js";
 
 /** Synthetic bucket before the first parent LLM turn. `/calls` This turn never shows it. */
@@ -236,7 +235,6 @@ export function createUsageCollector(
 		createUsagePersist(agentDir, rootSessionId, isUsagePersistEnabled(policy)),
 	);
 	if (policy.ext) {
-		for (const row of declaredThirdPartyCoverage(policy)) session.noteCoverage(row);
 		for (const row of declaredExternalCoverage(policy)) session.noteCoverage(row);
 	}
 	return session;

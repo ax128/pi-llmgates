@@ -23,18 +23,18 @@
 
 ### 待实施方案
 
-| 文档 | 说明 |
-| --- | --- |
-| [2026-09-06-all-subagent-live-usage-design.md](./superpowers/specs/2026-09-06-all-subagent-live-usage-design.md) | 全子代理准实时用量方案：统一账本、来源身份、self/subtree 去重、origin-turn 与 idle 更新；核对本机 pi-subagents 0.66.0 / Pi 0.85.1、15 个第三方包及三组外部 CLI。明确本插件可做与上游协作依赖，目标 usage 可见后 P95 ≤ 3s。附 [固定版本源码与目录发现清单](./superpowers/specs/2026-09-06-all-subagent-live-usage-inventory.json)（341 个目录匹配项只是发现结果，不是支持声明） |
-| [2026-09-07-usage-s0-freeze.md](./superpowers/specs/2026-09-07-usage-s0-freeze.md) | S0 冻结：`llmgates:usage:v1` 字段与质量规则、开关名称/默认值、存储限额、peer 不抬上界。实施计划见 [2026-09-07-all-subagent-live-usage.md](./superpowers/plans/2026-09-07-all-subagent-live-usage.md)。兼容证据表见 [2026-09-07-usage-compat-matrix.md](./superpowers/specs/2026-09-07-usage-compat-matrix.md)（不是支持清单） |
+暂无单独待实施稿。全子代理准实时方案已按诚实子集落地，剩余项见下表。
 
 ### 已实施，但仍带未落地的后续项
 
 | 文档 | 说明 | 未落地的部分 |
 | --- | --- | --- |
+| [2026-09-06-all-subagent-live-usage-design.md](./superpowers/specs/2026-09-06-all-subagent-live-usage-design.md) | 全子代理准实时用量方案：统一账本、来源身份、self/subtree 去重、origin-turn 与 idle 更新；核对本机 pi-subagents 0.66.0 / Pi 0.85.1、15 个第三方包及三组外部 CLI。附 [固定版本源码与目录发现清单](./superpowers/specs/2026-09-06-all-subagent-live-usage-inventory.json)（341 个目录匹配项只是发现结果，不是支持声明） | child factory / 全树观测、Pi 0.85.1（peer 不抬）、经 runtime fixture 认证的第三方逐响应、CLI JSONL。probe 与 Coverage `unavailable` **不得**接进 All |
+| [2026-09-07-usage-s0-freeze.md](./superpowers/specs/2026-09-07-usage-s0-freeze.md) | S0 冻结：`llmgates:usage:v1` 字段与质量规则、开关名称/默认值、存储限额、peer 不抬上界。实施计划见 [2026-09-07-all-subagent-live-usage.md](./superpowers/plans/2026-09-07-all-subagent-live-usage.md) | 同上：factory、0.85.1、certified fixture、CLI JSONL |
+| [2026-09-07-usage-compat-matrix.md](./superpowers/specs/2026-09-07-usage-compat-matrix.md) | 兼容证据表：第三方 EventBus probe-only、外部 CLI/job/runs 不解析 stdout。**不是支持清单** | 认证 fixture 齐备前不得把 `agentUsage` / `subagents:completed` 等计入 All/Turn |
 | [2026-08-28-code-optimization-plan.md](./superpowers/specs/2026-08-28-code-optimization-plan.md) | 代码优化方案（**rev 4**，4 条，无 P0，**已全部落地**）。A1 把 LiteLLM 畸形表校验与重复下载修复合并为一个 PR，用进程内、按价格/上下文分维度的 miss 记录，**不向 `pricing.json` 增加字段**（`bfe74c5`）；A2 修复 catalog 单成员脏数据整包失败、守住非空坏目录不得静默清空模型，同一守卫也收紧了 `/login` 的凭证校验（`a3bb1df`）；B1 为 `auth.json` watcher 增加始终运行的低频 reconciliation，指纹门控只加在轮询上、watcher 保持无条件触发（`d9327d1`）；B2 对拍本仓与 pi-tui 的实际宽度安全方向，零生产改动（`e82b5d7`）。§8 记录表逐条留有 §1.3 例外的批准链接、commit/PR 与实际偏差 | §5 的 **ETag 条件请求**前置条件（「A1 落地后复评」）已满足，待另立事项；输入历史 fsync 分级、`/balance` OpenRouter 支持、CLI peer 版本矩阵与 TPS 外部生态复核仍在本方案范围外 |
 | [2026-08-23-input-history-design.md](./superpowers/specs/2026-08-23-input-history-design.md) | 输入历史持久化（`/input-history`）设计方案（rev 2）。记录走 `pi.on("input")`、预填走 `ctx.ui.setEditorComponent()` 装饰器，落盘 `~/.pi/agent/llmgates/input-history/`；含 pi 侧三个坑（会话重放、包装 submit 路径、工厂抛错清空输入框）的取证与规避。§6 为实施记录，§6.1 记录合并前复核的四条修订——其中前两条推翻了本文的原始判断（pi 的历史何时清空、由此掩盖的「进程内历史寿命变短」代价） | §6.2：`pre-publish-gate.md` §4.2 的输入历史清单**尚未在真实 pi 上跑过**，属发版门禁范围 |
-| [2026-08-22-multi-agent-usage-compat-design.md](./superpowers/specs/2026-08-22-multi-agent-usage-compat-design.md) | 多代理生态用量统计兼容方案（rev 3/4/5）。2026-08-22 逐包审查 pi.dev 生态（pi-subagents / @tintinweb/pi-subagents / pi-background-tasks / dynamic-workflows / piolium / pi-goal-x / pi-vision / 压缩类）后，补齐 pi 自身口径中我们缺失的两类来源。**rev 5（2026-08-29）**按当前版本重做了一遍生态复核（pi-subagents 0.59.0 / @tintinweb 0.19.0 等），订正了 `@mjasnikovs/pi-task` 的分类、补入 `pi-goal-list-loop-audit`，并删除了 C 的两条从未生效的文件系统兜底。**P0 三步已全部实施**：§6.1 共享定价助手（`ece1469`）、§4.2 入口 E 压缩 / 分支摘要（`9bca2d8`）、§4.1 入口 D 通用工具结果（`93c1f93`）。含 §3.2 命名空间登记表、§3.3 归属表与 §5 逐条双计论证 | §4.3 入口 F（`@tintinweb` 完成事件）默认不排期；§9 P2① 回填既有 subagent 记录的 cost 需单独决策；§9 的压缩功能验证仍待在门禁里跑 |
+| [2026-08-22-multi-agent-usage-compat-design.md](./superpowers/specs/2026-08-22-multi-agent-usage-compat-design.md) | 多代理生态用量统计兼容方案（rev 3/4/5）。2026-08-22 逐包审查 pi.dev 生态（pi-subagents / @tintinweb/pi-subagents / pi-background-tasks / dynamic-workflows / piolium / pi-goal-x / pi-vision / 压缩类）后，补齐 pi 自身口径中我们缺失的两类来源。**rev 5（2026-08-29）**按当前版本重做了一遍生态复核（pi-subagents 0.59.0 / @tintinweb 0.19.0 等），订正了 `@mjasnikovs/pi-task` 的分类、补入 `pi-goal-list-loop-audit`，并删除了 C 的两条从未生效的文件系统兜底。**P0 三步已全部实施**：§6.1 共享定价助手（`ece1469`）、§4.2 入口 E 压缩 / 分支摘要（`9bca2d8`）、§4.1 入口 D 通用工具结果（`93c1f93`）。含 §3.2 命名空间登记表、§3.3 归属表与 §5 逐条双计论证 | §4.3 入口 F 现为 fail-closed probe（Coverage `unavailable`，不进 All）；§9 P2① 回填既有 subagent 记录的 cost 需单独决策；§9 的压缩功能验证仍待在门禁里跑 |
 
 ### 纯历史存档（无待办）
 

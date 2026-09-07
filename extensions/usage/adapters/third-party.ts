@@ -6,10 +6,7 @@
 
 import type { EventBus } from "@earendil-works/pi-coding-agent";
 import { isPlainObject } from "../../util.js";
-import {
-	USAGE_METRIC_KEYS,
-	type UsageMetricKey,
-} from "../contract.js";
+import { USAGE_METRIC_KEYS } from "../contract.js";
 import {
 	isUsageCategoryEnabled,
 	type UsageExtSourceId,
@@ -136,7 +133,7 @@ export function registerThirdPartyUsageProbes(
 		onCoverage: (row: CoverageRow) => void;
 	},
 ): () => void {
-	if (!isUsageCategoryEnabled("third-party", options.policy)) {
+	if (!options.policy.collect || !options.policy.ext) {
 		return () => {};
 	}
 	const unsubscribers: Array<() => void> = [];
