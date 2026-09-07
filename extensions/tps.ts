@@ -29,6 +29,7 @@ import {
 } from "./tps-subagent.js";
 import { extractCompactionUsage, extractToolResultUsage } from "./tps-usage-inlets.js";
 import { extractUsageFromToolUpdate, stampSnapshotRevision } from "./usage/adapters/pi-subagents.js";
+import { registerThirdPartyUsageProbes } from "./usage/adapters/third-party.js";
 import {
 	cloneModelUsageStats,
 	formatTpsStatusLine,
@@ -92,6 +93,7 @@ export default function (pi: ExtensionAPI) {
 	const subagentWatchers = new Map<string, FSWatcher>();
 	let subagentMetaScanTimer: ReturnType<typeof setTimeout> | undefined;
 	let unregisterSubagentBridge: (() => void) | undefined;
+	let unregisterThirdPartyProbes: (() => void) | undefined;
 	let usageCollector: UsageCollector | null = null;
 	let lastTurnElapsedSeconds = 0;
 	let usageRevisionClock = 0;
@@ -263,10 +265,24 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	/** True only while the ledger still holds running/provisional producers. */
+	function hasIdleProducers(): boolean {
+		return usageCollector?.ledger.hasActiveProducers() ?? false;
+	}
+
 	function refreshStatus(): void {
 		if (!statusCtx) return;
 		if (requestStartMs !== null) {
 			scheduleStatusRefresh();
+			return;
+		}
+		// Idle tick: pi re-renders the whole footer on every setStatus, so this
+		// must not run unconditionally for the rest of the session. Records that
+		// land after settle already push the footer from applySubagentRecords;
+		// the interval only exists to keep the ↻ marker honest while a producer
+		// is still live, and stops itself once none is.
+		if (!hasIdleProducers()) {
+			clearRefreshTimer();
 			return;
 		}
 		updateSessionElapsed();
@@ -487,7 +503,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (scope === "Coverage") {
-			const lines = formatCoverageLines(usageCollector?.ledger.coverage() ?? []);
+			const lines = formatCoverageLines(usageCollector?.coverageRows() ?? []);
 			await ctx.ui.select("Coverage (snapshot; live totals are in the status line)", lines);
 			return;
 		}
@@ -562,6 +578,8 @@ export default function (pi: ExtensionAPI) {
 		usageRevisionClock = 0;
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
+		unregisterThirdPartyProbes?.();
+		unregisterThirdPartyProbes = undefined;
 		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
 		stopSubagentWatcher();
 		sessionArtifactDirs = [];
@@ -574,14 +592,21 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				agentDir = "";
 			}
+			const usagePolicy = loadUsagePolicy();
 			usageCollector = createUsageCollector(
 				sessionId,
 				sessionId,
-				loadUsagePolicy(),
+				usagePolicy,
 				stableSessionId ? agentDir : "",
 			);
 			usageCollector?.restorePersisted();
 			syncStatsFromLedger();
+			if (usageCollector && pi.events) {
+				unregisterThirdPartyProbes = registerThirdPartyUsageProbes(pi.events, {
+					policy: usagePolicy,
+					onCoverage: (row) => usageCollector?.noteCoverage(row),
+				});
+			}
 		}
 		// LLMGATES_TPS_SUBAGENT=0 only skips the IO-costly bridge, watcher, and
 		// meta scan. Synchronous `subagent` / Cursor `Task` results on
@@ -776,7 +801,11 @@ export default function (pi: ExtensionAPI) {
 
 		requestStartMs = null;
 		statusRefreshScheduled = false;
-		// Keep the unref'd timer so background child usage can refresh All after parent settle.
+		// Stop the 1s footer tick unless a producer is still live; refreshStatus
+		// clears it on its own once the last one finalizes.
+		if (!hasIdleProducers()) {
+			clearRefreshTimer();
+		}
 		// Drop pending debounce so a late timer cannot target sessionStats before/after settle merge.
 		if (subagentMetaScanTimer !== undefined) {
 			clearTimeout(subagentMetaScanTimer);
@@ -825,6 +854,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
+		unregisterThirdPartyProbes?.();
+		unregisterThirdPartyProbes = undefined;
 		sessionActive = false;
 		sessionGeneration += 1;
 		clearRefreshTimer();

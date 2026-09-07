@@ -3,7 +3,7 @@
  */
 
 import type { UsageObservationV1 } from "./contract.js";
-import { UsageLedger, type LedgerTotals } from "./ledger.js";
+import { UsageLedger, type CoverageRow, type LedgerTotals } from "./ledger.js";
 import {
 	isUsageCategoryEnabled,
 	isUsagePersistEnabled,
@@ -21,6 +21,7 @@ import {
 	persistToLedgerState,
 	type UsagePersist,
 } from "./persist.js";
+import { declaredExternalCoverage } from "./adapters/external.js";
 
 /** Synthetic bucket before the first parent LLM turn. `/calls` This turn never shows it. */
 const PRE_TURN_ID = "turn-0";
@@ -36,6 +37,7 @@ export class UsageCollector {
 	private originTurnId = PRE_TURN_ID;
 	private sequence = 0;
 	private readonly runOrigin = new Map<string, string>();
+	private extraCoverage: CoverageRow[] = [];
 
 	constructor(
 		readonly rootSessionId: string,
@@ -146,6 +148,15 @@ export class UsageCollector {
 		this.ledger.setPersistState(persistToLedgerState(this.persist.status()));
 	}
 
+	noteCoverage(row: CoverageRow): void {
+		this.extraCoverage = this.extraCoverage.filter((item) => item.producerId !== row.producerId);
+		this.extraCoverage.push(row);
+	}
+
+	coverageRows(): CoverageRow[] {
+		return [...this.ledger.coverage(), ...this.extraCoverage];
+	}
+
 	async checkpointAndClose(): Promise<void> {
 		if (this.persist.enabled) {
 			const status = await this.persist.writeCheckpoint(() => this.ledger.snapshot());
@@ -217,10 +228,14 @@ export function createUsageCollector(
 	agentDir = "",
 ): UsageCollector | null {
 	if (!policy.collect) return null;
-	return new UsageCollector(
+	const session = new UsageCollector(
 		rootSessionId,
 		sessionId,
 		policy,
 		createUsagePersist(agentDir, rootSessionId, isUsagePersistEnabled(policy)),
 	);
+	if (policy.ext) {
+		for (const row of declaredExternalCoverage(policy)) session.noteCoverage(row);
+	}
+	return session;
 }

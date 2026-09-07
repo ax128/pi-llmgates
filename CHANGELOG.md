@@ -10,13 +10,14 @@
 
 ### 变更
 
-- **用量统计改走内存账本，状态行与 `/calls` 的口径跟着变。** 父会话 assistant 跳过本插件 `preprocessAssistantMessage` 补零（SDK 已预建的 0 当 unknown）；This session 立即含本轮已确认用量；子代理/压缩/工具用量归到**启动该 run 的父轮**，而不是数字稍后到达的那一轮。父会话 settle 后状态行仍会 idle 刷新，方便后台子代理继续入账。
-  - 估算费用带 `~`（例如 `Turn 45s.2c.~$0.010`）；未知费用显示 `?`，不会把缺数字写成免费 `$0`。
+- **用量统计改走内存账本，状态行与 `/calls` 的口径跟着变。** 父会话 assistant 跳过本插件 `preprocessAssistantMessage` 补零（SDK 已预建的 0 当 unknown）；This session 立即含本轮已确认用量；子代理/压缩/工具用量归到**启动该 run 的父轮**，而不是数字稍后到达的那一轮。父会话 settle 后 1s 状态行刷新即停（与 0.6.0 一致，避免空闲时每秒重绘）；后台子代理稍后入账时状态行随事件更新。
+  - 估算费用带 `~`（例如 `Turn 45s.2c.~$0.010`）；未知费用显示 `?`，不会把缺数字写成免费 `$0`；调用数只能确认下界时显示 `≥N`。
   - `/calls` 增加 **Coverage** 项：打开菜单时的来源快照。pi 的 `ui.select` 不能在菜单打开后 live 刷新，live 总额仍看状态行。
   - 新增总开关 `LLMGATES_TPS`（默认开）。既有 `LLMGATES_TPS_SUBAGENT` / `_COMPACTION` / `_TOOL_USAGE` 语义不变。
   - **仍是内存账本（除非显式打开持久化）**：重载/重启默认不恢复；第三方运行器与外部 CLI 的逐响应采集未认证，Coverage 不把它们标成已支持。
   - **可选持久化** `LLMGATES_TPS_PERSIST` / `tpsPersist`（默认关）：写入 `llmgates/usage/<root>/`，`0700`/`0600`。ENOSPC 或超限额标 `storage-exhausted` 并停止新增 journal；损坏/未知版本 checkpoint 不覆盖。
   - **pi-subagents 插件侧观测**：消费 `tool_execution_update`；增长中的 `_meta.json` 按 mtime 做快照替换。nested/fork/helper 仍为 partial——没有公开 child factory usage 钩子，不把调研清单写成已支持。
+  - **第三方 / 外部 CLI**：fail-closed EventBus probe；见到 usage 形 payload 时 Coverage 标 `unavailable`，**不进入** All。没装这些包、也没收到对应事件时，Coverage 不预列未安装包。无 Codex/Claude/Cursor JSONL fixture。
 
 ## [0.6.0] — 2026-08-30
 
