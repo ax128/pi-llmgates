@@ -265,10 +265,24 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	/** True only while the ledger still holds running/provisional producers. */
+	function hasIdleProducers(): boolean {
+		return usageCollector?.ledger.hasActiveProducers() ?? false;
+	}
+
 	function refreshStatus(): void {
 		if (!statusCtx) return;
 		if (requestStartMs !== null) {
 			scheduleStatusRefresh();
+			return;
+		}
+		// Idle tick: pi re-renders the whole footer on every setStatus, so this
+		// must not run unconditionally for the rest of the session. Records that
+		// land after settle already push the footer from applySubagentRecords;
+		// the interval only exists to keep the ↻ marker honest while a producer
+		// is still live, and stops itself once none is.
+		if (!hasIdleProducers()) {
+			clearRefreshTimer();
 			return;
 		}
 		updateSessionElapsed();
@@ -578,17 +592,18 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				agentDir = "";
 			}
+			const usagePolicy = loadUsagePolicy();
 			usageCollector = createUsageCollector(
 				sessionId,
 				sessionId,
-				loadUsagePolicy(),
+				usagePolicy,
 				stableSessionId ? agentDir : "",
 			);
 			usageCollector?.restorePersisted();
 			syncStatsFromLedger();
 			if (usageCollector && pi.events) {
 				unregisterThirdPartyProbes = registerThirdPartyUsageProbes(pi.events, {
-					policy: loadUsagePolicy(),
+					policy: usagePolicy,
 					onCoverage: (row) => usageCollector?.noteCoverage(row),
 				});
 			}
@@ -786,7 +801,11 @@ export default function (pi: ExtensionAPI) {
 
 		requestStartMs = null;
 		statusRefreshScheduled = false;
-		// Keep the unref'd timer so background child usage can refresh All after parent settle.
+		// Stop the 1s footer tick unless a producer is still live; refreshStatus
+		// clears it on its own once the last one finalizes.
+		if (!hasIdleProducers()) {
+			clearRefreshTimer();
+		}
 		// Drop pending debounce so a late timer cannot target sessionStats before/after settle merge.
 		if (subagentMetaScanTimer !== undefined) {
 			clearTimeout(subagentMetaScanTimer);

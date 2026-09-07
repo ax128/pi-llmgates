@@ -228,7 +228,7 @@ describe("UsageCollector persistence restore", () => {
 			const persist = createUsagePersist(agentDir, "root-1", true);
 			const second = new UsageCollector("root-1", "sess-1", policy, persist);
 			second.restorePersisted();
-			const journalPath = (persist as { journalPath: string }).journalPath;
+			const journalPath = (persist as unknown as { journalPath: string }).journalPath;
 			const before = readFileSync(journalPath, "utf8");
 			for (const observation of persist.load()) {
 				second.ingestObservation(observation);

@@ -345,7 +345,7 @@ Each instance's override lives in **its own file**, `~/.pi/agent/llmgates/2api-m
 The TUI extension status line shows:
 
 - While the agent is **running**: only `Turn 17m.19c.~$1.78` (turn elapsed · calls · cost). Parent-session cost is prefixed with `~` when it comes from the local rate table; unknown cost shows `?` rather than a free `$0`.
-- **After the turn finishes or a cancel settles**: `All 1h1m.100c, Turn 30m.20c.~$10.10` (`All` is the session's cumulative elapsed time and call count and **includes this turn's confirmed usage immediately**; `Turn` is the current turn). After the parent settles, the 1s status-line refresh keeps running so late child usage can still update All; `↻ 2s` appears only when the ledger has a `running` / `provisional` producer. The next turn goes back to `Turn` only.
+- **After the turn finishes or a cancel settles**: `All 1h1m.100c, Turn 30m.20c.~$10.10` (`All` is the session's cumulative elapsed time and call count and **includes this turn's confirmed usage immediately**; `Turn` is the current turn). The 1s status-line tick stops once the parent settles; late child usage updates the line as each event arrives, not on a timer. The tick keeps going, with `↻ 2s` appended, only while the ledger still has a `running` / `provisional` producer. When the exact call count cannot be confirmed (e.g. a subagent result reports tokens but not turns) it is shown as a lower bound `≥N`. The next turn goes back to `Turn` only.
 
 `/calls` shows the per-model breakdown. This session includes the in-progress turn's confirmed numbers. Coverage is a snapshot taken when the menu opens (pi's `ui.select` cannot live-refresh an open menu); live totals stay on the status line. Behaviour per session mode:
 

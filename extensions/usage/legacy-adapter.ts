@@ -12,9 +12,12 @@ import {
 import { qualityFromRawUsage } from "./quality.js";
 import { estimateCostFromRates } from "../tps-stats.js";
 import type { SubagentUsageRecord } from "../tps-subagent.js";
+import packageJson from "../../package.json" with { type: "json" };
 
-const PACKAGE_NAME = "@llmgates_api/pi-llmgates-provider";
-const PACKAGE_VERSION = "0.6.0";
+// Same source as catalog.ts USER_AGENT: `source.version` is persisted into
+// journals and shown in Coverage, so it must track the published version.
+const PACKAGE_NAME: string = packageJson.name;
+const PACKAGE_VERSION: string = packageJson.version;
 
 export interface ObservationIdentity {
 	rootSessionId: string;

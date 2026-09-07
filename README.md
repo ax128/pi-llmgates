@@ -343,7 +343,7 @@ pi
 TUI 扩展状态行：
 
 - agent **运行中**：仅 `Turn 17m.19c.~$1.78`（本轮时长 · 调用数 · 费用）。父会话费用来自定价表估算时带 `~`；无法判断时显示 `?`，不会把未知标成免费 `$0`。
-- **跑完或取消 settle 后**：`All 1h1m.100c, Turn 30m.20c.~$10.10`（`All` 为 session 累计时长与调用数，**立即含本轮已确认用量**，不必等下一轮；`Turn` 为本轮）。父会话已 settle、后台子代理仍可能入账时，1s 状态行刷新会继续走；仅当账本里有 `running` / `provisional` producer 时才附 `↻ 2s`。下一轮开始时恢复为仅 `Turn`。
+- **跑完或取消 settle 后**：`All 1h1m.100c, Turn 30m.20c.~$10.10`（`All` 为 session 累计时长与调用数，**立即含本轮已确认用量**，不必等下一轮；`Turn` 为本轮）。父会话 settle 后 1s 刷新即停；后台子代理稍后入账时状态行按到达事件更新，不靠定时器。仅当账本里仍有 `running` / `provisional` producer 时刷新才继续并附 `↻ 2s`。调用数无法确认精确值时显示下界 `≥N`（例如子代理结果只带 token 不带次数）。下一轮开始时恢复为仅 `Turn`。
 
 `/calls` 查看 per-model 明细。This session 在本轮尚未 settle 时也含本轮已确认数字。Coverage 是打开菜单那一瞬间的来源快照（pi 的 `ui.select` 不能在菜单打开后 live 刷新），live 总额仍看状态行。不同会话模式下的行为：
 

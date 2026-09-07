@@ -109,13 +109,17 @@ export function resolveUsagePolicy(agentDir: string): UsagePolicy {
 	let fileTps: boolean | undefined;
 	let filePersist: boolean | undefined;
 	let fileExt: boolean | undefined;
-	try {
-		const file = loadValidatedConfigFile(agentDir);
-		if (typeof file.tps === "boolean") fileTps = file.tps;
-		if (typeof file.tpsPersist === "boolean") filePersist = file.tpsPersist;
-		if (typeof file.tpsExt === "boolean") fileExt = file.tpsExt;
-	} catch {
-		// Malformed config must not disable collection or enable persistence.
+	// An empty agentDir would resolve `config.json` against process.cwd(); only
+	// env flags apply then.
+	if (agentDir.trim()) {
+		try {
+			const file = loadValidatedConfigFile(agentDir);
+			if (typeof file.tps === "boolean") fileTps = file.tps;
+			if (typeof file.tpsPersist === "boolean") filePersist = file.tpsPersist;
+			if (typeof file.tpsExt === "boolean") fileExt = file.tpsExt;
+		} catch {
+			// Malformed config must not disable collection or enable persistence.
+		}
 	}
 
 	const disabledExtSources = new Set<UsageExtSourceId>();

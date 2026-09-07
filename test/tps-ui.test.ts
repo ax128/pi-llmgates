@@ -195,6 +195,71 @@ describe("TPS UI", () => {
 			await handlers.get("session_shutdown")?.({} as never, ctx);
 		}
 	});
+
+	it("stops the 1s footer tick after settle when no producer is still live", async () => {
+		// pi calls ui.requestRender() on every setStatus, so an interval that keeps
+		// firing after settle would re-render the footer once a second for the rest
+		// of the session. Fake only the interval: everything else stays real.
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const handlers = new Map<
+			string,
+			(event: never, ctx: ExtensionContext) => void
+		>();
+		const statuses: string[] = [];
+		const pi = {
+			on(
+				event: string,
+				handler: (event: never, ctx: ExtensionContext) => void,
+			) {
+				handlers.set(event, handler);
+			},
+			registerCommand() {},
+			getAllTools: () => [],
+		} as unknown as ExtensionAPI;
+		const ctx = {
+			hasUI: true,
+			mode: "tui",
+			cwd: process.cwd(),
+			sessionManager: { getSessionId: () => "session-1" },
+			ui: {
+				theme: { fg: (_color: string, text: string) => text },
+				setStatus: (_key: string, text?: string) => {
+					if (text) statuses.push(text);
+				},
+				notify: () => {},
+			},
+		} as unknown as ExtensionContext;
+
+		const previous = process.env.LLMGATES_TPS_SUBAGENT;
+		process.env.LLMGATES_TPS_SUBAGENT = "0";
+		try {
+			tpsExtension(pi);
+			handlers.get("session_start")?.({} as never, ctx);
+			handlers.get("before_agent_start")?.({} as never, ctx);
+			handlers.get("message_end")?.(USAGE_MESSAGE as never, ctx);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			// While the turn runs the tick schedules a refresh (microtask).
+			const beforeTick = statuses.length;
+			vi.advanceTimersByTime(1000);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(statuses.length).toBeGreaterThan(beforeTick);
+
+			handlers.get("agent_settled")?.({} as never, ctx);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(statuses.at(-1)).toMatch(/^All /);
+
+			const afterSettle = statuses.length;
+			vi.advanceTimersByTime(10_000);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(statuses.length).toBe(afterSettle);
+		} finally {
+			if (previous === undefined) delete process.env.LLMGATES_TPS_SUBAGENT;
+			else process.env.LLMGATES_TPS_SUBAGENT = previous;
+			await handlers.get("session_shutdown")?.({} as never, ctx);
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe("/calls outside the primary TUI", () => {

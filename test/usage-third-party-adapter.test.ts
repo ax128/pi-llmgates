@@ -11,19 +11,21 @@ import type { EventBus } from "@earendil-works/pi-coding-agent";
 
 function fakeEvents(): { events: EventBus; emit: (name: string, data: unknown) => void } {
 	const handlers = new Map<string, Set<(data: unknown) => void>>();
-	return {
-		events: {
-			on(name: string, handler: (data: unknown) => void) {
-				const set = handlers.get(name) ?? new Set();
-				set.add(handler);
-				handlers.set(name, set);
-				return () => set.delete(handler);
-			},
-		} as EventBus,
-		emit(name, data) {
-			for (const handler of handlers.get(name) ?? []) handler(data);
-		},
+	const emit = (name: string, data: unknown) => {
+		for (const handler of handlers.get(name) ?? []) handler(data);
 	};
+	const events: EventBus = {
+		on(name, handler) {
+			const set = handlers.get(name) ?? new Set();
+			set.add(handler);
+			handlers.set(name, set);
+			return () => {
+				set.delete(handler);
+			};
+		},
+		emit,
+	};
+	return { events, emit };
 }
 
 describe("third-party usage probes", () => {
