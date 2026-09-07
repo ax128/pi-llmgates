@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync, type Stats } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, statSync, type Stats } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
 	emptyModelUsageEntry,
@@ -62,6 +62,16 @@ function normalizeCalls(value: unknown): number {
 		return 0;
 	}
 	return Math.max(0, Math.floor(value));
+}
+
+function lstatRegularFile(path: string): Stats | null {
+	try {
+		const stats = lstatSync(path);
+		if (stats.isSymbolicLink() || !stats.isFile()) return null;
+		return stats;
+	} catch {
+		return null;
+	}
 }
 
 function countersHaveSignal(usage: SubagentUsageCounters): boolean {
@@ -782,23 +792,20 @@ export function collectPiSubagentsMetaUsage(
 		}
 		if (ingested.has(sourceKey) && !pendingNullMeta?.has(sourceKey)) {
 			let grown = false;
-			try {
-				const existing = statSync(metaPath);
-				const prev = metaMtimeMs?.get(sourceKey);
-				if (prev !== undefined && existing.mtimeMs > prev) {
-					grown = true;
-				}
-			} catch {
+			const existing = lstatRegularFile(metaPath);
+			if (!existing) {
 				continue;
+			}
+			const prev = metaMtimeMs?.get(sourceKey);
+			if (prev !== undefined && existing.mtimeMs > prev) {
+				grown = true;
 			}
 			if (!grown) {
 				continue;
 			}
 		}
-		let stats: Stats;
-		try {
-			stats = statSync(metaPath);
-		} catch {
+		const stats = lstatRegularFile(metaPath);
+		if (!stats) {
 			continue;
 		}
 		if (stats.mtimeMs < sessionStartedAtMs) {
@@ -891,6 +898,17 @@ export function selectFreshSubagentRecords(
 			const prevRev = state.revisions.get(record.sourceKey) ?? 0;
 			if (prevRev === 0 || nextRev <= prevRev) {
 				continue;
+			}
+			const meta = parseMetaSourceKeyGranularity(record.sourceKey);
+			if (meta) {
+				if (meta.kind === "aggregate" && state.perChildRunIds.has(meta.runId)) {
+					state.revisions.set(record.sourceKey, nextRev);
+					continue;
+				}
+				if (meta.kind === "child" && state.aggregateRunIds.has(meta.runId)) {
+					state.revisions.set(record.sourceKey, nextRev);
+					continue;
+				}
 			}
 		} else {
 			const meta = parseMetaSourceKeyGranularity(record.sourceKey);

@@ -667,6 +667,10 @@ export default function (pi: ExtensionAPI) {
 			extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId),
 			nextUsageRevision(),
 		);
+		const toolCallId = event.toolCallId;
+		runUsageTask(() => {
+			usageCollector?.dropProgressForToolCall(toolCallId);
+		});
 		if (records.length > 0) {
 			ingestSubagentRecords(records, "sync-subagent");
 		}

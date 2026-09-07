@@ -28,7 +28,10 @@ export function extractUsageFromToolUpdate(
 ): { subagent: SubagentUsageRecord[]; toolNested: SubagentUsageRecord[] } {
 	return {
 		subagent: stampSnapshotRevision(
-			extractSubagentUsageFromToolExecution(toolName, partialResult, toolCallId),
+			extractSubagentUsageFromToolExecution(toolName, partialResult, toolCallId).map((record) => ({
+				...record,
+				sourceKey: `toolprogress:${toolCallId}`,
+			})),
 			revision,
 		),
 		toolNested: stampSnapshotRevision(

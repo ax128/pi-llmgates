@@ -261,6 +261,12 @@ export class UsageLedger {
 		return [...this.records.values()].map((row) => row.observation);
 	}
 
+	dropWhere(predicate: (observation: UsageObservationV1) => boolean): void {
+		for (const [key, row] of [...this.records]) {
+			if (predicate(row.observation)) this.records.delete(key);
+		}
+	}
+
 	finalizedModelStats(filter: { originTurnId?: string } = {}): Map<string, LedgerTotals> {
 		const groups = new Map<string, UsageObservationV1[]>();
 		for (const obs of this.finalizedRecords()) {

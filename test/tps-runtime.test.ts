@@ -427,6 +427,53 @@ describe("tps runtime subagent ordering", () => {
 		}
 	});
 
+	it("does not add a top-level update usage on top of a details.results end payload", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-tool-update-shape-"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			runtime.emitNow("tool_execution_update", {
+				toolName: "subagent",
+				toolCallId: "call-mixed",
+				partialResult: {
+					usage: { input: 40, output: 8, turns: 1 },
+					model: "partial-model",
+				},
+			});
+			runtime.emitNow("tool_execution_end", {
+				toolName: "subagent",
+				toolCallId: "call-mixed",
+				result: {
+					details: {
+						runId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						results: [
+							{
+								agent: "worker",
+								index: 0,
+								model: "end-model",
+								usage: { turns: 1, input: 40, output: 8 },
+							},
+						],
+					},
+				},
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			const calls = runtime.commands.get("calls")!;
+			runtime.scopeChoices.push("This turn");
+			await calls.handler("", runtime.ctx);
+			const rows = runtime.selections[0] ?? [];
+			const tokenLines = rows.filter((line) => line.includes("in 40"));
+			expect(tokenLines).toHaveLength(1);
+			expect(rows.some((line) => line.includes("partial-model"))).toBe(false);
+			expect(rows.some((line) => line.includes("end-model"))).toBe(true);
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("stops re-queuing the truncated meta scan once it can no longer make progress", async () => {
 		// The re-queue exists because a backlog already on disk emits no watcher or
 		// tool event of its own. Its gate must be forward progress in `ingested`, not

@@ -845,6 +845,37 @@ describe("tps subagent usage", () => {
 		expect(state2.keys.has(aggregate.sourceKey)).toBe(true);
 	});
 
+	it("does not revive a cross-granularity drop when the suppressed key's revision grows", () => {
+		const state = createSubagentIngestState();
+		const aggregate = {
+			sourceKey: `meta:${UUID_NORM}`,
+			modelLabel: "subagent/parallel",
+			calls: 4,
+			input: 100,
+			output: 50,
+			cacheRead: 0,
+			cacheWrite: 0,
+			costUsd: 0.01,
+			revision: 1,
+		};
+		const child = {
+			sourceKey: `meta:${UUID_NORM}:reviewer:0`,
+			modelLabel: "llmgates/gpt-5.6-sol",
+			calls: 1,
+			input: 25,
+			output: 10,
+			cacheRead: 0,
+			cacheWrite: 0,
+			costUsd: 0.002,
+			revision: 1,
+		};
+		expect(selectFreshSubagentRecords(state, [aggregate])).toEqual([aggregate]);
+		expect(selectFreshSubagentRecords(state, [child])).toEqual([]);
+		expect(
+			selectFreshSubagentRecords(state, [{ ...child, input: 80, revision: 2 }]),
+		).toEqual([]);
+	});
+
 	it("selectFreshSubagentRecords replaces the same sourceKey when revision grows", () => {
 		const state = createSubagentIngestState();
 		const first = {

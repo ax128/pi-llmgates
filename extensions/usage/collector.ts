@@ -57,6 +57,18 @@ export class UsageCollector {
 		return this.originTurnId;
 	}
 
+	dropProgressForToolCall(toolCallId: string): void {
+		const id = toolCallId.trim();
+		if (!id) return;
+		const progressKey = `toolprogress:${id}`;
+		const toolPrefix = `tool:${id}:`;
+		this.ledger.dropWhere((observation) => {
+			const exec = observation.executionId;
+			const epoch = observation.snapshotEpoch ?? "";
+			return exec === progressKey || epoch === progressKey || exec.startsWith(toolPrefix);
+		});
+	}
+
 	bindRun(runId: string, originTurnId = this.originTurnId): void {
 		const id = runId.trim();
 		if (!id || this.runOrigin.has(id)) return;
@@ -95,7 +107,6 @@ export class UsageCollector {
 		if (!this.enabled(category)) return 0;
 		let n = 0;
 		for (const record of records) {
-<<<<<<< HEAD
 			const parsedRunId = parseMetaSourceKeyGranularity(record.sourceKey)?.runId;
 			const boundOrigin =
 				(parsedRunId && this.runOrigin.get(parsedRunId)) ||
