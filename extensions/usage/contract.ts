@@ -92,6 +92,18 @@ function optionalString(value: unknown): string | undefined {
 	return trimmed ? trimmed : undefined;
 }
 
+function optionalKnownString(
+	value: unknown,
+	field: string,
+): { ok: true; value?: string } | { ok: false; reason: string } {
+	if (value === undefined) return { ok: true };
+	if (typeof value !== "string") {
+		return { ok: false, reason: `invalid ${field}` };
+	}
+	const trimmed = value.trim();
+	return { ok: true, value: trimmed ? trimmed : undefined };
+}
+
 function requiredNonNegInt(value: unknown): number | null {
 	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
 		return null;
@@ -151,6 +163,9 @@ function parseQuality(
 	for (const key of USAGE_METRIC_KEYS) {
 		if (usage[key] !== undefined && quality[key] === undefined) {
 			quality[key] = "unknown";
+		}
+		if (quality[key] !== undefined && usage[key] === undefined) {
+			delete quality[key];
 		}
 	}
 	return quality;
@@ -255,9 +270,12 @@ export function parseUsageObservationV1(input: unknown): ParseUsageObservationRe
 	if (typeof coveredCallIds === "string") return { ok: false, reason: coveredCallIds };
 
 	const parentSessionId = optionalString(input.parentSessionId);
-	const callId = optionalString(input.callId);
-	const model = optionalString(input.model);
-	const provider = optionalString(input.provider);
+	const callId = optionalKnownString(input.callId, "callId");
+	if (!callId.ok) return { ok: false, reason: callId.reason };
+	const model = optionalKnownString(input.model, "model");
+	if (!model.ok) return { ok: false, reason: model.reason };
+	const provider = optionalKnownString(input.provider, "provider");
+	if (!provider.ok) return { ok: false, reason: provider.reason };
 
 	const value: UsageObservationV1 = {
 		schemaVersion: USAGE_SCHEMA_VERSION,
@@ -277,9 +295,9 @@ export function parseUsageObservationV1(input: unknown): ParseUsageObservationRe
 		scope: input.scope as UsageScope,
 	};
 	if (parentSessionId) value.parentSessionId = parentSessionId;
-	if (callId) value.callId = callId;
-	if (model) value.model = model;
-	if (provider) value.provider = provider;
+	if (callId.value) value.callId = callId.value;
+	if (model.value) value.model = model.value;
+	if (provider.value) value.provider = provider.value;
 	if (Object.keys(usageOrError).length > 0) value.usage = usageOrError;
 	if (Object.keys(qualityOrError).length > 0) value.metricQuality = qualityOrError;
 	if (revision !== undefined) value.revision = revision;

@@ -61,7 +61,11 @@ export function qualityFromRawUsage(
 		return quality;
 	}
 	if (costSource === "local-estimate") {
-		quality.costUsd = "estimated";
+		const estimated =
+			isNonNegFinite(raw.costUsd) ||
+			isNonNegFinite(raw.cost) ||
+			(isPlainObject(raw.cost) && isNonNegFinite(raw.cost.total));
+		quality.costUsd = estimated ? "estimated" : "unknown";
 		return quality;
 	}
 	if (costSource === "protocol" && (isNonNegFinite(raw.cost) || isNonNegFinite(raw.costUsd))) {

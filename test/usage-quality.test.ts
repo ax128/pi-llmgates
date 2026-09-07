@@ -47,4 +47,22 @@ describe("usage metric quality from raw payloads", () => {
 		);
 		expect(quality.costUsd).toBe("reported");
 	});
+
+	it("maps present turns to reported calls without treating a missing turns key as 1", () => {
+		expect(qualityFromRawUsage({ turns: 3 }).calls).toBe("reported");
+		expect(qualityFromRawUsage({ input: 10 }).calls).toBe("unknown");
+	});
+
+	it("does not mark local-estimate cost when the value is not a finite non-negative number", () => {
+		const quality = qualityFromRawUsage(
+			{ cost: Number.NaN },
+			{ presentKeys: new Set(["cost"]), costSource: "local-estimate" },
+		);
+		expect(quality.costUsd).toBe("unknown");
+	});
+
+	it("keeps unknown-source cost figures unknown", () => {
+		const quality = qualityFromRawUsage({ costUsd: 1.5 }, { costSource: "unknown" });
+		expect(quality.costUsd).toBe("unknown");
+	});
 });

@@ -3,7 +3,7 @@
  * New inlets must consult `isUsageCategoryEnabled` — they cannot bypass these flags.
  */
 
-import { envFlag } from "../util.js";
+import { envFlag, SECRET_DIR_MODE, SECRET_FILE_MODE } from "../util.js";
 import { loadValidatedConfigFile } from "../connection.js";
 
 export const USAGE_PEER_DECISION = {
@@ -31,9 +31,12 @@ export const USAGE_LIMITS = {
 	perTickMs: 50,
 	persistRetryMax: 3,
 	persistRetryBaseMs: 500,
+	gapMarkerBudgetBytes: 4 * 1024,
 } as const;
 
 export const USAGE_DIR_NAME = "llmgates/usage";
+export const USAGE_DIR_MODE = SECRET_DIR_MODE;
+export const USAGE_FILE_MODE = SECRET_FILE_MODE;
 
 export const USAGE_ENV = {
 	master: "LLMGATES_TPS",
@@ -142,6 +145,9 @@ export function isUsageCategoryEnabled(
 		case "parent-assistant":
 			return true;
 		case "pi-subagents":
+			// Gates new child observers / watchers / meta scans. Synchronous
+			// `subagent` / Cursor `Task` tool results stay on a separate inlet
+			// and must not use this category (freeze §4).
 			return policy.subagent;
 		case "compaction":
 			return policy.compaction;
@@ -149,14 +155,18 @@ export function isUsageCategoryEnabled(
 			return policy.toolUsage;
 		case "third-party":
 			if (!policy.ext) return false;
-			if (sourceId && !EXT_SOURCE_SET.has(sourceId)) return false;
-			if (sourceId && policy.disabledExtSources.has(sourceId)) return false;
+			if (!sourceId || !EXT_SOURCE_SET.has(sourceId)) return false;
+			if (policy.disabledExtSources.has(sourceId)) return false;
 			return true;
 		default: {
 			const _exhaustive: never = category;
 			return _exhaustive;
 		}
 	}
+}
+
+export function isUsagePersistEnabled(policy: UsagePolicy): boolean {
+	return policy.collect && policy.persist;
 }
 
 export function isKnownExtSourceId(value: string): value is UsageExtSourceId {

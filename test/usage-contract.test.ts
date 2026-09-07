@@ -93,4 +93,22 @@ describe("usage contract v1", () => {
 		if (!parsed.ok) return;
 		expect(parsed.value.metricQuality?.costUsd).toBe("unknown");
 	});
+
+	it("rejects known optional identity fields with the wrong type", () => {
+		expect(parseUsageObservationV1(validObservation({ callId: 123 })).ok).toBe(false);
+		expect(parseUsageObservationV1(validObservation({ model: null })).ok).toBe(false);
+	});
+
+	it("drops metricQuality keys that have no matching usage value", () => {
+		const parsed = parseUsageObservationV1(
+			validObservation({
+				usage: { input: 10 },
+				metricQuality: { input: "reported", costUsd: "reported" },
+			}),
+		);
+		expect(parsed.ok).toBe(true);
+		if (!parsed.ok) return;
+		expect(parsed.value.metricQuality?.input).toBe("reported");
+		expect(parsed.value.metricQuality?.costUsd).toBeUndefined();
+	});
 });

@@ -18,9 +18,10 @@
 
 - 通道名：`llmgates:usage:v1`
 - `schemaVersion`：`1`（不认识的版本 fail closed）
-- 运行时解析：`parseUsageObservationV1`；未知字段/负计数/非白名单 usage 键拒绝整条
+- 运行时解析：`parseUsageObservationV1`；未知字段/负计数/非白名单 usage 键拒绝整条。已知可选身份字段（`callId` / `model` / `provider`）类型不对时拒绝整条，不得降级成缺字段
 - 指标白名单：`input` `output` `cacheRead` `cacheWrite` `cacheWrite1h` `totalTokens` `calls` `costUsd`
-- `phase` 与 `metricQuality` 正交。有数值但无质量证据 → 解析器补 `unknown`，不得升为 `reported`
+- `phase` 与 `metricQuality` 正交。有数值但无质量证据 → 解析器补 `unknown`，不得升为 `reported`。有质量、无对应数值 → 丢掉该 quality 键
+- 第三方类别必须带已知 `sourceId`（`isUsageCategoryEnabled("third-party", policy)` 无 id → `false`）。持久化写入看 `isUsagePersistEnabled` = `collect && persist`，总开关关时即使 `tpsPersist` 为真也不写盘
 - snapshot 必须带 `snapshotEpoch`；没有范围的旧汇总只能作弱覆盖，不能当逐响应
 - 不传 prompt、输出、thinking、工具参数、headers、API key、OTP
 
@@ -34,6 +35,8 @@
 | 第三方协议把费用写成数字且 adapter 声明 `costSource: "protocol"` | `reported`（仍不是网关实扣） |
 | 无法判断费用来源的旧汇总 | `unknown` |
 | 无 LLM response 计数、或旧 parser 以 1 兜底 | `calls` = `unknown`；有证据的下界可另示，不把兜底 1 当精确调用数 |
+| 原始对象出现过 `turns` 且为有限非负数字 | `calls` = `reported`。不得对 `usageCountersToRecord` 补出来的兜底 `1` 调用 `qualityFromRawUsage` |
+| `costSource: "local-estimate"` 但费用不是有限非负数 | `costUsd` = `unknown` |
 | dynamic-workflows 混合进度 / `commitWithFallback()` | 不进 finalized All；确认终态且范围明确时最多 `estimated` |
 
 `qualityFromRawUsage(raw, { presentKeys, costSource })` 是唯一入口。S1 legacy adapter 必须在调用 `preprocessAssistantMessage` / `usageCountersToRecord` **之前**取 presence。
@@ -70,10 +73,13 @@
 | 已闭合 root 保留 | 7 天 |
 | journal 段大小 | 1 MiB |
 | checkpoint 临时文件预算 | 256 KiB |
+| 缺口标记预算 | 4 KiB |
+| 目录 / 文件 mode | `0700` / `0600`（`USAGE_DIR_MODE` / `USAGE_FILE_MODE`） |
 | 活跃源对账间隔 | 2s |
-| idle UI 刷新 | 2s |
+| UI tick / idle UI 刷新 | 1s / 2s |
 | 入队软上限 | 2048 |
 | 每 tick 读预算 | 256 KiB / 200 条 / 50ms |
+| 持久化写入重试 | 最多 3 次，起始间隔 500ms |
 
 达限或 `ENOSPC`：保留最后有效 checkpoint，停止新增 journal，coverage=`storage-exhausted`/`partial`。内存继续有界计量并标明非 durable。内存也满时记缺口，不换目录、不无限排队。损坏/未知版本 checkpoint：**不覆盖、不修复、不删除**。
 
@@ -90,3 +96,7 @@
 ## 7. CLI fixture
 
 Codex / Claude Code / Cursor 的 JSONL fixture 在对应 S4 adapter 开工前冻结。不阻塞 S1。当前无真实 CLI 运行产物，S4 保持 `unavailable`。
+
+## 8. 核对版本（不是支持）
+
+实施对照版本以 inventory JSON 的 `sourceInspected` 为准，改版本即改冻结。当前钉死：Pi `0.81.1`（dev）/ 本机调研 `0.85.1`（未认证）、`pi-subagents 0.66.0`，以及 inventory 里 15 个源码核对包。不得把目录发现项写成已支持。
