@@ -233,7 +233,7 @@ export interface LLMGatesConfigFile {
 	tps?: boolean;
 	/** When true, persist usage journals/checkpoints. Default false. */
 	tpsPersist?: boolean;
-	/** When true (default), allow third-party usage adapters. */
+	/** When true (default), register fail-closed third-party Coverage probes. Uncertified sources never enter All. */
 	tpsExt?: boolean;
 	[key: string]: unknown;
 }

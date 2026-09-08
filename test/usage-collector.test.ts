@@ -1,8 +1,14 @@
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { UsageCollector } from "../extensions/usage/collector.js";
-import { resolveUsagePolicy } from "../extensions/usage/policy.js";
-import { createUsagePersist } from "../extensions/usage/persist.js";
+import { UsageCollector, createUsageCollector } from "../extensions/usage/collector.js";
+import { resolveUsagePolicy, USAGE_DIR_NAME } from "../extensions/usage/policy.js";
+import { USAGE_SCHEMA_VERSION } from "../extensions/usage/contract.js";
+import {
+	createUsagePersist,
+	FsUsagePersist,
+	USAGE_CHECKPOINT_VERSION,
+} from "../extensions/usage/persist.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
 
 function collector() {
@@ -250,6 +256,90 @@ describe("UsageCollector persistence restore", () => {
 			expect(readFileSync(journalPath, "utf8")).toBe(before);
 			await second.checkpointAndClose();
 		} finally {
+			cleanup();
+		}
+	});
+
+	it("marks Coverage partial when a restored checkpoint dropped observations", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const persist = new FsUsagePersist(agentDir, "root-1");
+			mkdirSync(persist.rootDir, { recursive: true, mode: 0o700 });
+			writeFileSync(
+				persist.checkpointPath,
+				`${JSON.stringify({
+					version: USAGE_CHECKPOINT_VERSION,
+					rootSessionId: "root-1",
+					observations: [
+						{
+							schemaVersion: USAGE_SCHEMA_VERSION,
+							source: { package: "test-runner", version: "1.0.0", runner: "fixture" },
+							rootSessionId: "root-1",
+							sessionId: "sess-1",
+							originTurnId: "turn-1",
+							runId: "run-1",
+							childId: "child-1",
+							executionId: "exec-1",
+							attemptId: "attempt-1",
+							producerId: "producer-1",
+							sequence: 1,
+							observedAt: 1_000,
+							kind: "response",
+							callId: "call-1",
+							model: "gpt-test",
+							phase: "final",
+							scope: "self",
+							usage: { input: 3, output: 1, calls: 1 },
+							metricQuality: { input: "reported", output: "reported", calls: "reported" },
+						},
+						{ schemaVersion: 1 },
+					],
+				})}\n`,
+				{ mode: 0o600 },
+			);
+			const policy = resolveUsagePolicy(agentDir);
+			const session = new UsageCollector("root-1", "sess-1", policy, createUsagePersist(agentDir, "root-1", true));
+			session.restorePersisted();
+			expect(session.sessionTotals().input).toBe(3);
+			expect(session.coverageRows().some((row) => row.status === "partial" && row.reason === "checkpoint-incomplete")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("shows a persist-load Coverage row when the checkpoint is unreadable", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const persist = new FsUsagePersist(agentDir, "root-1");
+			mkdirSync(persist.rootDir, { recursive: true, mode: 0o700 });
+			writeFileSync(persist.checkpointPath, "{not-json", { mode: 0o600 });
+			const policy = resolveUsagePolicy(agentDir);
+			const session = new UsageCollector("root-1", "sess-1", policy, createUsagePersist(agentDir, "root-1", true));
+			session.restorePersisted();
+			expect(session.sessionTotals().input).toBe(0);
+			expect(session.coverageRows().some((row) => row.producerId === "persist:load" && row.reason === "checkpoint-incomplete")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("createUsageCollector master switch", () => {
+	it("returns null and creates no usage files when LLMGATES_TPS=0", () => {
+		const previous = process.env.LLMGATES_TPS;
+		const previousPersist = process.env.LLMGATES_TPS_PERSIST;
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			process.env.LLMGATES_TPS = "0";
+			process.env.LLMGATES_TPS_PERSIST = "1";
+			const session = createUsageCollector("root-1", "sess-1", resolveUsagePolicy(agentDir), agentDir);
+			expect(session).toBeNull();
+			expect(existsSync(join(agentDir, USAGE_DIR_NAME))).toBe(false);
+		} finally {
+			if (previous === undefined) delete process.env.LLMGATES_TPS;
+			else process.env.LLMGATES_TPS = previous;
+			if (previousPersist === undefined) delete process.env.LLMGATES_TPS_PERSIST;
+			else process.env.LLMGATES_TPS_PERSIST = previousPersist;
 			cleanup();
 		}
 	});

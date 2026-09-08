@@ -17,9 +17,9 @@
   - `/calls` 增加 **Coverage** 项：打开菜单时的来源快照。pi 的 `ui.select` 不能在菜单打开后 live 刷新，live 总额仍看状态行。
   - 新增总开关 `LLMGATES_TPS`（默认开）。既有 `LLMGATES_TPS_SUBAGENT` / `_COMPACTION` / `_TOOL_USAGE` 语义不变。
   - **仍是内存账本（除非显式打开持久化）**：重载/重启默认不恢复；第三方运行器与外部 CLI 的逐响应采集未认证，Coverage 不把它们标成已支持。
-  - **可选持久化** `LLMGATES_TPS_PERSIST` / `tpsPersist`（默认关）：写入 `llmgates/usage/<root>/`，`0700`/`0600`。ENOSPC 或超限额标 `storage-exhausted` 并停止新增 journal；损坏/未知版本 checkpoint 不覆盖。
-  - **pi-subagents 插件侧观测**：消费 `tool_execution_update`；增长中的 `_meta.json` 按 mtime 做快照替换。nested/fork/helper 仍为 partial——没有公开 child factory usage 钩子，不把调研清单写成已支持。
-  - **第三方 / 外部 CLI**：fail-closed EventBus probe；见到 usage 形 payload 时 Coverage 标 `unavailable`，**不进入** All。没装这些包、也没收到对应事件时，Coverage 不预列未安装包。无 Codex/Claude/Cursor JSONL fixture。
+  - **可选持久化** `LLMGATES_TPS_PERSIST` / `tpsPersist`（默认关）：写入 `llmgates/usage/<root>/`，`0700`/`0600`。ENOSPC 或超限额标 `storage-exhausted` 并停止新增 journal；损坏/未知版本 checkpoint 不覆盖。加载时跳过损坏条会把 Coverage 标 `partial`（`checkpoint-incomplete` / `journal-truncated`）。写入重试、orphan 队列与每 tick 读预算尚未实现。
+  - **pi-subagents 插件侧观测**：消费 `tool_execution_update`；增长中的 `_meta.json` 按 mtime 做快照替换。无 revision 的完成事件与 meta 同 key 时先到者胜。nested/fork/helper 仍为 partial——没有公开 child factory usage 钩子，不把调研清单写成已支持。
+  - **第三方 / 外部 CLI**：fail-closed EventBus probe；见到 usage 形 payload 时 Coverage 标 `unavailable`，**不进入** All。没装这些包、也没收到对应事件时，Coverage 不预列 tintinweb 一类 npm probe。空会话会预列 CLI/job/runs 三行 S4 占位。无 Codex/Claude/Cursor JSONL fixture。
 
 ## [0.6.0] — 2026-08-30
 

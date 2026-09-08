@@ -362,21 +362,21 @@ meta 与 tool 各自检查本入口的 revision，再按本会话接收顺序替
 - 父会话 assistant 用量在 `message_end` 时统计；跳过本插件 `preprocessAssistantMessage` 补零。Pi SDK 已预建的 0 当 unknown，不把缺省字段当成已上报。
 - 子代理与压缩/工具用量按**启动时所在父轮**归入 This turn，不按数据稍后到达时的轮次。会话开始后、第一轮 `before_agent_start` 之前观察到的 run 归入第一轮。
 - 同步 pi `subagent` / Cursor `Task` 工具结果与 `_meta.json` 汇总计入同一计数器；扫描 `.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧版 `.pi-subagents/artifacts` 及会话文件旁的 `subagent-artifacts/`。
-- async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 事件旁路采集：数字取事件自带的 `usage` / `modelAttempts` / `totalCost` / `tokens`，事件没带就等上一条那三个目录里的 `_meta.json`。进行中的 `tool_execution_update` 若自带 usage 也会入账；同一 `toolCallId` 的 `tool_execution_end` 会换掉这份进行中进度（即使两边因载荷形状不同而 sourceKey 不一致）。同一 `_meta.json` 仅在 **该文件** mtime 变新时替换自己先前的快照，已被跨粒度丢弃的 sibling 不会因为文件又增长而重新入账。**不读 pi-subagents 临时目录里的 `status.json`，也不扫子会话 `session.jsonl`**——两者在默认布局下都落在工作区之外（asyncDir 在 `os.tmpdir()`、子会话在 `~/.pi/`），而这两条兜底当初就限定只读工作区内的路径，实际从未生效，已连同那道门禁一起删除。
+- async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 事件旁路采集：数字取事件自带的 `usage` / `modelAttempts` / `totalCost` / `tokens`，事件没带就等上一条那三个目录里的 `_meta.json`。进行中的 `tool_execution_update` 若自带 usage 也会入账；同一 `toolCallId` 的 `tool_execution_end` 会换掉这份进行中进度（即使两边因载荷形状不同而 sourceKey 不一致）。同一 `_meta.json` 仅在 **该文件** mtime 变新时替换自己先前的快照，已被跨粒度丢弃的 sibling 不会因为文件又增长而重新入账。**无 revision 的完成事件一旦占住同一 `sourceKey`，后续 meta 不再替换**（先到者胜，防双计）；只有事件没带数字时才等 meta。**不读 pi-subagents 临时目录里的 `status.json`，也不扫子会话 `session.jsonl`**——两者在默认布局下都落在工作区之外（asyncDir 在 `os.tmpdir()`、子会话在 `~/.pi/`），而这两条兜底当初就限定只读工作区内的路径，实际从未生效，已连同那道门禁一起删除。
 - 事件里的 `sessionId` 可能是裸 ID、会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。
 - 子代理的**费用**只在上游报了金额时才有：按 `usage.cost` → `modelAttempts[].usage.cost` 之和 → `totalCost.costUsd` 的顺序取第一个有值的，原样采用；只报到 token（`tokens` / `totalTokens`）时，**token 照记、费用显示 unknown（`?`）**，不按父模型的费率倒推。所以 `/calls` 里子代理行的费用偏低是预期行为，不代表 token 漏算。
 - 任何按 pi 约定在工具结果顶层挂 `usage` 的工具（不限于某个具体扩展），其用量都会计入。结果自报模型时按 `<provider>/<模型>` 分行——与父模型同名时并入同一行；未自报模型时记为 `tool/<工具名>`；若也没有可确认的自报费用，则费用显示 `?`，**但自报了一个不在定价表里的模型 id 时会落到默认费率**（`resolveModelCostRates` 永不返回 0）。已被子代理路径认领或计了会重复的工具名不在此列：`subagent`、`task`、`subagent_wait`、`subagent_supervisor`、`intercom`，以及 `@tintinweb/pi-subagents` 的 `Agent` / `get_subagent_result` / `steer_subagent`。
 - 上一条有两处刻意的少算：`@tintinweb/pi-subagents` 的三个工具名仍排除；已对 `subagents:completed` / `subagents:failed` 做 fail-closed probe，Coverage 标 `unavailable`，**不进入 All**。若你手动开启了该扩展默认关闭的 `reportUsage`，那部分用量不会被统计到总额。另外，一条工具结果可能聚合多次 LLM 调用却不上报次数，此时 **calls 记 unknown**（不把 parser 兜底的 1 当精确调用数），token 与费用不受影响。少算是安全方向，重复计不是。
 - 上下文压缩与分支摘要那次 LLM 调用计入 `compact/<模型>` 一行（pi 自己也算这笔，我们此前漏计）。自动压缩、手动 `/compact`、上下文溢出恢复压缩与分支摘要都覆盖。由其他扩展代管的压缩（pi 标记为 `fromHook`）计入 `compact/unknown`，且只认它自报的费用——它用的是哪个模型我们看不到，不会按会话模型的费率估价；完全不上报用量的仍无从统计。
 - **结构性统计不到的**（不是 bug，也没有开关）：在自己进程内起子会话、又不按 pi 约定挂 `usage` 的扩展（dynamic-workflows、piolium、pi-goal-x 一类）——它们的消息不进父会话消息流，pi 自己的 `/cost` 同样看不到；`pi-vision` 这类直连模型并自建会话条目的扩展；spawn 子 pi 进程但不回报用量的扩展（`@mjasnikovs/pi-task` 的 `pi --mode json` worker、`pi-goal-list-loop-audit` 的 `pi --mode rpc` 审计子进程）；以及 pi-subagents **nested / fork / helper LLM**（本插件没有公开的 child factory usage 钩子，Coverage 标 partial，不把目录发现写成已支持）。pi-subagents 把 `artifactDir` 设成 `temp`（或拿不到会话文件）时 `_meta.json` 落进临时目录，不在扫描范围内；个别写成 `<runId>_<agent>_meta.json`（不带子序号）的 meta 文件也不解析。第三方扩展想被统计，按 pi 约定在工具结果顶层挂一个 `usage` 即可，会同时进 pi 的 `/cost` 与这里。
-- 设 `LLMGATES_TPS=0` 可关闭**全部**用量采集（父 assistant、子代理、压缩、工具嵌套）。默认开启。
-- 设 `LLMGATES_TPS_PERSIST=1` 或 `config.json` 的 `"tpsPersist": true` 才写用量 journal/checkpoint（默认关）。目录 `~/.pi/agent/llmgates/usage/<root>/`（`0700`/`0600`）。磁盘满或超限额时停止新增写入并标 `storage-exhausted`；损坏或未知版本的 checkpoint **不会被覆盖或“修复”**。未开启时仍是内存账本，重载不恢复。
+- 设 `LLMGATES_TPS=0` 可关闭**全部**用量采集（父 assistant、子代理、压缩、工具嵌套）以及 persist 写入。默认开启。
+- 设 `LLMGATES_TPS_PERSIST=1` 或 `config.json` 的 `"tpsPersist": true` 才写用量 journal/checkpoint（默认关）。目录 `~/.pi/agent/llmgates/usage/<root>/`（`0700`/`0600`）。磁盘满或超限额时停止新增写入并标 `storage-exhausted`；损坏或未知版本的 checkpoint **不会被覆盖或“修复”**。加载时跳过损坏条会把 Coverage 标 `partial`（`checkpoint-incomplete` / `journal-truncated`），已读到的好行仍计入 All。未开启时仍是内存账本，重载不恢复。
 - 设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与同步 `subagent` / Cursor `Task` 工具结果仍统计）。
 - 设 `LLMGATES_TPS_COMPACTION=0` 可关闭压缩 / 分支摘要统计。
 - 设 `LLMGATES_TPS_TOOL_USAGE=0` 可关闭通用工具结果用量统计（`subagent` / Cursor `Task` 仍统计）。
-- 用量聚合通过异步任务链排序，不触发额外模型调用；计数只在交互式父会话（TUI）进行。未开持久化时重载/重启不恢复用量。第三方运行器与外部 CLI **不是已支持清单**：Coverage 里它们标 `unavailable` / unverified（EventBus 只做 fail-closed probe，usage 形 payload 不进 All）。调研清单的目录匹配项不是兼容认证。
+- 用量聚合通过异步任务链排序，不触发额外模型调用；计数只在交互式父会话（TUI）进行。未开持久化时重载/重启不恢复用量。第三方运行器与外部 CLI **不是已支持清单**：Coverage 里它们标 `unavailable` / unverified（EventBus 只做 fail-closed probe，usage 形 payload 不进 All）。**空会话会预列 CLI/job/runs 三行 S4 占位**（不是已装运行器）；tintinweb 一类 npm probe 只有收到对应事件才出现。调研清单的目录匹配项不是兼容认证。
 
-持久化目前仍是可选能力：每次追加会同步核对整个 usage 目录容量；尚无已闭合 root 的自动保留期清理。完整 checkpoint 超过 256KiB 时保留原 checkpoint/journal 并跳过写入，长会话可能最终触及单 root 8MiB 或全局 64MiB 上限。这些限制须在默认开启持久化前由独立专项解决；当前不承诺自动轮转或自动恢复写入。
+持久化目前仍是可选能力：每次追加会同步核对整个 usage 目录容量；尚无已闭合 root 的自动保留期清理。完整 checkpoint 超过 256KiB 时保留原 checkpoint/journal 并跳过写入，长会话可能最终触及单 root 8MiB 或全局 64MiB 上限。写入重试、orphan 队列与每 tick 读预算尚未实现。这些限制须在默认开启持久化前由独立专项解决；当前不承诺自动轮转或自动恢复写入。
 
 ### 定价数据
 
@@ -488,12 +488,13 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 
 | 文件 | 内容 |
 | --- | --- |
-| `config.json` | 扩展级开关：`pricingAutoUpdate`、`inputHistory`、`inputHistoryScope`、`restoreLastModel` |
+| `config.json` | 扩展级开关：`pricingAutoUpdate`、`inputHistory`、`inputHistoryScope`、`restoreLastModel`、`tps`、`tpsPersist`、`tpsExt` |
 | `2api.json` | 实例 registry（ID、显示名、scheme、base URL；**不含密钥**） |
 | `2api-models/<instanceId>.json` | 每个实例的出口覆盖，见 [手工编辑 override 文件](#手工编辑-override-文件) |
 | `pricing.json` | 可编辑的模型单价与 LiteLLM 同步缓存，见 [定价数据](#定价数据) |
 | `input-history/*.json` | 持久化的输入历史，每个作用域一份，见 [输入历史](#输入历史) |
 | `last-model.json` | 上次使用的模型与思考档位（provider id + 模型 id + 思考档位），见 [记住上次使用的模型与思考档位](#记住上次使用的模型与思考档位) |
+| `usage/<root>/` | 可选用量 journal/checkpoint（默认不创建），见 [状态行与 `/calls`](#状态行与-calls) |
 
 `config.json`（下面写的是**默认值**，文件不存在或缺少某个键时即按此生效）：
 
@@ -502,13 +503,17 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
   "pricingAutoUpdate": true,
   "inputHistory": true,
   "inputHistoryScope": "cwd",
-  "restoreLastModel": true
+  "restoreLastModel": true,
+  "tps": true,
+  "tpsPersist": false,
+  "tpsExt": true
 }
 ```
 
 - 设为 `"pricingAutoUpdate": false` 或 `LLMGATES_PRICING_AUTO_UPDATE=0` 则仅使用本地/manual 价格。
 - `inputHistory` / `inputHistoryScope` 见 [输入历史](#输入历史)，改这两个键请优先用 `/input-history`（会原地保留文件里的其他键）。手工编辑后需 `/reload` 生效。
 - 设为 `"restoreLastModel": false` 或 `LLMGATES_RESTORE_LAST_MODEL=0` 则不再恢复上次使用的模型与思考档位，见 [记住上次使用的模型与思考档位](#记住上次使用的模型与思考档位)。这个键每次会话开始时重读，改完下次启动即生效。
+- `tps` / `tpsPersist` / `tpsExt` 见 [状态行与 `/calls`](#状态行与-calls)。环境变量覆盖文件；总开关关上时即使 `tpsPersist` 为真也不写盘。手工编辑后需 `/reload` 生效。
 
 ### 环境变量
 
@@ -520,7 +525,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | `LLMGATES_RESTORE_LAST_MODEL` | 覆盖 `restoreLastModel`（默认 `true`；`0` / `false` 关闭新会话恢复上次模型与思考档位） |
 | `LLMGATES_DEBUG` | 设为 `1` / `true` / `yes` 时输出调试日志 |
 | `LLMGATES_BLOCK_PRIVATE_URLS` | 设为 `1` / `true` / `yes` 时拒绝 **IP 字面量** 形式的 private / link-local 网关地址（loopback 仍允许）；hostname（如 `gateway.local`）不受此规则约束 |
-| `LLMGATES_TPS` | 用量采集总开关（默认启用；设为 `0` / `false` / `no` 时全部入口停） |
+| `LLMGATES_TPS` | 用量采集总开关（默认启用；设为 `0` / `false` / `no` 时全部入口停，连 persist 写入一并停） |
 | `LLMGATES_TPS_PERSIST` | 用量 journal/checkpoint（默认关；`1` / `true` / `yes` 开启；覆盖 `tpsPersist`） |
 | `LLMGATES_TPS_EXT` | 第三方 / 外部 Coverage probe（默认开；`0` 不注册 EventBus 观察。不把未认证来源计入 All） |
 | `LLMGATES_TPS_EXT_<ID>` | 按来源再关闭，例如 `LLMGATES_TPS_EXT_TINTINWEB=0`。不能放宽总开关 |

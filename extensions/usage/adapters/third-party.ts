@@ -117,15 +117,6 @@ function coverageRow(
 	};
 }
 
-export function declaredThirdPartyCoverage(policy: UsagePolicy, now = Date.now()): CoverageRow[] {
-	const rows: CoverageRow[] = [];
-	for (const probe of THIRD_PARTY_EVENT_PROBES) {
-		if (!isUsageCategoryEnabled("third-party", policy, probe.sourceId)) continue;
-		rows.push(coverageRow(probe, now, "unavailable", probe.reason));
-	}
-	return rows;
-}
-
 export function registerThirdPartyUsageProbes(
 	events: EventBus,
 	options: {

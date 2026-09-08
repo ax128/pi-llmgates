@@ -153,6 +153,7 @@ export class UsageLedger {
 	private readonly records = new Map<string, StoredRecord>();
 	private readonly producerSeq = new Map<string, { seen: Set<number>; min: number; max: number }>();
 	private persistState: CoverageRow["persist"] = "memory";
+	private persistLoadGap: string | undefined;
 	private memoryExhausted = false;
 	private readonly snapshotGroups = new Map<string, { revision: number; keys: Set<string> }>();
 	private readonly totalsCache = new Map<string | undefined, LedgerTotals>();
@@ -168,6 +169,10 @@ export class UsageLedger {
 
 	setPersistState(state: CoverageRow["persist"]): void {
 		this.persistState = state;
+	}
+
+	setPersistLoadGap(reason: string | undefined): void {
+		this.persistLoadGap = reason;
 	}
 
 	ingest(input: unknown): IngestResult {
@@ -246,21 +251,14 @@ export class UsageLedger {
 			const key = `${obs.source.package}\0${obs.producerId}`;
 			const seq = this.producerSeq.get(obs.producerId);
 			const gap = seq ? seq.seen.size < seq.max - seq.min + 1 : false;
-			const status: CoverageStatus = this.coverageStatus(obs, gap);
 			const current = byProducer.get(key);
-			const row: CoverageRow = {
-				package: obs.source.package,
-				version: obs.source.version,
-				runner: obs.source.runner,
-				producerId: obs.producerId,
-				status,
-				lastObservedAt: obs.observedAt,
-				persist: this.persistState,
-				reason: this.memoryExhausted ? "memory-exhausted" : gap ? "sequence-gap" : status === "partial" ? "subtree-or-incomplete-metrics" : undefined,
-			};
+			const row = this.coverageRowFor(obs, gap);
 			if (!current || obs.observedAt >= current.lastObservedAt) {
 				byProducer.set(key, row);
 			}
+		}
+		if (byProducer.size === 0 && this.persistLoadGap) {
+			return [this.persistGapRow()];
 		}
 		return [...byProducer.values()];
 	}
@@ -398,6 +396,47 @@ export class UsageLedger {
 			totals.hasUnknown = true;
 		}
 		return totals;
+	}
+
+	private coverageRowFor(
+		obs: UsageObservationV1,
+		gap: boolean,
+	): CoverageRow {
+		let status: CoverageStatus = this.coverageStatus(obs, gap);
+		let reason: string | undefined = this.memoryExhausted
+			? "memory-exhausted"
+			: gap
+				? "sequence-gap"
+				: status === "partial"
+					? "subtree-or-incomplete-metrics"
+					: undefined;
+		if (this.persistLoadGap && status !== "storage-exhausted" && !this.memoryExhausted) {
+			status = "partial";
+			reason = this.persistLoadGap;
+		}
+		return {
+			package: obs.source.package,
+			version: obs.source.version,
+			runner: obs.source.runner,
+			producerId: obs.producerId,
+			status,
+			lastObservedAt: obs.observedAt,
+			persist: this.persistState,
+			reason,
+		};
+	}
+
+	private persistGapRow(): CoverageRow {
+		return {
+			package: "llmgates",
+			version: "persist",
+			runner: "load",
+			producerId: "persist:load",
+			status: "partial",
+			lastObservedAt: this.collectedSinceMs,
+			persist: this.persistState,
+			reason: this.persistLoadGap,
+		};
 	}
 
 	private coverageStatus(obs: { kind: UsageKind; phase: UsageObservationV1["phase"] }, gap: boolean): CoverageStatus {

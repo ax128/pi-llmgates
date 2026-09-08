@@ -871,6 +871,79 @@ describe("tps runtime compaction inlet", () => {
 	});
 });
 
+describe("tps runtime master switch", () => {
+	async function withEnv(name: string, value: string | undefined, run: () => Promise<void>) {
+		const previous = process.env[name];
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+		try {
+			await run();
+		} finally {
+			if (previous === undefined) delete process.env[name];
+			else process.env[name] = previous;
+		}
+	}
+
+	it("LLMGATES_TPS=0 records no All totals from assistant, tool, or compaction", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-master-off-"));
+		await withEnv("LLMGATES_TPS", "0", async () => {
+			await withEnv("LLMGATES_TPS_PERSIST", "1", async () => {
+				const runtime = createRuntime(cwd);
+				const ctx = runtime.createContext("off", {
+					model: { id: "gpt-5.6-luna", provider: "llmgates" },
+				} as Partial<ExtensionContext>);
+				try {
+					await runtime.emit("session_start", {}, ctx);
+					runtime.emitNow("before_agent_start", {}, ctx);
+					runtime.emitNow("message_end", {
+						message: {
+							role: "assistant",
+							provider: "llmgates",
+							model: "gpt-5.6-luna",
+							usage: { input: 10, output: 5, totalTokens: 15 },
+						},
+					}, ctx);
+					runtime.emitNow("tool_execution_end", {
+						toolName: "subagent",
+						toolCallId: "call-b",
+						result: {
+							details: {
+								results: [
+									{ agent: "worker", index: 0, model: "llmgates/worker-model", usage: { turns: 3, input: 70, output: 7 } },
+								],
+							},
+						},
+					}, ctx);
+					runtime.emitNow("session_compact", {
+						compactionEntry: {
+							id: "entry-compact-off",
+							type: "compaction",
+							summary: "…",
+							usage: { input: 4_000, output: 900, totalTokens: 4_900 },
+						},
+					}, ctx);
+					runtime.emitNow("agent_settled", {}, ctx);
+					await new Promise((resolve) => setTimeout(resolve, 0));
+
+					const calls = runtime.commands.get("calls")!;
+					runtime.scopeChoices.push("This session");
+					await calls.handler("", ctx);
+					expect(runtime.selections).toHaveLength(0);
+					expect(runtime.notifications.some((n) => n.message.includes("No model calls recorded in this session."))).toBe(true);
+
+					runtime.scopeChoices.push("Coverage");
+					await calls.handler("", ctx);
+					const coverage = runtime.selections.at(-1) ?? [];
+					expect(coverage.some((line) => line.includes("gpt-5.6-luna") || line.includes("worker-model") || line.includes("compact/"))).toBe(false);
+				} finally {
+					await runtime.emit("session_shutdown", {}, ctx);
+				}
+			});
+		});
+		rmSync(cwd, { recursive: true, force: true });
+	});
+});
+
 describe("tps runtime tool-usage inlet", () => {
 	const TOOL_RESULT = {
 		toolName: "delegate",

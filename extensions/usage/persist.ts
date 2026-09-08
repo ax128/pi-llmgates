@@ -34,12 +34,15 @@ import { USAGE_DIR_NAME, USAGE_LIMITS } from "./policy.js";
 export const USAGE_CHECKPOINT_VERSION = 1 as const;
 
 export type PersistStatus = "off" | "memory" | "durable" | "storage-exhausted";
+export type PersistLoadGap = "checkpoint-incomplete" | "journal-truncated";
 
 export interface UsagePersist {
 	readonly enabled: boolean;
 	status(): PersistStatus;
 	acquireWriter(): boolean;
 	load(): UsageObservationV1[];
+	/** Set by the latest `load()`. Undefined when every stored observation was applied. */
+	loadGap(): PersistLoadGap | undefined;
 	append(observation: UsageObservationV1): Promise<PersistStatus>;
 	writeCheckpoint(observations: readonly UsageObservationV1[] | (() => readonly UsageObservationV1[])): Promise<PersistStatus>;
 	close(): Promise<void>;
@@ -127,6 +130,9 @@ class NoopPersist implements UsagePersist {
 	load(): UsageObservationV1[] {
 		return [];
 	}
+	loadGap(): PersistLoadGap | undefined {
+		return undefined;
+	}
 	async append(): Promise<PersistStatus> {
 		return this.persistStatus;
 	}
@@ -157,6 +163,7 @@ export class FsUsagePersist implements UsagePersist {
 	private isWriter = false;
 	private writerFailed = false;
 	private writerUnlock: (() => void) | undefined;
+	private lastLoadGap: PersistLoadGap | undefined;
 
 	constructor(
 		readonly agentDir: string,
@@ -209,11 +216,25 @@ export class FsUsagePersist implements UsagePersist {
 		}
 	}
 
+	loadGap(): PersistLoadGap | undefined {
+		return this.lastLoadGap;
+	}
+
 	load(): UsageObservationV1[] {
+		this.lastLoadGap = undefined;
 		if (this.layoutIsUnsafe()) return [];
+		const checkpointStats = lstatOrNull(this.checkpointPath);
+		if (checkpointStats && (checkpointStats.isSymbolicLink() || !checkpointStats.isFile() || !this.checkpointWritable)) {
+			this.noteLoadGap("checkpoint-incomplete");
+		}
 		const fromCheckpoint = this.readCheckpointObservations();
 		const fromJournal = this.readJournalObservations();
 		return [...fromCheckpoint, ...fromJournal];
+	}
+
+	private noteLoadGap(gap: PersistLoadGap): void {
+		if (this.lastLoadGap === "checkpoint-incomplete") return;
+		this.lastLoadGap = gap;
 	}
 
 	async append(observation: UsageObservationV1): Promise<PersistStatus> {
@@ -335,10 +356,16 @@ export class FsUsagePersist implements UsagePersist {
 		if (stats.isSymbolicLink() || !stats.isFile()) return [];
 		try {
 			const raw: unknown = JSON.parse(readFileSync(this.checkpointPath, "utf8"));
-			if (!checkpointIsVerifiable(raw, this.rootSessionId)) return [];
-			return parseObservationList((raw as CheckpointFile).observations);
+			if (!checkpointIsVerifiable(raw, this.rootSessionId)) {
+				this.noteLoadGap("checkpoint-incomplete");
+				return [];
+			}
+			const parsed = parseObservationList((raw as CheckpointFile).observations);
+			if (parsed.dropped) this.noteLoadGap("checkpoint-incomplete");
+			return parsed.observations;
 		} catch {
 			this.checkpointWritable = false;
+			this.noteLoadGap("checkpoint-incomplete");
 			return [];
 		}
 	}
@@ -360,9 +387,12 @@ export class FsUsagePersist implements UsagePersist {
 				const parsed = parseUsageObservationV1(JSON.parse(trimmed) as unknown);
 				if (parsed.ok && parsed.value.rootSessionId === this.rootSessionId) {
 					out.push(parsed.value);
+					continue;
 				}
+				this.noteLoadGap("journal-truncated");
 			} catch {
 				// Truncated or corrupt tail: keep prior good lines, do not guess.
+				this.noteLoadGap("journal-truncated");
 				break;
 			}
 		}
@@ -378,14 +408,16 @@ function checkpointIsVerifiable(raw: unknown, rootSessionId: string): boolean {
 	return true;
 }
 
-function parseObservationList(raw: unknown): UsageObservationV1[] {
-	if (!Array.isArray(raw)) return [];
+function parseObservationList(raw: unknown): { observations: UsageObservationV1[]; dropped: boolean } {
+	if (!Array.isArray(raw)) return { observations: [], dropped: true };
 	const out: UsageObservationV1[] = [];
+	let dropped = false;
 	for (const item of raw) {
 		const parsed = parseUsageObservationV1(item);
 		if (parsed.ok) out.push(parsed.value);
+		else dropped = true;
 	}
-	return out;
+	return { observations: out, dropped };
 }
 
 export function createUsagePersist(

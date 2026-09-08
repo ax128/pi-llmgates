@@ -171,6 +171,56 @@ describe("usage persist", () => {
 		}
 	});
 
+	it("keeps good checkpoint rows and reports checkpoint-incomplete when some observations fail closed", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const persist = new FsUsagePersist(agentDir, "root-1");
+			mkdirSync(persist.rootDir, { recursive: true, mode: 0o700 });
+			writeFileSync(
+				persist.checkpointPath,
+				`${JSON.stringify({
+					version: USAGE_CHECKPOINT_VERSION,
+					rootSessionId: "root-1",
+					observations: [obs(1), { schemaVersion: 1 }, obs(2)],
+				})}\n`,
+				{ mode: 0o600 },
+			);
+			const loaded = persist.load();
+			expect(loaded.map((row) => row.callId)).toEqual(["call-1", "call-2"]);
+			expect(persist.loadGap()).toBe("checkpoint-incomplete");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("keeps good journal lines and reports journal-truncated on a broken tail", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const persist = new FsUsagePersist(agentDir, "root-1");
+			mkdirSync(persist.rootDir, { recursive: true, mode: 0o700 });
+			writeFileSync(persist.journalPath, `${JSON.stringify(obs(1))}\n{"schemaVersion":\n`, { mode: 0o600 });
+			const loaded = persist.load();
+			expect(loaded.map((row) => row.callId)).toEqual(["call-1"]);
+			expect(persist.loadGap()).toBe("journal-truncated");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("reports checkpoint-incomplete for an unreadable checkpoint without loading it", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const persist = new FsUsagePersist(agentDir, "root-1");
+			mkdirSync(persist.rootDir, { recursive: true, mode: 0o700 });
+			writeFileSync(persist.checkpointPath, "{not-json", { mode: 0o600 });
+			const reloaded = new FsUsagePersist(agentDir, "root-1");
+			expect(reloaded.load()).toEqual([]);
+			expect(reloaded.loadGap()).toBe("checkpoint-incomplete");
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("does not truncate the journal when a checkpoint would exceed the tmp budget", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {

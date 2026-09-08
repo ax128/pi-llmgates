@@ -151,6 +151,7 @@ export class UsageCollector {
 		}
 		this.restoreCounters(loaded);
 		this.ledger.setPersistState(persistToLedgerState(this.persist.status()));
+		this.ledger.setPersistLoadGap(this.persist.loadGap());
 	}
 
 	noteCoverage(row: CoverageRow): void {

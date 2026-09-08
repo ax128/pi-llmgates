@@ -46,9 +46,9 @@ const PI_SUBAGENTS_MANAGEMENT_TOOL_NAMES = ["subagent_wait", "subagent_superviso
  * usage since the last drain, the event carries one agent's lifetime usage), so counting
  * both would double up — and only the event side is on by default.
  *
- * That event bridge is not implemented yet (its preconditions cannot be checked on a
- * machine without the package installed), so while these names are excluded and nobody
- * claims them, a user who has manually turned on the package's `reportUsage` will be
+ * S3 registers a fail-closed EventBus probe for `subagents:completed` / `subagents:failed`.
+ * Those probes mark Coverage `unavailable` and **do not enter All**, so while these names
+ * stay excluded, a user who has manually turned on the package's `reportUsage` will be
  * **under**-counted. Under-counting is the safe direction; double counting is not.
  */
 export const TINTINWEB_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"] as const;

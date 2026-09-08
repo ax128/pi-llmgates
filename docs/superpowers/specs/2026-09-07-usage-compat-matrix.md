@@ -26,7 +26,7 @@
 | pi-subagents async/foreground complete | `wired` | 既有 EventBus 旁路 | 与 meta 同 key 仍先到者胜（无 revision 的记录） |
 | 压缩 / 分支摘要 | `wired` | `session_compact` / `session_tree` | `fromHook` 模型不可见 |
 | 通用工具 `result.usage` | `wired` | `tool_execution_end` / `_update` | 与子代理工具名互斥表仍生效 |
-| 可选持久化 | `wired` | `LLMGATES_TPS_PERSIST` | 未做真实多进程 lock / ENOSPC 盘 |
+| 可选持久化 | `wired` | `LLMGATES_TPS_PERSIST` | 未做真实多进程 lock / ENOSPC 盘；损坏加载标 Coverage `partial` |
 
 默认路径修正：meta/tool 的本源 revision 分开去旧，账本按接收顺序替换；同 revision 的模型分区作为一组更新。工具进度保留 child 身份，不把并行结果压成一条。费用来源及缺失字段质量贯穿 `/calls` 标题、明细和状态行；Coverage 序号按 producer 递增。它们仍是本仓 focused fixture 覆盖，不提升真实运行器认证等级。持久化仍默认关，目录容量遍历、保留期清理和 checkpoint 预算问题留待专项。
 

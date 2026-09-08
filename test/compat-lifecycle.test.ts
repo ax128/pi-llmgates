@@ -209,12 +209,19 @@ describe("compat lifecycle", () => {
 			await pi.emit("session_start", { reason: "start" });
 			await deleteProviderAuthEntry(agentDir, loggedOut!.id);
 
-			await vi.waitFor(() => expect(listInstances(agentDir)).toEqual([retained]), { timeout: 5_000 });
+			// removeInstance runs before the success logWarn, so waiting only on
+			// listInstances() can observe the registry update with zero warn calls.
+			await vi.waitFor(
+				() => {
+					expect(listInstances(agentDir)).toEqual([retained]);
+					expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Removed logged-out.*gateway-a/i));
+				},
+				{ timeout: 5_000 },
+			);
 			expect(registration.providers.has(loggedOut!.id)).toBe(false);
 			expect(registration.providers.has(retained!.id)).toBe(true);
 			expect(pi.unregistered).toEqual([loggedOut!.id]);
 			expect(pi.registered.map((provider) => provider.id)).toContain(retained!.id);
-			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Removed logged-out.*gateway-a/i));
 		} finally {
 			warn.mockRestore();
 			cleanup();
