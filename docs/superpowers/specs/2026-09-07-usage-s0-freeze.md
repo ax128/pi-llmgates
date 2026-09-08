@@ -87,7 +87,7 @@
 
 达限或 `ENOSPC`：保留最后有效 checkpoint，停止新增 journal，coverage=`storage-exhausted`/`partial`。内存继续有界计量并标明非 durable。内存也满时记缺口，不换目录、不无限排队。损坏/未知版本 checkpoint：**不覆盖、不修复、不删除**。
 
-当前实现限制：保留期与 journal 分段仍是冻结目标，尚未实施自动清理/轮转；append 同步遍历 usage 目录，完整 checkpoint 超过 256KiB 会跳过写入并保留 journal。持久化专项须在默认启用前解决，不能把这些常量当作已实现能力。
+当前实现限制：保留期与 journal 分段仍是冻结目标，尚未实施自动清理/轮转；append 同步遍历 usage 目录，完整 checkpoint 超过 256KiB 会跳过写入并保留 journal。**下列常量只是冻结目标，当前没有对应实现，不得写成已交付：** `persistRetryMax` / `persistRetryBaseMs`（append 失败即降级，无重试）、`maxPendingOrphans` / `orphanTtlMs`（无 orphan 队列）、`queueSoftLimit`、`perTickReadBytes` / `perTickEvents` / `perTickMs`。加载时跳过损坏观察会把 Coverage 标 `partial`（`checkpoint-incomplete` / `journal-truncated`），不把缺口当成完整 durable。持久化专项须在默认启用前解决。
 
 ## 6. 迁移与回退
 
