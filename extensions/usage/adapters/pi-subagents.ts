@@ -16,7 +16,7 @@ export function stampSnapshotRevision(
 	records: readonly SubagentUsageRecord[],
 	revision: number,
 ): SubagentUsageRecord[] {
-	return records.map((record) => ({ ...record, revision }));
+	return records.map((record) => ({ ...record, revision, revisionSource: "tool" }));
 }
 
 /** Live tool progress: same parsers as end, stamped so later updates/end replace. */
@@ -30,7 +30,7 @@ export function extractUsageFromToolUpdate(
 		subagent: stampSnapshotRevision(
 			extractSubagentUsageFromToolExecution(toolName, partialResult, toolCallId).map((record) => ({
 				...record,
-				sourceKey: `toolprogress:${toolCallId}`,
+					sourceKey: `toolprogress:${encodeURIComponent(toolCallId)}:${encodeURIComponent(record.sourceKey)}`,
 			})),
 			revision,
 		),

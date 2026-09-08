@@ -38,12 +38,28 @@ export function replaceModelUsageStats(
 	}
 }
 
-export function formatCostWithQuality(amount: number, quality: MetricQuality): string {
+export function formatCostWithQuality(amount: number, quality: MetricQuality, hasEstimate = false): string {
+	const base = `${quality === "estimated" || hasEstimate ? "~" : ""}${formatCostUsd(amount)}`;
 	if (quality === "unknown") {
-		return amount > 0 ? `${formatCostUsd(amount)} + ?` : "?";
+		return amount > 0 ? `${base} + ?` : "?";
 	}
-	const base = formatCostUsd(amount);
+	return base;
+}
+
+function formatTokensWithQuality(count: number, quality: MetricQuality): string {
+	const base = formatTokenCount(count);
+	if (quality === "unknown") return count > 0 ? `${base} + ?` : "?";
 	return quality === "estimated" ? `~${base}` : base;
+}
+
+function formatCallsDetail(totals: LedgerTotals): string {
+	if (totals.callsQuality === "unknown" && totals.calls === 0) return "? calls";
+	const count = `${totals.callsQuality === "unknown" ? "≥" : ""}${totals.calls.toLocaleString()}`;
+	return `${count} ${totals.calls === 1 ? "call" : "calls"}`;
+}
+
+export function formatUsageScopeTitleFromLedger(scope: "turn" | "session", totals: LedgerTotals): string {
+	return `${scope === "turn" ? "This turn" : "This session"}: ${formatCallsDetail(totals)} · cost ${formatCostWithQuality(totals.costUsd, totals.costQuality, totals.hasEstimatedCost)} · in ${formatTokensWithQuality(totals.input, totals.inputQuality)} out ${formatTokensWithQuality(totals.output, totals.outputQuality)}`;
 }
 
 export function formatCoverageLines(rows: readonly CoverageRow[]): string[] {
@@ -79,7 +95,7 @@ export function formatTpsScopeWithQuality(
 	if (scope === "all") {
 		return `${prefix} ${elapsed}.${calls}`;
 	}
-	return `${prefix} ${elapsed}.${calls}.${formatCostWithQuality(totals.costUsd, totals.costQuality)}`;
+	return `${prefix} ${elapsed}.${calls}.${formatCostWithQuality(totals.costUsd, totals.costQuality, totals.hasEstimatedCost)}`;
 }
 
 export function formatUsageBreakdownFromLedger(models: ReadonlyMap<string, LedgerTotals>): string[] {
@@ -92,11 +108,6 @@ export function formatUsageBreakdownFromLedger(models: ReadonlyMap<string, Ledge
 				a[0].localeCompare(b[0]),
 		)
 		.map(([model, totals]) => {
-			const callLabel = totals.calls === 1 ? "call" : "calls";
-			const calls =
-				totals.callsQuality === "unknown" && totals.calls > 0
-					? `≥${totals.calls.toLocaleString()} ${callLabel}`
-					: `${totals.calls.toLocaleString()} ${callLabel}`;
-			return `${model} · ${calls} · in ${formatTokenCount(totals.input)} out ${formatTokenCount(totals.output)} · cost ${formatCostWithQuality(totals.costUsd, totals.costQuality)}`;
+			return `${model} · ${formatCallsDetail(totals)} · in ${formatTokensWithQuality(totals.input, totals.inputQuality)} out ${formatTokensWithQuality(totals.output, totals.outputQuality)} · cost ${formatCostWithQuality(totals.costUsd, totals.costQuality, totals.hasEstimatedCost)}`;
 		});
 }

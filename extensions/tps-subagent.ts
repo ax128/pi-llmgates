@@ -6,6 +6,7 @@ import {
 	type ModelUsageStats,
 } from "./tps-stats.js";
 import { isPlainObject } from "./util.js";
+import type { MetricQuality } from "./usage/contract.js";
 
 export const PI_SUBAGENTS_DIR = ".pi-subagents";
 export const PI_SUBAGENTS_ARTIFACTS_DIR = join(PI_SUBAGENTS_DIR, "artifacts");
@@ -31,6 +32,9 @@ export interface SubagentModelUsage {
 	cacheRead: number;
 	cacheWrite: number;
 	costUsd: number;
+	/** Evidence retained before local pricing and legacy numeric normalization. */
+	costQuality?: MetricQuality;
+	callsQuality?: MetricQuality;
 }
 
 export interface SubagentUsageRecord extends SubagentModelUsage {
@@ -39,6 +43,8 @@ export interface SubagentUsageRecord extends SubagentModelUsage {
 	modelBreakdown?: readonly SubagentModelUsage[];
 	/** When set and greater than the previous value, the same sourceKey replaces rather than first-wins. */
 	revision?: number;
+	/** Revisions are comparable only within this inlet. */
+	revisionSource?: "meta" | "tool";
 }
 
 export interface SubagentUsageCounters {
@@ -177,6 +183,7 @@ export function usageCountersToRecord(
 	sourceKey: string,
 	modelLabel: string,
 	usage: SubagentUsageCounters,
+	costQuality: MetricQuality = "reported",
 ): SubagentUsageRecord | null {
 	const calls = normalizeCalls(usage.turns);
 	const input = normalizeTokenCount(usage.input);
@@ -196,6 +203,7 @@ export function usageCountersToRecord(
 		cacheRead,
 		cacheWrite,
 		costUsd,
+		costQuality: costUsd > 0 ? costQuality : "unknown",
 	};
 }
 
@@ -488,6 +496,7 @@ function aggregateModelAttemptsByModel(
 			usage.cacheRead += normalized.cacheRead;
 			usage.cacheWrite += normalized.cacheWrite;
 			usage.costUsd += normalized.costUsd;
+			if (usage.costQuality !== normalized.costQuality) usage.costQuality = "unknown";
 		} else {
 			const { sourceKey: _, ...modelUsage } = normalized;
 			byModel.set(modelLabel, modelUsage);
@@ -527,6 +536,7 @@ function recordFromPartial(
 		modelBreakdown.push({
 			modelLabel: "subagent/mixed",
 			calls: calls - breakdownCalls,
+			callsQuality: "reported",
 			input: 0,
 			output: 0,
 			cacheRead: 0,
@@ -797,7 +807,7 @@ export function collectPiSubagentsMetaUsage(
 				continue;
 			}
 			const prev = metaMtimeMs?.get(sourceKey);
-			if (prev !== undefined && existing.mtimeMs > prev) {
+			if (metaMtimeMs && (prev === undefined || existing.mtimeMs > prev)) {
 				grown = true;
 			}
 			if (!grown) {
@@ -831,6 +841,7 @@ export function collectPiSubagentsMetaUsage(
 		if (record) {
 			pendingNullMeta?.delete(sourceKey);
 			record.revision = Math.floor(stats.mtimeMs);
+			record.revisionSource = "meta";
 			metaMtimeMs?.set(sourceKey, stats.mtimeMs);
 			out.push(record);
 		} else {
@@ -854,6 +865,8 @@ export type SubagentIngestState = {
 	pendingNullMeta: Map<string, number>;
 	/** sourceKey → last ingested revision (mtime or tool-progress clock). */
 	revisions: Map<string, number>;
+	/** Per-inlet watermarks; wall-clock mtimes never compare with tool counters. */
+	revisionDomains: Map<string, number>;
 	/** sourceKey → last successful meta mtime; growth re-reads the file. */
 	metaMtimeMs: Map<string, number>;
 };
@@ -865,6 +878,7 @@ export function createSubagentIngestState(): SubagentIngestState {
 		perChildRunIds: new Set(),
 		pendingNullMeta: new Map(),
 		revisions: new Map(),
+		revisionDomains: new Map(),
 		metaMtimeMs: new Map(),
 	};
 }
@@ -894,9 +908,11 @@ export function selectFreshSubagentRecords(
 	const fresh: SubagentUsageRecord[] = [];
 	for (const record of records) {
 		const nextRev = record.revision ?? 0;
+		const domainKey = `${record.sourceKey}\0${record.revisionSource ?? "legacy"}`;
 		if (state.keys.has(record.sourceKey)) {
 			const prevRev = state.revisions.get(record.sourceKey) ?? 0;
-			if (prevRev === 0 || nextRev <= prevRev) {
+			const domainRev = state.revisionDomains.get(domainKey);
+			if (prevRev === 0 || nextRev === 0 || (domainRev !== undefined && nextRev <= domainRev)) {
 				continue;
 			}
 			const meta = parseMetaSourceKeyGranularity(record.sourceKey);
@@ -933,6 +949,7 @@ export function selectFreshSubagentRecords(
 		}
 		state.keys.add(record.sourceKey);
 		state.revisions.set(record.sourceKey, nextRev);
+		state.revisionDomains.set(domainKey, nextRev);
 		const meta = parseMetaSourceKeyGranularity(record.sourceKey);
 		if (meta) {
 			if (meta.kind === "aggregate") {

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -484,6 +484,7 @@ describe("tps subagent usage", () => {
 				cacheRead: 0,
 				cacheWrite: 0,
 				costUsd: 0.01,
+				costQuality: "reported",
 			},
 			{
 				modelLabel: "model-b",
@@ -493,10 +494,12 @@ describe("tps subagent usage", () => {
 				cacheRead: 0,
 				cacheWrite: 0,
 				costUsd: 0.02,
+				costQuality: "reported",
 			},
 			{
 				modelLabel: "subagent/mixed",
 				calls: 2,
+				callsQuality: "reported",
 				input: 0,
 				output: 0,
 				cacheRead: 0,
@@ -893,6 +896,35 @@ describe("tps subagent usage", () => {
 		expect(selectFreshSubagentRecords(state, [first])).toEqual([first]);
 		expect(selectFreshSubagentRecords(state, [{ ...first }])).toEqual([]);
 		expect(selectFreshSubagentRecords(state, [later])).toEqual([later]);
+	});
+
+	it("compares revisions within each inlet instead of comparing mtimes with tool counters", () => {
+		const state = createSubagentIngestState();
+		const meta = { sourceKey: "meta:abcd:worker:0", modelLabel: "worker", calls: 2, input: 100, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 0, revision: 1_700_000_000_000, revisionSource: "meta" as const };
+		const tool = { ...meta, input: 90, revision: 2, revisionSource: "tool" as const };
+		expect(selectFreshSubagentRecords(state, [meta])).toEqual([meta]);
+		expect(selectFreshSubagentRecords(state, [tool])).toEqual([tool]);
+		expect(selectFreshSubagentRecords(state, [meta, tool])).toEqual([]);
+		const newerMeta = { ...meta, input: 120, revision: meta.revision + 1 };
+		expect(selectFreshSubagentRecords(state, [newerMeta])).toEqual([newerMeta]);
+		expect(selectFreshSubagentRecords(state, [meta, tool])).toEqual([]);
+	});
+
+	it("reads a meta baseline after a tool result, then skips its unchanged mtime", () => {
+		const root = mkdtempSync(join(tmpdir(), "meta-after-tool-"));
+		try {
+			const state = createSubagentIngestState();
+			const tool = { sourceKey: "meta:abcd:worker:0", modelLabel: "worker", calls: 2, input: 10, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 0, revision: 1, revisionSource: "tool" as const };
+			selectFreshSubagentRecords(state, [tool]);
+			writeFileSync(join(root, "abcd_worker_0_meta.json"), JSON.stringify({ model: "worker", usage: { turns: 3, input: 20 } }));
+			const scan = () => collectPiSubagentsMetaUsage(root, 0, state.keys, new Set(["abcd"]), undefined, state.pendingNullMeta, state.metaMtimeMs);
+			const records = scan();
+			expect(records).toHaveLength(1);
+			expect(selectFreshSubagentRecords(state, records)).toHaveLength(1);
+			expect(scan()).toHaveLength(0);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
 

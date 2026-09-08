@@ -39,6 +39,8 @@ export interface LedgerTotals {
 	callsQuality: MetricQuality;
 	costQuality: MetricQuality;
 	hasUnknown: boolean;
+	/** Retain the estimate marker even when another observation has unknown cost. */
+	hasEstimatedCost?: boolean;
 }
 
 export interface CoverageRow {
@@ -151,6 +153,10 @@ export class UsageLedger {
 	private readonly records = new Map<string, StoredRecord>();
 	private readonly producerSeq = new Map<string, { seen: Set<number>; min: number; max: number }>();
 	private persistState: CoverageRow["persist"] = "memory";
+	private memoryExhausted = false;
+	private readonly snapshotGroups = new Map<string, { revision: number; keys: Set<string> }>();
+	private readonly totalsCache = new Map<string | undefined, LedgerTotals>();
+	private readonly modelsCache = new Map<string | undefined, Map<string, LedgerTotals>>();
 	readonly collectedSinceMs: number;
 
 	constructor(
@@ -174,7 +180,16 @@ export class UsageLedger {
 			return { accepted: false, reason: "rootSessionId mismatch" };
 		}
 
-		const identity = identityFor(obs);
+		const groupKey = obs.kind === "snapshot" ? snapshotIdentity(obs) : undefined;
+		const group = groupKey === undefined ? undefined : this.snapshotGroups.get(groupKey);
+		if (group && revisionOf(obs) < group.revision) {
+			return { accepted: false, reason: "stale revision" };
+		}
+		// A snapshot revision can contain multiple model partitions. A newer
+		// revision replaces the entire prior partition set, including removed models.
+		const identity = groupKey === undefined
+			? identityFor(obs)
+			: `${groupKey}\0${obs.provider ?? ""}\0${obs.model ?? ""}`;
 		const existing = this.records.get(identity);
 		if (existing && revisionOf(obs) < revisionOf(existing.observation)) {
 			return { accepted: false, reason: "stale revision" };
@@ -183,14 +198,25 @@ export class UsageLedger {
 			return { accepted: true, reason: "idempotent" };
 		}
 
-		if (!existing && this.records.size >= USAGE_LIMITS.maxMemoryObservations) {
+		const replacingGroup = group && revisionOf(obs) > group.revision;
+		if (!existing && this.records.size - (replacingGroup ? group.keys.size : 0) >= USAGE_LIMITS.maxMemoryObservations) {
 			if (!this.evictProvisional()) {
-				this.persistState = "storage-exhausted";
+				this.memoryExhausted = true;
+				this.invalidateProjections();
 				return { accepted: false, reason: "memory-exhausted" };
 			}
 		}
 
+		if (replacingGroup) {
+			for (const key of [...group.keys]) this.deleteRecord(key);
+		}
 		this.records.set(identity, { observation: obs, identity });
+		if (groupKey !== undefined) {
+			const current = this.snapshotGroups.get(groupKey) ?? { revision: revisionOf(obs), keys: new Set<string>() };
+			current.keys.add(identity);
+			this.snapshotGroups.set(groupKey, current);
+		}
+		this.invalidateProjections();
 		this.trackSequence(obs);
 		if (isFinalizedPhase(obs) && obs.kind === "response") {
 			this.dropMatchingProvisional(obs);
@@ -199,7 +225,12 @@ export class UsageLedger {
 	}
 
 	finalizedTotals(filter: { originTurnId?: string } = {}): LedgerTotals {
-		return this.sumRecords(this.finalizedRecords(), filter.originTurnId);
+		let totals = this.totalsCache.get(filter.originTurnId);
+		if (!totals) {
+			totals = this.sumRecords(this.finalizedRecords(), filter.originTurnId);
+			this.totalsCache.set(filter.originTurnId, totals);
+		}
+		return { ...totals };
 	}
 
 	provisionalTotals(filter: { originTurnId?: string } = {}): LedgerTotals {
@@ -225,7 +256,7 @@ export class UsageLedger {
 				status,
 				lastObservedAt: obs.observedAt,
 				persist: this.persistState,
-				reason: gap ? "sequence-gap" : status === "partial" ? "subtree-or-incomplete-metrics" : undefined,
+				reason: this.memoryExhausted ? "memory-exhausted" : gap ? "sequence-gap" : status === "partial" ? "subtree-or-incomplete-metrics" : undefined,
 			};
 			if (!current || obs.observedAt >= current.lastObservedAt) {
 				byProducer.set(key, row);
@@ -258,16 +289,18 @@ export class UsageLedger {
 	}
 
 	snapshot(): UsageObservationV1[] {
-		return [...this.records.values()].map((row) => row.observation);
+		return [...this.records.values()].map((row) => structuredClone(row.observation));
 	}
 
 	dropWhere(predicate: (observation: UsageObservationV1) => boolean): void {
 		for (const [key, row] of [...this.records]) {
-			if (predicate(row.observation)) this.records.delete(key);
+			if (predicate(row.observation)) this.deleteRecord(key);
 		}
 	}
 
 	finalizedModelStats(filter: { originTurnId?: string } = {}): Map<string, LedgerTotals> {
+		const cached = this.modelsCache.get(filter.originTurnId);
+		if (cached) return new Map([...cached].map(([label, totals]) => [label, { ...totals }]));
 		const groups = new Map<string, UsageObservationV1[]>();
 		for (const obs of this.finalizedRecords()) {
 			if (filter.originTurnId && obs.originTurnId !== filter.originTurnId) continue;
@@ -280,7 +313,8 @@ export class UsageLedger {
 		for (const [label, rows] of groups) {
 			out.set(label, this.sumRecords(rows));
 		}
-		return out;
+		this.modelsCache.set(filter.originTurnId, out);
+		return new Map([...out].map(([label, totals]) => [label, { ...totals }]));
 	}
 
 	sourceIdentity(): UsageSourceIdentity | undefined {
@@ -329,9 +363,6 @@ export class UsageLedger {
 			if (originTurnId && obs.originTurnId !== originTurnId) continue;
 			saw = true;
 			for (const metric of USAGE_METRIC_KEYS) {
-				const hasUsage = obs.usage?.[metric] !== undefined;
-				const hasQuality = obs.metricQuality?.[metric] !== undefined;
-				if (!hasUsage && !hasQuality) continue;
 				const q = qualityOf(obs, metric);
 				qualities[metric] = qualities[metric] ? worseQuality(qualities[metric]!, q) : q;
 				const value = obs.usage?.[metric];
@@ -342,12 +373,14 @@ export class UsageLedger {
 					continue;
 				}
 				if (typeof value !== "number") continue;
-				if (metric === "costUsd") totals.costUsd += value;
-				else if (metric === "calls") totals.calls += value;
+				if (metric === "costUsd") {
+					totals.costUsd += value;
+					if (q === "estimated") totals.hasEstimatedCost = true;
+				} else if (metric === "calls") totals.calls += value;
 				else totals[metric] += value;
 			}
 		}
-		if (!saw) {
+		if (!saw && !this.memoryExhausted) {
 			return emptyTotals();
 		}
 		totals.inputQuality = qualities.input ?? "unknown";
@@ -359,11 +392,17 @@ export class UsageLedger {
 		totals.callsQuality = qualities.calls ?? "unknown";
 		totals.costQuality = qualities.costUsd ?? "unknown";
 		totals.hasUnknown = USAGE_METRIC_KEYS.some((metric) => qualities[metric] === "unknown");
+		if (this.memoryExhausted) {
+			totals.callsQuality = totals.costQuality = totals.inputQuality = totals.outputQuality = "unknown";
+			totals.cacheReadQuality = totals.cacheWriteQuality = totals.cacheWrite1hQuality = totals.totalTokensQuality = "unknown";
+			totals.hasUnknown = true;
+		}
 		return totals;
 	}
 
 	private coverageStatus(obs: { kind: UsageKind; phase: UsageObservationV1["phase"] }, gap: boolean): CoverageStatus {
 		if (this.persistState === "storage-exhausted") return "storage-exhausted";
+		if (this.memoryExhausted) return "partial";
 		if (gap) return "partial";
 		if (obs.kind === "snapshot") return "partial";
 		if (obs.phase === "provisional" || obs.phase === "running") return "live";
@@ -393,7 +432,7 @@ export class UsageLedger {
 			} else if (row.observation.callId) {
 				continue;
 			}
-			this.records.delete(key);
+			this.deleteRecord(key);
 		}
 	}
 
@@ -408,8 +447,26 @@ export class UsageLedger {
 			}
 		}
 		if (!oldestKey) return false;
-		this.records.delete(oldestKey);
+		this.deleteRecord(oldestKey);
 		return true;
+	}
+
+	private invalidateProjections(): void {
+		this.totalsCache.clear();
+		this.modelsCache.clear();
+	}
+
+	private deleteRecord(key: string): void {
+		const row = this.records.get(key);
+		if (!row) return;
+		this.records.delete(key);
+		if (row.observation.kind === "snapshot") {
+			const groupKey = snapshotIdentity(row.observation);
+			const group = this.snapshotGroups.get(groupKey);
+			group?.keys.delete(key);
+			if (group?.keys.size === 0) this.snapshotGroups.delete(groupKey);
+		}
+		this.invalidateProjections();
 	}
 }
 

@@ -15,6 +15,20 @@ function collector() {
 }
 
 describe("UsageCollector origin-turn binding", () => {
+	it("keeps producer sequences continuous when parent and tool observations interleave", () => {
+		const { session, cleanup } = collector();
+		try {
+			session.beginTurn();
+			const message = { role: "assistant", model: "parent", usage: { input: 10 } };
+			session.ingestAssistant(message);
+			session.ingestLegacyRecords([{ sourceKey: "tool:x", modelLabel: "worker", calls: 1, input: 5, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 0 }], "tool-nested");
+			session.ingestAssistant(message);
+			expect(session.coverageRows().some((row) => row.reason === "sequence-gap")).toBe(false);
+			expect(session.ledger.snapshot().filter((row) => row.producerId === "parent-assistant").map((row) => row.sequence)).toEqual([1, 2]);
+		} finally {
+			cleanup();
+		}
+	});
 	it("keeps a run on the turn where it was first bound, not the arrival turn", () => {
 		const { session, cleanup } = collector();
 		try {
