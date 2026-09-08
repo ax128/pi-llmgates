@@ -13,6 +13,7 @@ function createRuntime(cwd: string, sessionFile?: string) {
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, Command>();
 	const selections: string[][] = [];
+	const titles: string[] = [];
 	const scopeChoices: string[] = [];
 	const statuses: Array<{ context: string; value: string | undefined }> = [];
 	const notifications: Array<{ context: string; message: string }> = [];
@@ -37,7 +38,8 @@ function createRuntime(cwd: string, sessionFile?: string) {
 				notify(message: string) {
 					notifications.push({ context, message });
 				},
-				select: async (_title: string, options: string[]) => {
+				select: async (title: string, options: string[]) => {
+					titles.push(title);
 					if (scopeChoices.length > 0) return scopeChoices.shift();
 					selections.push(options);
 					return undefined;
@@ -69,6 +71,7 @@ function createRuntime(cwd: string, sessionFile?: string) {
 		ctx,
 		commands,
 		selections,
+		titles,
 		scopeChoices,
 		statuses,
 		notifications,
@@ -86,6 +89,118 @@ function createRuntime(cwd: string, sessionFile?: string) {
 }
 
 describe("tps runtime subagent ordering", () => {
+	it("replaces meta and tool snapshots in acceptance order across their revision domains", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-revision-domains-"));
+		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const runtime = createRuntime(cwd);
+		const metaPath = join(artifactsDir, "abcd_worker_0_meta.json");
+		const child = (input: number) => ({ agent: "worker", index: 0, model: "worker", usage: { input, turns: 2 } });
+		const show = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", runtime.ctx);
+			return runtime.selections.at(-1)!;
+		};
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			await runtime.emit("tool_execution_end", { toolName: "subagent", toolCallId: "launch", result: { details: { runId: "abcd", async: true } } });
+			writeFileSync(metaPath, JSON.stringify(child(180)));
+			const now = Date.now() / 1000 + 1;
+			utimesSync(metaPath, now, now);
+			await runtime.emit("agent_settled");
+			expect((await show())[0]).toContain("in 180");
+			await runtime.emit("tool_execution_end", { toolName: "subagent", toolCallId: "final", result: { details: { runId: "abcd", results: [child(170)] } } });
+			expect((await show())[0]).toContain("in 170");
+			// A later change from the meta inlet must still be compared against its
+			// own mtime, then replace the prior shared contribution exactly once.
+			writeFileSync(metaPath, JSON.stringify(child(190)));
+			utimesSync(metaPath, now + 1, now + 1);
+			await runtime.emit("before_agent_start");
+			await runtime.emit("agent_settled");
+			const rows = await show();
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toContain("in 190");
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+	it("keeps missing assistant metrics visible in the footer and /calls title", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-quality-"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			await runtime.emit("message_end", { message: { role: "assistant", model: "m", usage: { input: 10, output: 5, cost: { total: 0.01 } } } });
+			await runtime.emit("message_end", { message: { role: "assistant", model: "m", usage: { input: 0, output: 0, cost: { total: 0 } } } });
+			await runtime.emit("agent_settled");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(runtime.statuses.at(-1)?.value).toContain("2c.~$0.010 + ?");
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", runtime.ctx);
+			expect(runtime.titles.at(-1)).toBe("This session: 2 calls · cost ~$0.010 + ? · in 10 + ? out 5 + ?");
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps parallel progress children and replaces the entire progress shape", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-parallel-progress-"));
+		const runtime = createRuntime(cwd);
+		const child = (model: string, index: number, input: number) => ({ agent: "worker", index, model, usage: { input, output: 1, turns: 1 } });
+		const show = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", runtime.ctx);
+			return runtime.selections.at(-1)!;
+		};
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			await runtime.emit("tool_execution_update", { toolName: "subagent", toolCallId: "parallel", partialResult: { details: { results: [child("a", 0, 5), child("b", 1, 7)] } } });
+			expect(await show()).toEqual(expect.arrayContaining([expect.stringContaining("a · ≥1 call · in 5"), expect.stringContaining("b · ≥1 call · in 7")]));
+			await runtime.emit("tool_execution_update", { toolName: "subagent", toolCallId: "parallel", partialResult: { details: { results: [child("b", 1, 9)] } } });
+			expect(await show()).toHaveLength(1);
+			await runtime.emit("tool_execution_end", { toolName: "subagent", toolCallId: "parallel", result: { details: { results: [child("b", 1, 12)] } } });
+			const rows = await show();
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toContain("b · ≥1 call · in 12");
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves model-attempt partitions through the ledger and removes superseded models", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-model-partitions-"));
+		const runtime = createRuntime(cwd);
+		const end = (modelAttempts: unknown[]) => runtime.emit("tool_execution_end", {
+			toolName: "subagent", toolCallId: "models", result: { details: { runId: "abcd", results: [{ agent: "worker", index: 0, modelAttempts }] } },
+		});
+		const show = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", runtime.ctx);
+			return runtime.selections.at(-1)!;
+		};
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			await end([{ model: "a", usage: { turns: 2, input: 10, cost: 0.01 } }, { model: "b", usage: { turns: 3, input: 20, cost: 0.02 } }]);
+			const rows = await show();
+			expect(rows).toEqual(expect.arrayContaining([expect.stringContaining("a · 2 calls · in 10"), expect.stringContaining("b · 3 calls · in 20")]));
+			await end([{ model: "b", usage: { turns: 2, input: 15, cost: 0.015 } }]);
+			const replaced = await show();
+			expect(replaced).toHaveLength(1);
+			expect(replaced[0]).toContain("b · 2 calls · in 15");
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
 	it("binds queued usage and settle work to consecutive turns", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-turn-race-"));
 		const runtime = createRuntime(cwd);

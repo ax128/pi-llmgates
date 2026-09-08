@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { USAGE_SCHEMA_VERSION } from "../extensions/usage/contract.js";
 import { UsageLedger } from "../extensions/usage/ledger.js";
 
@@ -245,11 +245,11 @@ describe("UsageLedger", () => {
 		expect(totals.hasUnknown).toBe(true);
 	});
 
-	it("does not mark unseen metrics unknown when only some fields were reported", () => {
+	it("keeps unseen metrics unknown when only some fields were reported", () => {
 		const ledger = new UsageLedger("root-1");
 		ledger.ingest(obs({ usage: { input: 10, calls: 1 }, metricQuality: { input: "reported", calls: "reported" } }));
 		const totals = ledger.finalizedTotals();
-		expect(totals.hasUnknown).toBe(false);
+		expect(totals.hasUnknown).toBe(true);
 		expect(totals.cacheReadQuality).toBe("unknown");
 	});
 
@@ -261,7 +261,7 @@ describe("UsageLedger", () => {
 		expect(ledger.coverage().some((row) => row.reason === "sequence-gap")).toBe(true);
 	});
 
-	it("marks coverage storage-exhausted when the memory cap cannot evict", () => {
+	it("marks memory exhaustion separately from persistence and makes totals a lower bound", () => {
 		const ledger = new UsageLedger("root-1");
 		for (let i = 0; i < 10_000; i++) {
 			ledger.ingest(
@@ -278,9 +278,55 @@ describe("UsageLedger", () => {
 		);
 		expect(result.accepted).toBe(false);
 		expect(result.reason).toBe("memory-exhausted");
-		expect(ledger.coverage().some((row) => row.status === "storage-exhausted" || row.persist === "storage-exhausted")).toBe(
+		expect(ledger.coverage().some((row) => row.reason === "memory-exhausted" && row.persist === "memory" && row.status === "partial")).toBe(
 			true,
 		);
+		expect(ledger.finalizedTotals().callsQuality).toBe("unknown");
+	});
+
+	it("propagates missing metrics alongside known estimates, but accepts an explicit reported zero", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(obs());
+		ledger.ingest(obs({ callId: "c2", sequence: 2, usage: { calls: 1 }, metricQuality: { calls: "reported" } }));
+		expect(ledger.finalizedTotals()).toMatchObject({
+			input: 10, inputQuality: "unknown", costUsd: 0.01, costQuality: "unknown", hasEstimatedCost: true,
+			calls: 2, callsQuality: "reported",
+		});
+		ledger.ingest(obs({ callId: "c2", sequence: 3, usage: { calls: 1, costUsd: 0, input: 0 }, metricQuality: { calls: "reported", costUsd: "reported", input: "reported" } }));
+		expect(ledger.finalizedTotals()).toMatchObject({ inputQuality: "reported", costQuality: "estimated" });
+	});
+
+	it("replaces all model partitions of a snapshot and rejects older partitions on replay", () => {
+		const ledger = new UsageLedger("root-1");
+		const partition = (model: string, revision: number, input: number) => obs({
+			kind: "snapshot", snapshotEpoch: "group-1", model, revision, sequence: revision,
+			usage: { input, calls: 1 },
+		});
+		ledger.ingest(partition("a", 1, 10));
+		ledger.ingest(partition("b", 1, 20));
+		expect(ledger.finalizedTotals().input).toBe(30);
+		expect([...ledger.finalizedModelStats().keys()]).toEqual(["a", "b"]);
+		ledger.ingest(partition("b", 2, 15));
+		expect(ledger.ingest(partition("a", 1, 10)).accepted).toBe(false);
+		expect(ledger.finalizedTotals().input).toBe(15);
+		expect([...ledger.finalizedModelStats().keys()]).toEqual(["b"]);
+	});
+
+	it("reuses unchanged projections without exposing cached totals to caller mutations", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(obs());
+		const projections = vi.spyOn(ledger as unknown as { finalizedRecords(): unknown[] }, "finalizedRecords");
+		ledger.finalizedTotals({ originTurnId: "turn-1" }).input = 999;
+		ledger.finalizedModelStats().get("gpt-test")!.input = 999;
+		ledger.snapshot()[0]!.usage!.input = 999;
+		for (let i = 0; i < 10; i++) {
+			expect(ledger.finalizedTotals({ originTurnId: "turn-1" }).input).toBe(10);
+			expect(ledger.finalizedModelStats().get("gpt-test")!.input).toBe(10);
+		}
+		expect(projections).toHaveBeenCalledTimes(2);
+		ledger.dropWhere(() => true);
+		expect(ledger.finalizedTotals({ originTurnId: "turn-1" }).input).toBe(0);
+		expect(ledger.finalizedModelStats().size).toBe(0);
 	});
 
 	it("marks finalized responses final-only rather than live", () => {

@@ -153,7 +153,7 @@ export function observationFromLegacyRecord(
 			costUsd: record.costUsd,
 			calls: record.calls,
 		},
-		{ presentKeys: new Set(), costSource: record.costUsd > 0 ? "protocol" : "unknown" },
+		{ presentKeys: new Set(), costSource: "unknown" },
 	);
 	if (record.input > 0) {
 		usage.input = record.input;
@@ -173,7 +173,7 @@ export function observationFromLegacyRecord(
 	}
 	if (record.costUsd > 0) {
 		usage.costUsd = record.costUsd;
-		quality.costUsd = "reported";
+		quality.costUsd = record.costQuality ?? "unknown";
 	}
 	const hasEvidence =
 		record.input > 0 ||
@@ -181,7 +181,10 @@ export function observationFromLegacyRecord(
 		record.cacheRead > 0 ||
 		record.cacheWrite > 0 ||
 		record.costUsd > 0;
-	if (hasEvidence && record.calls > 1) {
+	if (record.calls > 0 && record.callsQuality !== undefined) {
+		usage.calls = record.calls;
+		quality.calls = record.callsQuality;
+	} else if (hasEvidence && record.calls > 1) {
 		usage.calls = record.calls;
 		quality.calls = "reported";
 	} else if (hasEvidence && record.calls >= 1) {

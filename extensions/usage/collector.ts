@@ -35,7 +35,7 @@ export class UsageCollector {
 	readonly ledger: UsageLedger;
 	private turnSeq = 0;
 	private originTurnId = PRE_TURN_ID;
-	private sequence = 0;
+	private readonly sequences = new Map<string, number>();
 	private readonly runOrigin = new Map<string, string>();
 	private extraCoverage: CoverageRow[] = [];
 
@@ -62,12 +62,12 @@ export class UsageCollector {
 	dropProgressForToolCall(toolCallId: string): void {
 		const id = toolCallId.trim();
 		if (!id) return;
-		const progressKey = `toolprogress:${id}`;
+		const progressKey = `toolprogress:${encodeURIComponent(id)}`;
 		const toolPrefix = `tool:${id}:`;
 		this.ledger.dropWhere((observation) => {
 			const exec = observation.executionId;
 			const epoch = observation.snapshotEpoch ?? "";
-			return exec === progressKey || epoch === progressKey || exec.startsWith(toolPrefix);
+			return exec === progressKey || exec.startsWith(`${progressKey}:`) || epoch === progressKey || exec.startsWith(toolPrefix);
 		});
 	}
 
@@ -116,20 +116,25 @@ export class UsageCollector {
 				fallbackOriginTurnId;
 			const originTurnId = assignableOriginTurnId(boundOrigin);
 			const recordRunId = (parsedRunId && this.runOrigin.has(parsedRunId) ? parsedRunId : undefined) ?? runId ?? parsedRunId;
-			const obs = observationFromLegacyRecord(
-				record,
-				{
-					...this.identity(record.sourceKey, observedAt, originTurnId),
-					executionId: record.sourceKey,
-					runId: recordRunId ?? record.sourceKey,
-					childId: record.sourceKey,
-				},
-				record.revision
-					? { kind: "snapshot", snapshotEpoch: record.sourceKey, revision: record.revision }
-					: undefined,
-			);
-			if (!obs) continue;
-			if (this.accept(obs)) n += 1;
+			for (const partition of record.modelBreakdown ?? [record]) {
+				const obs = observationFromLegacyRecord(
+					{ ...partition, sourceKey: record.sourceKey },
+					{
+						...this.identity(record.sourceKey, observedAt, originTurnId),
+						executionId: record.sourceKey,
+						runId: recordRunId ?? record.sourceKey,
+						childId: record.sourceKey,
+					},
+					record.revision
+						? { kind: "snapshot", snapshotEpoch: record.sourceKey, revision: record.revision }
+						: undefined,
+				);
+				if (!obs) continue;
+				if (record.modelBreakdown && obs.kind === "response") {
+					obs.callId = `${record.sourceKey}:model:${partition.modelLabel}`;
+				}
+				if (this.accept(obs)) n += 1;
+			}
 		}
 		return n;
 	}
@@ -182,10 +187,9 @@ export class UsageCollector {
 	}
 
 	private restoreCounters(loaded: readonly UsageObservationV1[]): void {
-		let maxSequence = this.sequence;
 		let maxTurn = this.turnSeq;
 		for (const observation of loaded) {
-			if (observation.sequence > maxSequence) maxSequence = observation.sequence;
+			this.sequences.set(observation.producerId, Math.max(this.sequences.get(observation.producerId) ?? 0, observation.sequence));
 			const turnMatch = /^turn-(\d+)$/.exec(observation.originTurnId);
 			if (turnMatch) maxTurn = Math.max(maxTurn, Number(turnMatch[1]));
 			const runId = observation.runId?.trim();
@@ -193,7 +197,6 @@ export class UsageCollector {
 				this.runOrigin.set(runId, assignableOriginTurnId(observation.originTurnId));
 			}
 		}
-		this.sequence = maxSequence;
 		this.turnSeq = maxTurn;
 		this.originTurnId = maxTurn > 0 ? `turn-${maxTurn}` : PRE_TURN_ID;
 	}
@@ -209,13 +212,14 @@ export class UsageCollector {
 	}
 
 	private identity(producerId: string, observedAt: number, originTurnId = this.originTurnId): ObservationIdentity {
-		this.sequence += 1;
+		const sequence = (this.sequences.get(producerId) ?? 0) + 1;
+		this.sequences.set(producerId, sequence);
 		return {
 			rootSessionId: this.rootSessionId,
 			sessionId: this.sessionId,
 			originTurnId: assignableOriginTurnId(originTurnId),
 			producerId,
-			sequence: this.sequence,
+			sequence,
 			observedAt,
 		};
 	}

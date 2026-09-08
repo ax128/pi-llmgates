@@ -6,6 +6,7 @@ import {
 	TOOL_USAGE_CLAIMED_ELSEWHERE,
 } from "../extensions/tps-usage-inlets.js";
 import { parseMetaSourceKeyGranularity, SUBAGENT_TOOL_NAMES } from "../extensions/tps-subagent.js";
+import { observationFromLegacyRecord } from "../extensions/usage/legacy-adapter.js";
 
 const MODEL = { id: "gpt-5.6-luna", provider: "llmgates" };
 
@@ -29,6 +30,18 @@ function compactionEntry(overrides: Record<string, unknown> = {}) {
 }
 
 describe("extractCompactionUsage", () => {
+	it("carries estimated, protocol and unknown cost provenance through the legacy adapter", () => {
+		const identity = { rootSessionId: "r", sessionId: "s", originTurnId: "t", producerId: "p", sequence: 1, observedAt: 1 };
+		const compact = extractCompactionUsage(compactionEntry(), "compact", MODEL)!;
+		expect(observationFromLegacyRecord(compact, identity)?.metricQuality?.costUsd).toBe("estimated");
+		const estimated = extractToolResultUsage("delegate", { model: MODEL.id, usage: { input: 1000 } }, "tool-estimate")[0]!;
+		expect(estimated.costUsd).toBeGreaterThan(0);
+		expect(observationFromLegacyRecord(estimated, identity)?.metricQuality?.costUsd).toBe("estimated");
+		const protocol = extractToolResultUsage("delegate", { usage: { input: 1000, cost: 0.42 } }, "tool-reported")[0]!;
+		expect(observationFromLegacyRecord(protocol, identity)?.metricQuality?.costUsd).toBe("reported");
+		const unknown = extractToolResultUsage("delegate", { usage: { input: 1000, cost: { total: 0.42 } } }, "tool-unknown")[0]!;
+		expect(observationFromLegacyRecord(unknown, identity)?.metricQuality?.costUsd).toBe("unknown");
+	});
 	it("keys a compaction entry by its session entry id and labels it with the model", () => {
 		const record = extractCompactionUsage(compactionEntry(), "compact", MODEL);
 		expect(record).not.toBeNull();

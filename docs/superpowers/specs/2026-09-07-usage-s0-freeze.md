@@ -23,6 +23,7 @@
 - `phase` 与 `metricQuality` 正交。有数值但无质量证据 → 解析器补 `unknown`，不得升为 `reported`。有质量、无对应数值 → 丢掉该 quality 键
 - 第三方类别必须带已知 `sourceId`（`isUsageCategoryEnabled("third-party", policy)` 无 id → `false`）。持久化写入看 `isUsagePersistEnabled` = `collect && persist`，总开关关时即使 `tpsPersist` 为真也不写盘
 - snapshot 必须带 `snapshotEpoch`；没有范围的旧汇总只能作弱覆盖，不能当逐响应
+- 一个 snapshot revision 可含同一 epoch 的多个 model/provider 分区；更新 revision 替换整组分区。入口 revision 只在本源比较，接入账本时转换为本会话接收序号；无 revision 的 legacy 完成事件仍按既有规则去重。
 - 不传 prompt、输出、thinking、工具参数、headers、API key、OTP
 
 ## 3. 指标质量映射
@@ -40,6 +41,8 @@
 | dynamic-workflows 混合进度 / `commitWithFallback()` | 不进 finalized All；确认终态且范围明确时最多 `estimated` |
 
 `qualityFromRawUsage(raw, { presentKeys, costSource })` 是唯一入口。S1 legacy adapter 必须在调用 `preprocessAssistantMessage` / `usageCountersToRecord` **之前**取 presence。
+
+聚合时，相关观察缺失某指标也使该指标保持 unknown；不能因另一观察上报了该指标就消除缺口。已知费用小计含 estimated 时，即便合计质量为 unknown 也保留 `~`。标题与明细不再绕过账本的质量格式化。内存耗尽显示 `partial` / `memory-exhausted`，持久化状态仍独立显示 memory/durable/storage-exhausted。
 
 ## 4. 开关（名称、默认、类别）
 
@@ -83,6 +86,8 @@
 | 持久化写入重试 | 最多 3 次，起始间隔 500ms |
 
 达限或 `ENOSPC`：保留最后有效 checkpoint，停止新增 journal，coverage=`storage-exhausted`/`partial`。内存继续有界计量并标明非 durable。内存也满时记缺口，不换目录、不无限排队。损坏/未知版本 checkpoint：**不覆盖、不修复、不删除**。
+
+当前实现限制：保留期与 journal 分段仍是冻结目标，尚未实施自动清理/轮转；append 同步遍历 usage 目录，完整 checkpoint 超过 256KiB 会跳过写入并保留 journal。持久化专项须在默认启用前解决，不能把这些常量当作已实现能力。
 
 ## 6. 迁移与回退
 

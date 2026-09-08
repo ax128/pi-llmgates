@@ -203,28 +203,37 @@ export function resolveUsageCostUsd(
 	usage: unknown,
 	model: { id?: string; provider?: string } | undefined,
 ): number {
+	return resolveUsageCostWithQuality(usage, model).costUsd;
+}
+
+/** A numeric protocol cost, an SDK/local estimate, or unknown provenance. */
+export function resolveUsageCostWithQuality(
+	usage: unknown,
+	model: { id?: string; provider?: string } | undefined,
+	objectCostQuality: "estimated" | "unknown" = "estimated",
+): { costUsd: number; costQuality: "reported" | "estimated" | "unknown" } {
 	try {
 		if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
-			return 0;
+			return { costUsd: 0, costQuality: "unknown" };
 		}
 		const cost = (usage as Record<string, unknown>).cost;
 		const flat = positiveFinite(cost);
 		if (flat !== null) {
-			return flat;
+			return { costUsd: flat, costQuality: "reported" };
 		}
 		if (cost && typeof cost === "object" && !Array.isArray(cost)) {
 			const total = positiveFinite((cost as Record<string, unknown>).total);
 			if (total !== null) {
-				return total;
+				return { costUsd: total, costQuality: objectCostQuality };
 			}
 		}
 		const modelId = model?.id?.trim();
 		if (!modelId) {
-			return 0;
+			return { costUsd: 0, costQuality: "unknown" };
 		}
-		return estimateCostFromRates(usage, modelId, model?.provider);
+		return { costUsd: estimateCostFromRates(usage, modelId, model?.provider), costQuality: "estimated" };
 	} catch {
-		return 0;
+		return { costUsd: 0, costQuality: "unknown" };
 	}
 }
 

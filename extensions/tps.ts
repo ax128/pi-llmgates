@@ -43,7 +43,7 @@ import {
 } from "./tps-stats.js";
 import { envFlag } from "./util.js";
 import { createUsageCollector, type UsageCollector } from "./usage/collector.js";
-import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, replaceModelUsageStats } from "./usage/format.js";
+import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, formatUsageScopeTitleFromLedger, replaceModelUsageStats } from "./usage/format.js";
 import { resolveUsagePolicy } from "./usage/policy.js";
 
 const STATUS_KEY = "tps";
@@ -327,7 +327,9 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		usageCollector.ingestLegacyRecords(
-			fresh,
+			// Source watermarks were checked above. Only the local acceptance clock
+			// orders replacement in the shared ledger, never mtime versus tool count.
+			fresh.map((record) => record.revision ? { ...record, revision: nextUsageRevision() } : record),
 			category,
 			runId,
 			Date.now(),
@@ -484,7 +486,9 @@ export default function (pi: ExtensionAPI) {
 				});
 				return;
 			}
-			title = formatUsageScopeTitle(scope, stats);
+			title = usageCollector
+				? formatUsageScopeTitleFromLedger(scope, scope === "session" ? usageCollector.sessionTotals() : usageCollector.turnTotals())
+				: formatUsageScopeTitle(scope, stats);
 		} catch (error) {
 			logTpsIssue(`TPS breakdown formatting failed: ${error instanceof Error ? error.message : String(error)}`);
 			safeUi(ctx, () => {
@@ -600,6 +604,9 @@ export default function (pi: ExtensionAPI) {
 				stableSessionId ? agentDir : "",
 			);
 			usageCollector?.restorePersisted();
+			for (const observation of usageCollector?.ledger.snapshot() ?? []) {
+				usageRevisionClock = Math.max(usageRevisionClock, observation.revision ?? 0);
+			}
 			syncStatsFromLedger();
 			if (usageCollector && pi.events) {
 				unregisterThirdPartyProbes = registerThirdPartyUsageProbes(pi.events, {
@@ -673,7 +680,10 @@ export default function (pi: ExtensionAPI) {
 			event.toolCallId,
 			nextUsageRevision(),
 		);
-		if (subagent.length > 0) {
+		if (subagent.length > 0 && usageCollector?.enabled("pi-subagents")) {
+			// One update is a complete progress snapshot for this tool call. Drop
+			// prior aggregate/child shapes before replacing the whole batch.
+			runUsageTask(() => usageCollector?.dropProgressForToolCall(event.toolCallId));
 			ingestSubagentRecords(subagent, "pi-subagents");
 		}
 		if (envFlag("LLMGATES_TPS_TOOL_USAGE") !== false && toolNested.length > 0) {

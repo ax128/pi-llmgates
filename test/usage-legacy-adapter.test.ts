@@ -90,7 +90,7 @@ describe("legacy usage adapter", () => {
 		expect(obs!.usage?.input).toBeUndefined();
 	});
 
-	it("keeps positive legacy counters as reported", () => {
+	it("keeps positive legacy counters but does not invent cost provenance", () => {
 		const obs = observationFromLegacyRecord(
 			{
 				sourceKey: "meta:abc",
@@ -109,7 +109,7 @@ describe("legacy usage adapter", () => {
 		expect(obs!.usage?.calls).toBe(3);
 		expect(obs!.metricQuality?.calls).toBe("reported");
 		expect(obs!.metricQuality?.cacheWrite).toBeUndefined();
-		expect(obs!.metricQuality?.costUsd).toBe("reported");
+		expect(obs!.metricQuality?.costUsd).toBe("unknown");
 	});
 
 	it("keeps positive legacy token counters but treats a defaulted calls: 1 as unknown", () => {

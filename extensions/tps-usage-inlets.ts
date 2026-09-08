@@ -20,7 +20,7 @@
  */
 
 import { isPlainObject } from "./util.js";
-import { resolveUsageCostUsd, usageModelLabel } from "./tps-stats.js";
+import { resolveUsageCostWithQuality, usageModelLabel } from "./tps-stats.js";
 import {
 	SUBAGENT_TOOL_NAMES,
 	usageCountersToRecord,
@@ -113,6 +113,7 @@ export function extractToolResultUsage(
 		const modelId = typeof result.model === "string" ? result.model.trim() : "";
 		const provider = typeof result.provider === "string" ? result.provider : undefined;
 		const model = modelId ? { id: modelId, provider } : undefined;
+		const cost = resolveUsageCostWithQuality(usage, model, "unknown");
 
 		const record = usageCountersToRecord(
 			`toolusage:${id}`,
@@ -127,8 +128,9 @@ export function extractToolResultUsage(
 				// convention. Tokens and cost stay right, calls stays conservative.
 				turns: usage.turns,
 				// Flattened here for the same reason as the compaction inlet below.
-				cost: resolveUsageCostUsd(usage, model),
+				cost: cost.costUsd,
 			},
+			cost.costQuality,
 		);
 		return record ? [record] : [];
 	} catch {
@@ -182,6 +184,7 @@ export function extractCompactionUsage(
 		// the only source of money (G8).
 		const pricingModel = entry.fromHook === true ? undefined : model;
 		const modelId = pricingModel?.id?.trim();
+		const cost = resolveUsageCostWithQuality(usage, pricingModel, entry.fromHook === true ? "unknown" : "estimated");
 		return usageCountersToRecord(
 			`${kind}:${entryId}`,
 			// Both kinds share one `compact/*` bucket, the way pi folds compaction and
@@ -197,8 +200,9 @@ export function extractCompactionUsage(
 				// Flattened here: usageCountersToRecord's own cost normalizer only accepts
 				// a number, so handing it pi's `cost` object would count the tokens and
 				// drop the money.
-				cost: resolveUsageCostUsd(usage, pricingModel),
+				cost: cost.costUsd,
 			},
+			cost.costQuality,
 		);
 	} catch {
 		return null;
