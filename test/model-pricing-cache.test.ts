@@ -777,7 +777,10 @@ describe("pricing sync warnings", () => {
 
 	const models = [{ id: "gpt-5.6-sol", provider_id: "openai" }];
 
-	it("warns once per process for a failing fetch", async () => {
+	it("stays silent on a failing fetch unless LLMGATES_DEBUG is set", async () => {
+		// The banner used to land on every startup behind a proxy or a blocked
+		// raw.githubusercontent.com and shoved the user's own output around; the
+		// degradation is already visible as `~` on estimated cost.
 		const agentDir = tempAgentDir("llmgates-pricing-warn-fetch-");
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
@@ -790,22 +793,43 @@ describe("pricing sync warnings", () => {
 			await refreshModelPricing(agentDir, models, failing);
 			await refreshModelPricing(agentDir, models, failing);
 
-			expect(warn).toHaveBeenCalledOnce();
-			expect(String(warn.mock.calls[0]?.[0])).toMatch(/pricing sync failed/i);
+			expect(warn).not.toHaveBeenCalled();
 		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("logs every failing fetch with its cause when LLMGATES_DEBUG is set", async () => {
+		const agentDir = tempAgentDir("llmgates-pricing-warn-fetch-debug-");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		process.env.LLMGATES_DEBUG = "1";
+		try {
+			const failing = {
+				pricingAutoUpdate: true,
+				loadLiteLLMTable: async () => {
+					throw new Error("offline");
+				},
+			};
+			await refreshModelPricing(agentDir, models, failing);
+			await refreshModelPricing(agentDir, models, failing);
+
+			expect(warn).toHaveBeenCalledTimes(2);
+			expect(String(warn.mock.calls[0]?.[0])).toMatch(/pricing sync failed.*offline/i);
+		} finally {
+			delete process.env.LLMGATES_DEBUG;
 			warn.mockRestore();
 		}
 	});
 
 	// Directory permissions do not constrain root, so the write cannot be made to fail.
 	it.skipIf(process.getuid?.() === 0)(
-		"does not let a fetch failure silence a later write failure",
+		"reports both a fetch failure and a later write failure under LLMGATES_DEBUG",
 		async () => {
-			// One shared flag would mean a transient offline start permanently hides a
-			// persistent unwritable pricing.json — different problems, different fixes.
+			// Different problems with different fixes; debug output must name both.
 			const agentDir = tempAgentDir("llmgates-pricing-warn-write-");
 			const cacheDir = dirname(join(agentDir, MODEL_PRICING_CACHE_FILE));
 			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			process.env.LLMGATES_DEBUG = "1";
 			try {
 				await refreshModelPricing(agentDir, models, {
 					pricingAutoUpdate: true,
@@ -830,6 +854,7 @@ describe("pricing sync warnings", () => {
 				expect(String(warn.mock.calls[1]?.[0])).toMatch(/failed to write/i);
 			} finally {
 				chmodSync(cacheDir, 0o700);
+				delete process.env.LLMGATES_DEBUG;
 				warn.mockRestore();
 			}
 		},

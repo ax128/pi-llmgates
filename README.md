@@ -570,7 +570,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | Kimi / `tokenization failed` | 升级本扩展后 `/reload`；Kimi 不接受 `developer` role，扩展会注入 compat。也可新建会话再试（中途从其他模型切到 K3 不稳定） |
 | 模型出口选错导致 400 | `/endpoint auto <model-id>` 或 `/endpoint-setting` 选 `auto` 回落 |
 | 费用与账单不一致 | TUI 费用为上游零售价估算；账户消费看 `/balance` 或网关控制台 |
-| `LiteLLM pricing sync failed`（每进程只提示一次） | 定价表拉不到（离线 / `raw.githubusercontent.com` 被墙），或返回的内容结构上不像定价表（`Implausible LiteLLM pricing table`，通常是被代理或错误页替换）；费用回退到已缓存或静态价，功能不受影响。`LLMGATES_DEBUG=1` 看详情，或手工编辑 `~/.pi/agent/llmgates/pricing.json` |
+| 费用显示 `~` 估算值、价格明显过期 | 定价表拉不到（离线 / `raw.githubusercontent.com` 被墙 / Node `fetch` 不走 `HTTPS_PROXY`），或返回的内容结构上不像定价表（`Implausible LiteLLM pricing table`，通常是被代理或错误页替换）；费用回退到已缓存或静态价，功能不受影响。**默认不打印警告**，`LLMGATES_DEBUG=1` 后 `/reload` 可见 `LiteLLM pricing sync failed` 及原因；或手工编辑 `~/.pi/agent/llmgates/pricing.json` |
 | `The agent is still busy` | `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 等待当前对话轮结束超过 120s；未写入任何文件，等这一轮结束后重跑即可 |
 | `file lock was compromised` | 锁在续期窗口内没能刷新（机器休眠、事件循环长时间阻塞、网络盘）。已自动释放并继续，不影响写入；反复出现时检查 `~/.pi/agent/` 是否在网络文件系统上 |
 | 需要调试日志 | `LLMGATES_DEBUG=1` 后 `/reload` |
