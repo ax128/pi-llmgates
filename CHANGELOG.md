@@ -6,6 +6,12 @@
 
 > 0.2.11 及更早的条目是在 0.2.11 发布后，依据 git 历史与各版本 tag 回补的；只收录对使用者可见的变更，纯内部重构与测试补强不单列。
 
+## [Unreleased]
+
+### 变更
+
+- **定价同步失败不再在启动时打印警告。** 之前 `LiteLLM pricing sync failed`（含 `raw.githubusercontent.com` 被墙、Node `fetch` 不走 `HTTPS_PROXY` 等情况）每个进程会在终端输出一行，挤乱用户自己的展示。现在失败一律静默回退到已缓存或静态价（费用估算仍带 `~`），只有 `LLMGATES_DEBUG=1` 时才输出每次失败及原因；写 `pricing.json` 失败同样处理。README 排障表已同步。
+
 ## [0.7.0] — 2026-09-09
 
 ### 变更

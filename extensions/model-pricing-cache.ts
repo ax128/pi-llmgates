@@ -188,33 +188,21 @@ function prunePricingMissProbes(nowMs: number): void {
 	}
 }
 
-/** Failure classes that warn independently. */
+/** Failure classes, kept distinct so debug output says which leg failed. */
 type PricingSyncIssue = "fetch" | "write";
-const warnedPricingSyncIssues = new Set<PricingSyncIssue>();
 
 /**
- * Debug builds log every failure. Otherwise warn once per process PER CLASS: a
- * sync that fails permanently (offline, raw.githubusercontent blocked, a table
- * that outgrew the size cap) silently degrades every `/calls` cost estimate for
- * the rest of the session, and a one-line hint is what makes that visible without
- * turning a routine offline start into per-refresh noise.
- *
- * Per-class, not once overall: an unreachable table at startup and an unwritable
- * `pricing.json` are different problems with different fixes, and a single flag
- * would let a transient first one permanently silence a persistent second one.
+ * Debug-only. A failed sync (offline, raw.githubusercontent blocked, unwritable
+ * `pricing.json`) degrades gracefully to cached or static rates and `/calls`
+ * already marks estimated cost with `~`, so it is not worth a startup banner
+ * that pushes the user's own output around. `LLMGATES_DEBUG=1` shows every
+ * failure with its cause; the README troubleshooting table points there.
  */
 function logPricingSyncIssue(kind: PricingSyncIssue, message: string): void {
-	if (envFlag("LLMGATES_DEBUG")) {
-		console.warn(`[pi-llmgates-provider] ${message}`);
+	if (!envFlag("LLMGATES_DEBUG")) {
 		return;
 	}
-	if (warnedPricingSyncIssues.has(kind)) {
-		return;
-	}
-	warnedPricingSyncIssues.add(kind);
-	console.warn(
-		`[pi-llmgates-provider] ${message} Cost estimates fall back to cached or static rates; set LLMGATES_DEBUG=1 for details.`,
-	);
+	console.warn(`[pi-llmgates-provider] pricing sync (${kind}): ${message}`);
 }
 
 export function pricingCacheKey(modelId: string, providerId?: string): string {
@@ -233,7 +221,6 @@ export function clearPricingCacheMemory(): void {
 export function resetPricingSyncChainForTests(): void {
 	pricingSyncChain = Promise.resolve();
 	activePricingSyncs.clear();
-	warnedPricingSyncIssues.clear();
 	recentPricingMissProbes.clear();
 }
 
