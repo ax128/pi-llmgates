@@ -153,7 +153,6 @@ describe("extractCompactionUsage", () => {
 				cacheRead: 0,
 				cacheWrite: 0,
 				totalTokens: 1_000_000,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 		});
 		const snapshot = JSON.stringify(entry);
@@ -236,11 +235,41 @@ describe("extractToolResultUsage", () => {
 		// Their results describe already-finished runs; counting them would double up
 		// with the async-complete / _meta.json path that inlet C owns. pi-subagents 0.59.0
 		// put a real pooled `usage` on `subagent_wait`, so this is load-bearing.
-		for (const name of ["subagent_wait", "subagent_supervisor", "intercom"]) {
+		for (const name of ["bg_wait", "subagent_wait", "subagent_supervisor", "intercom"]) {
 			expect(TOOL_USAGE_CLAIMED_ELSEWHERE.has(name)).toBe(true);
 			expect(SUBAGENT_TOOL_NAMES.has(name)).toBe(false);
 			expect(extractToolResultUsage(name, { usage: USAGE }, "call-5")).toEqual([]);
 		}
+	});
+
+	it("treats complete Pi object cost and numeric zero as reported, but rejects partial objects", () => {
+		const completeZero = {
+			input: 100,
+			output: 10,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 110,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const complete = extractToolResultUsage("delegate", { model: "unlisted-model", usage: completeZero }, "object-zero")[0]!;
+		expect(complete.costUsd).toBe(0);
+		expect(complete.costQuality).toBe("reported");
+		const numeric = extractToolResultUsage("delegate", { model: "unlisted-model", usage: { input: 100, cost: 0 } }, "numeric-zero")[0]!;
+		expect(numeric.costQuality).toBe("reported");
+		expect(numeric.costUsd).toBe(0);
+		const partial = extractToolResultUsage("delegate", { model: "gpt-5.6-luna", usage: { input: 1_000_000, cost: { total: 0.5 } } }, "partial-object")[0]!;
+		expect(partial.costUsd).toBe(0);
+		expect(partial.costQuality).toBe("unknown");
+	});
+
+	it("does not estimate an unknown tool model at the default rate", () => {
+		const [record] = extractToolResultUsage(
+			"delegate",
+			{ model: "not-in-pricing", provider: "unknown-provider", usage: { input: 1_000_000, output: 0 } },
+			"unknown-model",
+		);
+		expect(record.costUsd).toBe(0);
+		expect(record.costQuality).toBe("unknown");
 	});
 
 	it("derives the exclusion set from the upstream constants", () => {
@@ -281,11 +310,10 @@ describe("extractToolResultUsage", () => {
 			usage: {
 				input: 1_000_000,
 				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 1_000_000,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1_000_000,
+		},
 		};
 		const snapshot = JSON.stringify(result);
 		expect(extractToolResultUsage("delegate", result, "call-7")[0].costUsd).toBeCloseTo(1, 5);

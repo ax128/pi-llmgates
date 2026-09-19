@@ -64,10 +64,18 @@ export class UsageCollector {
 		if (!id) return;
 		const progressKey = `toolprogress:${encodeURIComponent(id)}`;
 		const toolPrefix = `tool:${id}:`;
+		const legacyToolUsageKey = `toolusage:${id}`;
 		this.ledger.dropWhere((observation) => {
 			const exec = observation.executionId;
 			const epoch = observation.snapshotEpoch ?? "";
-			return exec === progressKey || exec.startsWith(`${progressKey}:`) || epoch === progressKey || exec.startsWith(toolPrefix);
+			return (
+				exec === progressKey ||
+				exec.startsWith(`${progressKey}:`) ||
+				epoch === progressKey ||
+				exec.startsWith(toolPrefix) ||
+				exec === legacyToolUsageKey ||
+				epoch === legacyToolUsageKey
+			);
 		});
 	}
 

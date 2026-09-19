@@ -332,8 +332,16 @@ export const DEFAULT_MODEL_COST: ModelCostRates = {
 	cacheWrite: 3,
 };
 
-export function resolveModelCostRates(modelId: string, providerId?: string): ModelCostRates {
+/**
+ * Look up an explicitly known model price without applying the conservative
+ * fallback.  Tool-result model ids are producer supplied strings; treating an
+ * arbitrary id as a real model and charging DEFAULT_MODEL_COST would invent
+ * money.  Callers that own the model identity (the parent assistant path) may
+ * continue to use resolveModelCostRates below.
+ */
+export function lookupKnownModelCostRates(modelId: string, providerId?: string): ModelCostRates | undefined {
 	const id = modelId.trim();
+	if (!id) return undefined;
 	const vendor = providerId?.trim().toLowerCase();
 	const upstreamVendor = vendor && KNOWN_UPSTREAM_VENDOR_IDS.has(vendor) ? vendor : undefined;
 
@@ -359,5 +367,11 @@ export function resolveModelCostRates(modelId: string, providerId?: string): Mod
 			return { ...rule.rates };
 		}
 	}
+	return undefined;
+}
+
+export function resolveModelCostRates(modelId: string, providerId?: string): ModelCostRates {
+	const known = lookupKnownModelCostRates(modelId, providerId);
+	if (known) return known;
 	return { ...DEFAULT_MODEL_COST };
 }

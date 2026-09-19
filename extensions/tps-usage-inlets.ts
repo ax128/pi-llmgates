@@ -38,7 +38,7 @@ import {
  * (`src/runs/background/subagent-wait.ts:319-345`). Without this exclusion those tokens
  * would be counted twice, once here and once from the completion event inlet C owns.
  */
-const PI_SUBAGENTS_MANAGEMENT_TOOL_NAMES = ["subagent_wait", "subagent_supervisor", "intercom"] as const;
+export const PI_SUBAGENTS_MANAGEMENT_TOOL_NAMES = ["bg_wait", "subagent_wait", "subagent_supervisor", "intercom"] as const;
 
 /**
  * `@tintinweb/pi-subagents` tool names. Its spend is claimed from its own completion
@@ -113,7 +113,10 @@ export function extractToolResultUsage(
 		const modelId = typeof result.model === "string" ? result.model.trim() : "";
 		const provider = typeof result.provider === "string" ? result.provider : undefined;
 		const model = modelId ? { id: modelId, provider } : undefined;
-		const cost = resolveUsageCostWithQuality(usage, model, "unknown");
+		// This is the Pi-compatible top-level tool-result contract.  A complete
+		// numeric/object cost is a producer self-report (including zero); only a
+		// missing cost may use a known local pricing rule.
+		const cost = resolveUsageCostWithQuality(usage, model, "pi-tool-result");
 
 		const record = usageCountersToRecord(
 			`toolusage:${id}`,

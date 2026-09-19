@@ -6,6 +6,8 @@
 
 与方案或调研清单冲突时，以本文件冻结值与当前 `package.json` peer 范围为准。调研清单的 341 个目录匹配项仍是发现结果。
 
+**2026-09-19 当前实现补充：** Pi 顶层工具结果中的 numeric cost 与完整 `{input, output, cacheRead, cacheWrite, total}` cost object（五个字段均为有限非负数，含明确 0）可标为 `reported`；部分/非法 object 为 `unknown`。缺失 cost 仅在命中已知定价规则时 `estimated`，未知 model/provider 不套默认费率。该补充不改变 peer 范围或持久化 schema。
+
 ## 1. Peer 与 Pi 版本
 
 | 项 | 冻结值 | 理由 |

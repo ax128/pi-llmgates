@@ -542,6 +542,33 @@ describe("tps runtime subagent ordering", () => {
 		}
 	});
 
+	it("drops generic tool progress when the terminal result has no usage", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-tool-progress-drop-"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			runtime.emitNow("tool_execution_update", {
+				toolName: "delegate",
+				toolCallId: "call-generic-progress",
+				partialResult: { model: "progress-model", usage: { input: 20, output: 2, turns: 1 } },
+			});
+			runtime.emitNow("tool_execution_end", {
+				toolName: "delegate",
+				toolCallId: "call-generic-progress",
+				result: { content: [{ type: "text", text: "done" }] },
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", runtime.ctx);
+			expect(runtime.notifications.some((n) => n.message.includes("No model calls recorded"))).toBe(true);
+			expect(runtime.selections).toHaveLength(0);
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("does not add a top-level update usage on top of a details.results end payload", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-tool-update-shape-"));
 		const runtime = createRuntime(cwd);
@@ -719,6 +746,43 @@ describe("tps runtime subagent ordering", () => {
 
 			expect(runtime.selections[0]?.some((line) => line.includes("41 calls"))).toBe(true);
 			expect(runtime.selections[1]?.some((line) => line.includes("41 calls"))).toBe(true);
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("uses trusted parent ownership for 0.69 bg_wait and ignores pooled top-level usage", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-bg-wait-"));
+		const runtime = createRuntime(cwd);
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			await runtime.emit("tool_execution_end", {
+				toolName: "subagent",
+				toolCallId: "launch-bg",
+				result: { details: { runId: "0b82240e-f5fe-4ade-9458-8d08018d02e5", async: true, results: [] } },
+			});
+			const wait = {
+				usage: { input: 900, output: 90, totalTokens: 990, cost: 0.09 },
+				details: {
+					mode: "management",
+					results: [],
+					completions: [{
+						runId: "0b82240e-f5fe-4ade-9458-8d08018d02e5",
+						results: [{ agent: "scout", usage: { turns: 2, input: 100, output: 10, cost: 0.01 } }],
+					}],
+				},
+			};
+			await runtime.emit("tool_execution_end", { toolName: "bg_wait", toolCallId: "wait-1", result: wait });
+			await runtime.emit("tool_execution_end", { toolName: "bg_wait", toolCallId: "wait-2", result: wait });
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", runtime.ctx);
+			const rows = runtime.selections[0] ?? [];
+			expect(rows.filter((line) => line.startsWith("subagent/scout")).length).toBe(1);
+			expect(rows.find((line) => line.startsWith("subagent/scout"))).toContain("in 100");
+			expect(rows.some((line) => line.includes("in 900"))).toBe(false);
 		} finally {
 			await runtime.emit("session_shutdown");
 			rmSync(cwd, { recursive: true, force: true });

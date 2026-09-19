@@ -33,6 +33,15 @@ function obs(overrides: Record<string, unknown> = {}) {
 }
 
 describe("UsageLedger", () => {
+	it("retains a reported zero cost in finalized totals", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(obs({
+			usage: { input: 10, calls: 1, costUsd: 0 },
+			metricQuality: { input: "reported", calls: "reported", costUsd: "reported" },
+		}));
+		expect(ledger.finalizedTotals()).toMatchObject({ costUsd: 0, costQuality: "reported", hasUnknown: true });
+	});
+
 	it("rejects a different root and an invalid observation", () => {
 		const ledger = new UsageLedger("root-1");
 		expect(ledger.ingest(obs({ rootSessionId: "other" })).accepted).toBe(false);

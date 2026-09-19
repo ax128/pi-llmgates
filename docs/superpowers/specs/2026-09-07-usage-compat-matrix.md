@@ -6,6 +6,8 @@
 
 调研清单里的目录匹配项（含 341 个 `subagent` 检索命中）仍是**发现结果**。本表只收录：本仓已接线、或已用源码核对其公开出口并明确 fail-closed 的来源。
 
+**2026-09-19 当前代码对账：** 本次实现以 pi 0.81.1 的实际类型与运行时行为为准；pi-subagents 0.69 的 `bg_wait` 使用带版本标注的 `wired` fixture 接线，未宣称真实包 runtime-certified。`bg_wait` 只接受当前会话已受信观察的 completion/run，忽略 pooled 顶层 usage 与 `details.results`；indexless meta 只有在同一 parent/agent 唯一时归一化。通用工具的 numeric/完整 Pi cost object（含明确 0）保留 `reported`，未知 model/provider 不套默认费率，旧 progress key 在终态统一清理。peer 范围仍为 `>=0.81.0 <0.85.0`。
+
 ## 证据等级
 
 | 等级 | 含义 |
@@ -22,10 +24,11 @@
 | --- | --- | --- | --- |
 | 父会话 assistant | `wired` | `message_end`，SDK 补零前取样 | 未在真实 TUI 上门禁验证 |
 | pi-subagents 同步 `subagent` / Cursor `Task` | `wired` | `tool_execution_end` / `tool_execution_update` | `partialResult.usage` 真实形状未认证 |
-| pi-subagents `_meta.json` | `wired` | 目录扫描；mtime 增长则 snapshot 替换 | `artifactDir: temp` 仍扫不到 |
+| pi-subagents `_meta.json` | `wired` | 目录扫描；mtime 增长则 snapshot 替换；indexless 仅在 parent/agent 唯一时规范化为 index 0 | `artifactDir: temp` 仍扫不到；混合 indexed/indexless 仍 fail-closed |
 | pi-subagents async/foreground complete | `wired` | 既有 EventBus 旁路 | 与 meta 同 key 仍先到者胜（无 revision 的记录） |
+| pi-subagents 0.69 `bg_wait` management projection | `wired` | 受信 run ownership + completion child adapter | fixture 接线，未在真实 0.69 包 runtime 验证；不接受 pooled 顶层 usage |
 | 压缩 / 分支摘要 | `wired` | `session_compact` / `session_tree` | `fromHook` 模型不可见 |
-| 通用工具 `result.usage` | `wired` | `tool_execution_end` / `_update` | 与子代理工具名互斥表仍生效 |
+| 通用工具 `result.usage` | `wired` | `tool_execution_end` / `_update`；numeric/完整 Pi cost object 保留 reported，旧 progress 终态清理 | 与子代理工具名互斥表仍生效；未知 model/provider 不估价 |
 | 可选持久化 | `wired` | `LLMGATES_TPS_PERSIST` | 未做真实多进程 lock / ENOSPC 盘；损坏加载标 Coverage `partial` |
 
 默认路径修正：meta/tool 的本源 revision 分开去旧，账本按接收顺序替换；同 revision 的模型分区作为一组更新。工具进度保留 child 身份，不把并行结果压成一条。费用来源及缺失字段质量贯穿 `/calls` 标题、明细和状态行；Coverage 序号按 producer 递增。它们仍是本仓 focused fixture 覆盖，不提升真实运行器认证等级。持久化仍默认关，目录容量遍历、保留期清理和 checkpoint 预算问题留待专项。

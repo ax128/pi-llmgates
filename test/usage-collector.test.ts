@@ -21,6 +21,32 @@ function collector() {
 }
 
 describe("UsageCollector origin-turn binding", () => {
+	it("drops canonical and legacy progress snapshots before a terminal tool record", () => {
+		const { session, cleanup } = collector();
+		try {
+			session.beginTurn();
+			const record = (sourceKey: string) => ({
+				sourceKey,
+				modelLabel: "worker",
+				calls: 1,
+				input: 10,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				costUsd: 0,
+			});
+			session.ingestLegacyRecords([
+				record("toolprogress:call%3Awith%2F%25:toolusage%3Acall%3Awith%2F%25"),
+				record("tool:call:with/%:0"),
+				record("toolusage:call:with/%"),
+			], "tool-nested");
+			session.dropProgressForToolCall("call:with/%");
+			expect(session.sessionTotals().input).toBe(0);
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("keeps producer sequences continuous when parent and tool observations interleave", () => {
 		const { session, cleanup } = collector();
 		try {

@@ -1,11 +1,13 @@
 # 多代理生态用量统计兼容方案
 
-**状态：** **P0 已实施**（2026-08-23）——P0-a `ece1469`、P0-b `9bca2d8`、P0-c `93c1f93`。入口 F（§4.3）与 P2（§9）**未实施**，仍为方案。
+**状态：** 历史 P0（2026-08-23）已实施；2026-09-19 当前代码又按用量优化方案补齐 `bg_wait` ownership、generic progress 清理和 Pi cost object 质量。本文早期行号/快照细节与代码冲突时仍以代码为准。
 **日期：** 2026-08-22（rev 2 / rev 3：2026-08-23 两轮复核后修正；rev 4：2026-08-24 落地后结案；**rev 5：2026-08-29 生态复核**，见下方修订说明）
 **关联模块：** `extensions/tps.ts`（新增订阅）、`extensions/tps-stats.ts`（**唯一被改动的既有实现**，§6.1 的定价提取）、`extensions/tps-subagent.ts` / `extensions/tps-subagent-bridge.ts`（只读复用）、新增 `extensions/tps-usage-inlets.ts`
 **外部依赖：** 全部可选。未安装对应包时不订阅、不产生 IO
 **核对基线：** pi 0.81.1（`package.json` 锁定版本，`@earendil-works/pi-agent-core@0.81.1` 为其嵌套依赖）；pi-subagents 0.54.0；本仓行号以 commit `9afe18d` 为准。**rev 5 的生态复核基线：** pi-subagents 0.59.0（本机 `~/.pi/agent/npm/node_modules`）、`@tintinweb/pi-subagents` 0.19.0、`@quintinshaw/pi-dynamic-workflows` 3.9.1、`pi-background-tasks` 2.4.2、`@mjasnikovs/pi-task` 0.38.29、`pi-goal-x` 0.30.5、`@narumitw/pi-goal` 0.54.3、`pi-goal-list-loop-audit` 0.35.71（后七个为 npm tarball 只读解包）
 **版本 range 说明：** `package.json` 允许 `>=0.81.0 <0.85.0`。本文所有 pi 行号取自 0.81.1；**range 上限（0.84.x）未验证**，实施时若 node_modules 已升版须重新确认 §11 的行号与字段。
+
+> **2026-09-19 当前代码对账（覆盖旧快照中的相应口径）：** 管理工具排除集现在包含 `bg_wait`，并保留 `subagent_wait` / `subagent_supervisor` / `intercom` 旧入口；`bg_wait` 只读取 `details.completions[].results[]`，且要求 run ID 已由当前 session 的受信路径观察，顶层 pooled usage 与 `details.results` 永不进入通用 D。B/D progress 使用 canonical `toolprogress:<encoded toolCallId>:<encoded sourceKey>`，终态同时清理旧 `toolusage:` / `tool:` 进度键。通用工具的 numeric cost 或完整 Pi cost object（五个非负有限字段，含零）为 `reported`；缺失 cost 只在命中已知 pricing rule 时估算，未知 model/provider 保持 `unknown`。`_meta.json` 的 indexless identity 只有在同一 parent/agent 唯一时映射为 index 0。0.69 fixture 已接线但未做真实包 runtime-certified；peer range 不变。本文历史章节仍保留原始审计证据，不能覆盖这些当前实现约束。
 
 > **2026-08-29 修订（生态复核，rev 4 → rev 5）**
 >
@@ -166,7 +168,8 @@ tool.execute() → finalized.result                       (pi-agent-core/dist/ag
 | `meta:{runId}` / `meta:{runId}:{agent}:{index}` | B/C（现有） | pi-subagents runId + 跨粒度互斥（`tps-subagent.ts:369,380`） |
 | `async:{dir}:{agent}:{index}` / `async:unknown:{agent}:{index}` | C（现有兜底） | async 目录名（`:399`、`:1079`） |
 | **`tool:{toolCallId}:{index}` / `tool:{toolCallId}:aggregate`** | **B（现有，rev 1 漏记）** | 工具结果无 runId 时的兜底（`:449`、`:643`） |
-| **`toolusage:{toolCallId}`** | **D（新）** | pi 的 toolCallId，每次工具调用唯一 |
+| **`toolusage:{toolCallId}`** | **D（新，legacy final）** | pi 的 toolCallId，每次工具调用唯一 |
+| **`toolprogress:{encodedToolCallId}:{encodedSourceKey}`** | **B/D progress（当前）** | toolCallId 与来源身份的编码组合；终态会清理 legacy progress |
 | **`compact:{entryId}`** / **`branch:{entryId}`** | **E（新）** | session entry `id`（`SessionEntryBase.id`，`session-manager.d.ts:17-22`；同一会话内由 `generateId(this.byId)` 保证唯一） |
 | **`ext:tintinweb:{agentId}`** | **F（新）** | 第三方 agent id |
 
@@ -184,7 +187,7 @@ tool.execute() → finalized.result                       (pi-agent-core/dist/ag
 | --- | --- | --- |
 | `subagent` / `task` 工具结果 | B（`details.results[]` / `root.usage`） | D 的排除集含这两个名字 |
 | pi-subagents 完成事件与磁盘产物 | C | D/E/F 不解析这些来源 |
-| **pi-subagents 管理类工具结果**（`subagent_wait` / `subagent_supervisor` / `intercom`） | **无人认领（刻意）** | 这些工具返回的是**已完成 run** 的数据，计了必与 C 双计——既有不变量，见 `tps-subagent.ts:17-21` 与前一版方案 §13.11。**D 的排除集必须含这三个名字** |
+| **pi-subagents 管理类工具结果**（`bg_wait` / `subagent_wait` / `subagent_supervisor` / `intercom`） | **`bg_wait` 由专用 adapter 认领；旧三名无人认领** | `bg_wait` 只接受当前 session 已受信的 completion child；旧入口返回已完成 run，计入会与 C 双计。D 的排除集必须含四个名字 |
 | `@tintinweb` 的 `Agent` / `get_subagent_result` / `steer_subagent` 工具结果 | **无人认领**（刻意） | D 的排除集含这三个名字。**F 未落地时这三个名字仍然排除**——那是刻意的少算（under-count），不是双计；见下方说明 |
 | `@tintinweb` 的 `subagents:completed` / `subagents:failed` 事件 | F | — |
 | 其他任意工具结果顶层 `usage` | D | — |

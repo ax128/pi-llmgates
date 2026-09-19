@@ -26,6 +26,11 @@ function isNonNegFinite(value: unknown): boolean {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function isCompletePiCostObject(value: unknown): value is Record<string, number> {
+	if (!isPlainObject(value)) return false;
+	return ["input", "output", "cacheRead", "cacheWrite", "total"].every((key) => isNonNegFinite(value[key]));
+}
+
 /**
  * Inspect the payload the producer actually handed us.
  * `presentKeys` overrides Object.keys when the caller saw the object before
@@ -80,7 +85,7 @@ export function qualityFromRawUsage(
 		quality.costUsd = costSource === "protocol" ? "reported" : "unknown";
 		return quality;
 	}
-	if (isPlainObject(raw.cost) && isNonNegFinite(raw.cost.total)) {
+	if (isCompletePiCostObject(raw.cost)) {
 		quality.costUsd = costSource === "protocol" ? "reported" : "unknown";
 	}
 	return quality;

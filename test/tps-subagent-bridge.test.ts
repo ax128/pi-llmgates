@@ -116,7 +116,7 @@ describe("tps-subagent-bridge", () => {
 		unregister();
 	});
 
-	// Observed against pi-subagents 1.5.1: the launch reports
+	// Fixed payload shape from pi-subagents 0.69.0: the launch reports
 	// `Async workflow [0b82240e-f5fe-4ade-9458-8d08018d02e5]` while the child writes
 	// `4bc153b8_scout_0_meta.json`. Ownership is checked against the artifact's id, so
 	// harvesting only the run-level one gated every async child's tokens out — and the

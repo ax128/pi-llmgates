@@ -6,6 +6,8 @@
 **外部依赖：** pi-subagents（可选；未安装时零开销降级）
 
 > **2026-08-29 修订：** §6.4 / §7 的两条文件系统兜底（asyncDir 下的 `status.json`、子会话 `session.jsonl`）连同下方那条 `workspaceRoot` fail-closed 规则**已删除**。原因是它们互相抵消：pi-subagents 把 asyncDir 放在 `os.tmpdir()/pi-subagents-<scope>/`、子会话放在 `~/.pi/agent/sessions/`，恒在工作区之外，因此「只读工作区内路径」这条门禁让兜底在默认布局下从未生效。async 用量现在只有两个来源——事件载荷自带的 `usage` / `modelAttempts` / `totalCost` / `tokens`，以及 `_meta.json`。详见 2026-08-22 方案的 rev 5。
+
+> **2026-09-19 当前代码对账：** `bg_wait` 是额外的 management projection，不是普通 B/D 工具结果；它只接受当前会话已经观察到的 trusted run completion children，忽略 pooled 顶层 usage 与 `details.results`。普通 0.69 child 使用 parent-run + flat index；indexless `_meta.json` 只有在同一 parent/agent 唯一时规范化，否则 fail-closed。B/D progress 使用 canonical `toolprogress` 身份，终态清理旧 progress key。下文早期的旧管理工具名单、无 index 一律拒绝等快照文字以当前代码为准；临时目录 `status.json` 与子会话 `session.jsonl` 仍不扫描。
 >
 > **2026-08-15 修订（对照代码核对）：**
 >

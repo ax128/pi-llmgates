@@ -1,0 +1,38 @@
+{
+  "usage": {
+    "input": 900,
+    "output": 90,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 990,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0.09
+    }
+  },
+  "details": {
+    "mode": "management",
+    "results": [],
+    "completions": [
+      {
+        "runId": "0b82240e-f5fe-4ade-9458-8d08018d02e5",
+        "results": [
+          {
+            "agent": "scout",
+            "usage": {
+              "turns": 2,
+              "input": 100,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "cost": 0.01
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

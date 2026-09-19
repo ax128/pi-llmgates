@@ -18,6 +18,7 @@ import {
 import {
 	collectPiSubagentsMetaUsage,
 	createSubagentIngestState,
+	extractBgWaitUsage,
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromToolExecution,
@@ -708,6 +709,18 @@ export default function (pi: ExtensionAPI) {
 		});
 		if (records.length > 0) {
 			ingestSubagentRecords(records, "sync-subagent");
+		}
+		// pi-subagents 0.69's bg_wait is a management projection.  Its pooled
+		// top-level usage is already represented by async/meta ownership and must
+		// never enter the generic tool inlet.  Only completion children belonging
+		// to a run observed in this session may be accepted here.
+		const sessionIdentity = normalizeSubagentSessionIdentity({
+			sessionId: ctx.sessionManager.getSessionId(),
+			sessionFile: ctx.sessionManager.getSessionFile(),
+		});
+		const bgWaitRecords = extractBgWaitUsage(event.result, sessionIdentity, sessionRunIds);
+		if (bgWaitRecords.length > 0) {
+			ingestSubagentRecords(bgWaitRecords, "pi-subagents");
 		}
 		// Inlet D: any other tool that follows pi's `result.usage` convention. Its switch
 		// is checked here rather than at session_start so that turning it off leaves the

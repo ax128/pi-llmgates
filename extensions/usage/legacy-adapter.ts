@@ -171,7 +171,7 @@ export function observationFromLegacyRecord(
 		usage.cacheWrite = record.cacheWrite;
 		quality.cacheWrite = "reported";
 	}
-	if (record.costUsd > 0) {
+	if (record.costUsd > 0 || record.costQuality !== undefined) {
 		usage.costUsd = record.costUsd;
 		quality.costUsd = record.costQuality ?? "unknown";
 	}
@@ -180,7 +180,7 @@ export function observationFromLegacyRecord(
 		record.output > 0 ||
 		record.cacheRead > 0 ||
 		record.cacheWrite > 0 ||
-		record.costUsd > 0;
+		record.costUsd > 0 || record.costQuality !== undefined;
 	if (record.calls > 0 && record.callsQuality !== undefined) {
 		usage.calls = record.calls;
 		quality.calls = record.callsQuality;

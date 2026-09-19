@@ -48,6 +48,22 @@ describe("usage metric quality from raw payloads", () => {
 		expect(quality.costUsd).toBe("reported");
 	});
 
+	it("marks a complete protocol cost object, including total zero, as reported", () => {
+		const quality = qualityFromRawUsage(
+			{ input: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			{ costSource: "protocol" },
+		);
+		expect(quality.costUsd).toBe("reported");
+	});
+
+	it("keeps a partial protocol cost object unknown", () => {
+		const quality = qualityFromRawUsage(
+			{ input: 100, cost: { total: 0.2 } },
+			{ costSource: "protocol" },
+		);
+		expect(quality.costUsd).toBe("unknown");
+	});
+
 	it("maps present turns to reported calls without treating a missing turns key as 1", () => {
 		expect(qualityFromRawUsage({ turns: 3 }).calls).toBe("reported");
 		expect(qualityFromRawUsage({ input: 10 }).calls).toBe("unknown");

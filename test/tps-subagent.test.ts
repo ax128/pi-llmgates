@@ -7,6 +7,7 @@ import {
 	asyncRunSourceKey,
 	collectPiSubagentsMetaUsage,
 	createSubagentIngestState,
+	extractBgWaitUsage,
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromToolExecution,
@@ -15,6 +16,7 @@ import {
 	metaFileSourceKey,
 	normalizeRunIdForSourceKey,
 	normalizeUsageFromPartial,
+	parseMetaFileIdentity,
 	parsePiSubagentsMetaJson,
 	readPiSubagentsMetaUsage,
 	recordSubagentUsageRecords,
@@ -24,11 +26,56 @@ import {
 	subagentRunSourceKey,
 } from "../extensions/tps-subagent.js";
 import { totalCostUsd, totalModelCalls } from "../extensions/tps-stats.js";
+import asyncCompleteFixture from "./fixtures/pi-subagents-0.69/async-complete-parent-child.json" with { type: "json" };
+import bgWaitFixture from "./fixtures/pi-subagents-0.69/bg-wait-management.json" with { type: "json" };
 
 const UUID_RUN = "1d706627-aada-4828-9207-bbab8fad3864";
 const UUID_NORM = "1d706627aada48289207bbab8fad3864";
 
 describe("tps subagent usage", () => {
+	it("parses the 0.69 bg_wait completion children only for trusted runs", () => {
+		const runId = "0b82240ef5fe4ade94588d08018d02e5";
+		const records = extractBgWaitUsage(
+			bgWaitFixture,
+			"sess-0.69",
+			new Set([runId]),
+		);
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({ sourceKey: `meta:${runId}:scout:0`, input: 100, output: 10 });
+
+		// The pooled top-level usage and details.results are never generic D input.
+		expect(extractBgWaitUsage(bgWaitFixture, "sess-0.69", new Set())).toEqual([]);
+		const oldSession = { ...bgWaitFixture, sessionId: "old-session" };
+		expect(extractBgWaitUsage(oldSession, "sess-0.69", new Set([runId]))).toEqual([]);
+	});
+
+	it("does not let bg_wait bind a child id that the current session never observed", () => {
+		const payload = {
+			details: {
+				mode: "management",
+				completions: [{
+					runId: UUID_RUN,
+					results: [{ runId: "deadbeef", agent: "worker", usage: { turns: 1, input: 8, output: 1, cost: 0 } }],
+				}],
+			},
+		};
+		expect(extractBgWaitUsage(payload, "sess-1", new Set([UUID_NORM]))).toEqual([]);
+	});
+
+	it("keeps the 0.69 async parent-run and flat-index fixture on the existing source key", () => {
+		const [record] = extractSubagentUsageFromAsyncComplete(asyncCompleteFixture, "sess-0.69");
+		expect(record).toMatchObject({
+			sourceKey: `meta:${UUID_NORM}:reviewer:0`,
+			input: 10,
+			output: 5,
+		});
+	});
+
+	it("requires a stable index for indexed meta files and exposes indexless identity for the collector gate", () => {
+		expect(metaFileSourceKey("abcd_worker_0_meta.json")).toBe("meta:abcd:worker:0");
+		expect(metaFileSourceKey("abcd_worker_meta.json")).toBeNull();
+		expect(parseMetaFileIdentity("abcd_worker_meta.json")).toEqual({ runId: "abcd", agent: "worker", index: null });
+	});
 	it("extracts and normalizes owned run IDs from tool result root, details, and results", () => {
 		expect(
 			extractSubagentRunIdsFromToolExecution("subagent", {
@@ -243,6 +290,25 @@ describe("tps subagent usage", () => {
 				new Set(),
 			),
 		).toEqual([]);
+	});
+
+	it("normalizes a unique indexless 0.69 meta file to child index 0, but rejects a mixed shape", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-indexless-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const indexless = join(artifactsDir, "abcd_worker_meta.json");
+		writeFileSync(indexless, JSON.stringify({ agent: "worker", model: "m", usage: { turns: 1, input: 4 } }));
+		const startedAt = Date.now() - 1_000;
+		const allowed = new Set(["abcd"]);
+		const first = collectPiSubagentsMetaUsage(artifactsDir, startedAt, new Set(), allowed);
+		expect(first[0]?.sourceKey).toBe("meta:abcd:worker:0");
+
+		const indexed = join(artifactsDir, "abcd_worker_1_meta.json");
+		writeFileSync(indexed, JSON.stringify({ agent: "worker", model: "m", usage: { turns: 1, input: 5 } }));
+		const mixed = collectPiSubagentsMetaUsage(artifactsDir, startedAt, new Set(), allowed);
+		expect(mixed).toHaveLength(1);
+		expect(mixed[0]?.sourceKey).toBe("meta:abcd:worker:1");
+		rmSync(root, { recursive: true, force: true });
 	});
 
 	it("merges subagent usage into session totals", () => {
@@ -786,9 +852,10 @@ describe("tps subagent usage", () => {
 		expect(ingested.size).toBe(1);
 	});
 
-	it("SUBAGENT_TOOL_NAMES excludes wait/supervisor/intercom (§13.11)", () => {
+	it("SUBAGENT_TOOL_NAMES excludes bg_wait and legacy management tools (§13.11)", () => {
 		expect(SUBAGENT_TOOL_NAMES.has("subagent")).toBe(true);
 		expect(SUBAGENT_TOOL_NAMES.has("task")).toBe(true);
+		expect(SUBAGENT_TOOL_NAMES.has("bg_wait")).toBe(false);
 		expect(SUBAGENT_TOOL_NAMES.has("subagent_wait")).toBe(false);
 		expect(SUBAGENT_TOOL_NAMES.has("subagent_supervisor")).toBe(false);
 		expect(SUBAGENT_TOOL_NAMES.has("intercom")).toBe(false);

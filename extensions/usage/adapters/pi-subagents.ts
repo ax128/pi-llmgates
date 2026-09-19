@@ -12,6 +12,11 @@ import { extractToolResultUsage } from "../../tps-usage-inlets.js";
 export const PI_SUBAGENTS_FACTORY_BLOCKER =
 	"pi-subagents has no public child-factory usage registration; nested/fork/helper LLM calls stay partial";
 
+/** Stable, encoded namespace for all provisional tool execution snapshots. */
+export function progressSourceKey(toolCallId: string, sourceKey: string): string {
+	return `toolprogress:${encodeURIComponent(toolCallId)}:${encodeURIComponent(sourceKey)}`;
+}
+
 export function stampSnapshotRevision(
 	records: readonly SubagentUsageRecord[],
 	revision: number,
@@ -30,12 +35,15 @@ export function extractUsageFromToolUpdate(
 		subagent: stampSnapshotRevision(
 			extractSubagentUsageFromToolExecution(toolName, partialResult, toolCallId).map((record) => ({
 				...record,
-					sourceKey: `toolprogress:${encodeURIComponent(toolCallId)}:${encodeURIComponent(record.sourceKey)}`,
+				sourceKey: progressSourceKey(toolCallId, record.sourceKey),
 			})),
 			revision,
 		),
 		toolNested: stampSnapshotRevision(
-			extractToolResultUsage(toolName, partialResult, toolCallId),
+			extractToolResultUsage(toolName, partialResult, toolCallId).map((record) => ({
+				...record,
+				sourceKey: progressSourceKey(toolCallId, record.sourceKey),
+			})),
 			revision,
 		),
 	};

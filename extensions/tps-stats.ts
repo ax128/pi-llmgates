@@ -1,6 +1,6 @@
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
 import { calculateCost } from "@earendil-works/pi-ai";
-import { resolveModelCostRates } from "./model-pricing.js";
+import { lookupKnownModelCostRates, resolveModelCostRates } from "./model-pricing.js";
 
 export interface ModelUsageEntry {
 	calls: number;
@@ -135,8 +135,22 @@ export function preprocessAssistantMessage(message: unknown): AssistantMessage |
 	} as AssistantMessage;
 }
 
-function positiveFinite(value: unknown): number | null {
-	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+function nonNegativeFinite(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function completePiCostObject(value: unknown): value is {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+} {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const cost = value as Record<string, unknown>;
+	return ["input", "output", "cacheRead", "cacheWrite", "total"].every(
+		(key) => nonNegativeFinite(cost[key]) !== null,
+	);
 }
 
 /**
@@ -178,7 +192,7 @@ export function estimateCostFromRates(
 		const stubModel = {
 			cost: resolveModelCostRates(modelId, provider),
 		} as Model<Api>;
-		return positiveFinite(calculateCost(stubModel, normalizedUsage).total) ?? 0;
+		return nonNegativeFinite(calculateCost(stubModel, normalizedUsage).total) ?? 0;
 	} catch {
 		return 0;
 	}
@@ -210,25 +224,38 @@ export function resolveUsageCostUsd(
 export function resolveUsageCostWithQuality(
 	usage: unknown,
 	model: { id?: string; provider?: string } | undefined,
-	objectCostQuality: "estimated" | "unknown" = "estimated",
+	objectCostQuality: "estimated" | "unknown" | "pi-tool-result" = "estimated",
 ): { costUsd: number; costQuality: "reported" | "estimated" | "unknown" } {
 	try {
 		if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
 			return { costUsd: 0, costQuality: "unknown" };
 		}
-		const cost = (usage as Record<string, unknown>).cost;
-		const flat = positiveFinite(cost);
-		if (flat !== null) {
+		const raw = usage as Record<string, unknown>;
+		const cost = raw.cost;
+		const flat = nonNegativeFinite(cost);
+		const piToolResult = objectCostQuality === "pi-tool-result";
+		if (flat !== null && (flat > 0 || piToolResult)) {
 			return { costUsd: flat, costQuality: "reported" };
 		}
-		if (cost && typeof cost === "object" && !Array.isArray(cost)) {
-			const total = positiveFinite((cost as Record<string, unknown>).total);
-			if (total !== null) {
-				return { costUsd: total, costQuality: objectCostQuality };
+		if (completePiCostObject(cost)) {
+			if (cost.total > 0 || piToolResult) {
+				return {
+					costUsd: cost.total,
+					costQuality: piToolResult ? "reported" : objectCostQuality,
+				};
 			}
+		}
+		// A present but malformed/partial cost is not evidence that the model's
+		// pricing table should be used.  In particular, never turn a private
+		// nested amount or a partial Pi object into a reported or estimated cost.
+		if (piToolResult && cost !== undefined) {
+			return { costUsd: 0, costQuality: "unknown" };
 		}
 		const modelId = model?.id?.trim();
 		if (!modelId) {
+			return { costUsd: 0, costQuality: "unknown" };
+		}
+		if (!lookupKnownModelCostRates(modelId, model?.provider)) {
 			return { costUsd: 0, costQuality: "unknown" };
 		}
 		return { costUsd: estimateCostFromRates(usage, modelId, model?.provider), costQuality: "estimated" };
@@ -240,7 +267,9 @@ export function resolveUsageCostWithQuality(
 /** Never throws — returns 0 when pricing or usage data is invalid. */
 export function safeEstimateUsageCostUsd(message: AssistantMessage): number {
 	try {
-		const reported = positiveFinite(message.usage?.cost?.total);
+		const reported = typeof message.usage?.cost?.total === "number" && Number.isFinite(message.usage.cost.total) && message.usage.cost.total > 0
+			? message.usage.cost.total
+			: null;
 		if (reported !== null) {
 			return reported;
 		}
