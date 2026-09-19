@@ -776,13 +776,69 @@ describe("tps runtime subagent ordering", () => {
 			};
 			await runtime.emit("tool_execution_end", { toolName: "bg_wait", toolCallId: "wait-1", result: wait });
 			await runtime.emit("tool_execution_end", { toolName: "bg_wait", toolCallId: "wait-2", result: wait });
+			await runtime.emit("tool_execution_end", {
+				toolName: "subagent_wait",
+				toolCallId: "wait-management-projection",
+				result: {
+					...wait,
+					details: {
+						...wait.details,
+						completions: [{
+							runId: "0b82240e-f5fe-4ade-9458-8d08018d02e5",
+							results: [{ agent: "reviewer", usage: { turns: 1, input: 77, output: 7, cost: 0.007 } }],
+						}],
+					},
+				},
+			});
 			await new Promise((resolve) => setTimeout(resolve, 0));
 			runtime.scopeChoices.push("This session");
 			await runtime.commands.get("calls")!.handler("", runtime.ctx);
 			const rows = runtime.selections[0] ?? [];
 			expect(rows.filter((line) => line.startsWith("subagent/scout")).length).toBe(1);
 			expect(rows.find((line) => line.startsWith("subagent/scout"))).toContain("in 100");
+			expect(rows.some((line) => line.startsWith("subagent/reviewer"))).toBe(false);
 			expect(rows.some((line) => line.includes("in 900"))).toBe(false);
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("revokes an indexless meta snapshot when an indexed sibling appears", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-indexless-mixed-"));
+		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const runtime = createRuntime(cwd);
+		const writeMeta = (fileName: string, input: number) => {
+			writeFileSync(
+				join(artifactsDir, fileName),
+				JSON.stringify({ agent: "worker", model: "mixed-model", usage: { turns: 1, input, output: 1, cost: 0 } }),
+			);
+		};
+		const showSession = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", runtime.ctx);
+			return runtime.selections.at(-1) ?? [];
+		};
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			await runtime.emit("tool_execution_end", {
+				toolName: "subagent",
+				toolCallId: "launch-mixed",
+				result: { details: { runId: "abcd", async: true, results: [] } },
+			});
+			writeMeta("abcd_worker_meta.json", 4);
+			await runtime.emit("agent_settled");
+			expect((await showSession()).some((line) => line.includes("in 4"))).toBe(true);
+
+			await runtime.emit("before_agent_start");
+			writeMeta("abcd_worker_1_meta.json", 5);
+			await runtime.emit("agent_settled");
+			const rows = await showSession();
+			expect(rows.some((line) => line.includes("in 5"))).toBe(true);
+			expect(rows.some((line) => line.includes("in 4"))).toBe(false);
 		} finally {
 			await runtime.emit("session_shutdown");
 			rmSync(cwd, { recursive: true, force: true });

@@ -845,6 +845,45 @@ export function listPiSubagentMetaFiles(artifactsDir: string): string[] {
 }
 
 /**
+ * Return canonical keys whose indexless identity cannot be proved across the
+ * current scan.  The proof has to cover every artifact directory: treating an
+ * indexless file as unique in one directory while an indexed sibling lives in
+ * another would make the result depend on scan order and could double count.
+ */
+export function findAmbiguousIndexlessMetaSourceKeys(
+	artifactDirs: readonly string[],
+): Set<string> {
+	const groups = new Map<string, { runId: string; agent: string; indexless: number; indexed: number }>();
+	for (const artifactsDir of artifactDirs) {
+		for (const metaPath of listPiSubagentMetaFiles(artifactsDir)) {
+			const fileName = metaPath.split(/[/\\]/).pop() ?? "";
+			const identity = parseMetaFileIdentity(fileName);
+			if (!identity) continue;
+			const groupKey = `${identity.runId}\0${identity.agent}`;
+			const group = groups.get(groupKey) ?? {
+				runId: identity.runId,
+				agent: identity.agent,
+				indexless: 0,
+				indexed: 0,
+			};
+			if (identity.index === null) group.indexless += 1;
+			else group.indexed += 1;
+			groups.set(groupKey, group);
+		}
+	}
+
+	const ambiguous = new Set<string>();
+	for (const group of groups.values()) {
+		if (group.indexless === 1 && group.indexed === 0) continue;
+		if (group.indexless > 0) {
+			const sourceKey = subagentRunSourceKey(group.runId, group.agent, 0);
+			if (sourceKey) ambiguous.add(sourceKey);
+		}
+	}
+	return ambiguous;
+}
+
+/**
  * Candidate `_meta.json` directories for one session: the pi-subagents ≥ 0.49
  * project dir, the legacy `.pi-subagents/` project dir, and the session-scoped
  * `subagent-artifacts/` directory beside the parent session file (the default
@@ -884,6 +923,7 @@ export function collectPiSubagentsMetaUsage(
 	onTruncated?: () => void,
 	pendingNullMeta?: Map<string, number>,
 	metaMtimeMs?: Map<string, number>,
+	blockedIndexlessSourceKeys?: ReadonlySet<string>,
 ): SubagentUsageRecord[] {
 	const out: SubagentUsageRecord[] = [];
 	let reads = 0;
@@ -916,6 +956,7 @@ export function collectPiSubagentsMetaUsage(
 		const source = sourceKey ? parseMetaSourceKeyGranularity(sourceKey) : null;
 		if (
 			!sourceKey ||
+			(identity?.index === null && blockedIndexlessSourceKeys?.has(sourceKey)) ||
 			(allowedRunIds !== undefined && (!source || !allowedRunIds.has(source.runId)))
 		) {
 			continue;
@@ -989,6 +1030,8 @@ export type SubagentIngestState = {
 	revisionDomains: Map<string, number>;
 	/** sourceKey → last successful meta mtime; growth re-reads the file. */
 	metaMtimeMs: Map<string, number>;
+	/** sourceKeys whose current ledger contribution came from a meta snapshot. */
+	metaSnapshotKeys: Set<string>;
 };
 
 export function createSubagentIngestState(): SubagentIngestState {
@@ -1000,6 +1043,7 @@ export function createSubagentIngestState(): SubagentIngestState {
 		revisions: new Map(),
 		revisionDomains: new Map(),
 		metaMtimeMs: new Map(),
+		metaSnapshotKeys: new Set(),
 	};
 }
 
@@ -1070,6 +1114,11 @@ export function selectFreshSubagentRecords(
 		state.keys.add(record.sourceKey);
 		state.revisions.set(record.sourceKey, nextRev);
 		state.revisionDomains.set(domainKey, nextRev);
+		if (record.revisionSource === "meta") {
+			state.metaSnapshotKeys.add(record.sourceKey);
+		} else {
+			state.metaSnapshotKeys.delete(record.sourceKey);
+		}
 		const meta = parseMetaSourceKeyGranularity(record.sourceKey);
 		if (meta) {
 			if (meta.kind === "aggregate") {

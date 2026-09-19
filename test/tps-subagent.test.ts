@@ -11,6 +11,7 @@ import {
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromToolExecution,
+	findAmbiguousIndexlessMetaSourceKeys,
 	MAX_SUBAGENT_META_BYTES,
 	MAX_SUBAGENT_META_READS_PER_SCAN,
 	metaFileSourceKey,
@@ -309,6 +310,24 @@ describe("tps subagent usage", () => {
 		expect(mixed).toHaveLength(1);
 		expect(mixed[0]?.sourceKey).toBe("meta:abcd:worker:1");
 		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("proves indexless uniqueness across all artifact directories", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-indexless-global-"));
+		const firstDir = join(root, "first");
+		const secondDir = join(root, "second");
+		mkdirSync(firstDir, { recursive: true });
+		mkdirSync(secondDir, { recursive: true });
+		try {
+			writeFileSync(join(firstDir, "abcd_worker_meta.json"), "{}");
+			expect(findAmbiguousIndexlessMetaSourceKeys([firstDir, secondDir])).toEqual(new Set());
+			writeFileSync(join(secondDir, "abcd_worker_1_meta.json"), "{}");
+			expect(findAmbiguousIndexlessMetaSourceKeys([firstDir, secondDir])).toEqual(
+				new Set(["meta:abcd:worker:0"]),
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("merges subagent usage into session totals", () => {

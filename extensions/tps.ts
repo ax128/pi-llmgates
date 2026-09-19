@@ -22,6 +22,7 @@ import {
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromToolExecution,
+	findAmbiguousIndexlessMetaSourceKeys,
 	normalizeSubagentSessionIdentity,
 	parseMetaSourceKeyGranularity,
 	resolveSubagentArtifactDirs,
@@ -301,6 +302,48 @@ export default function (pi: ExtensionAPI) {
 		turnStats = createEmptyStats();
 	}
 
+	function revokeAmbiguousIndexlessMeta(ambiguousKeys: ReadonlySet<string>): void {
+		if (ambiguousKeys.size === 0) return;
+		const metaSnapshotKeys = new Set(
+			[...ambiguousKeys].filter((sourceKey) => subagentIngestState.metaSnapshotKeys.has(sourceKey)),
+		);
+		if (metaSnapshotKeys.size > 0) {
+			usageCollector?.ledger.dropWhere(
+				(observation) =>
+					observation.kind === "snapshot" &&
+					metaSnapshotKeys.has(observation.snapshotEpoch ?? ""),
+			);
+		}
+		let stateChanged = false;
+		for (const sourceKey of ambiguousKeys) {
+			if (subagentIngestState.keys.delete(sourceKey)) stateChanged = true;
+			if (subagentIngestState.pendingNullMeta.delete(sourceKey)) stateChanged = true;
+			if (subagentIngestState.revisions.delete(sourceKey)) stateChanged = true;
+			if (subagentIngestState.metaMtimeMs.delete(sourceKey)) stateChanged = true;
+			subagentIngestState.metaSnapshotKeys.delete(sourceKey);
+			for (const domainKey of [...subagentIngestState.revisionDomains.keys()]) {
+				if (domainKey.startsWith(`${sourceKey}\0`)) {
+					subagentIngestState.revisionDomains.delete(domainKey);
+					stateChanged = true;
+				}
+			}
+		}
+		if (stateChanged) {
+			// A removed child/aggregate must not leave a stale run-level granularity
+			// marker that suppresses a later, now-unambiguous file.
+			subagentIngestState.aggregateRunIds.clear();
+			subagentIngestState.perChildRunIds.clear();
+			for (const sourceKey of subagentIngestState.keys) {
+				const meta = parseMetaSourceKeyGranularity(sourceKey);
+				if (!meta) continue;
+				(meta.kind === "aggregate" ? subagentIngestState.aggregateRunIds : subagentIngestState.perChildRunIds).add(meta.runId);
+			}
+		}
+		if (metaSnapshotKeys.size > 0) {
+			syncStatsFromLedger();
+		}
+	}
+
 	function applySubagentRecords(
 		records: readonly SubagentUsageRecord[],
 		targetStats: ModelUsageStats,
@@ -372,6 +415,8 @@ export default function (pi: ExtensionAPI) {
 			if (!sessionActive) {
 				return;
 			}
+			const blockedIndexlessSourceKeys = findAmbiguousIndexlessMetaSourceKeys(artifactDirs);
+			revokeAmbiguousIndexlessMeta(blockedIndexlessSourceKeys);
 			let truncated = false;
 			const ingestedBefore = subagentIngestState.keys.size;
 			for (const artifactsDir of artifactDirs) {
@@ -386,6 +431,7 @@ export default function (pi: ExtensionAPI) {
 						},
 						subagentIngestState.pendingNullMeta,
 						subagentIngestState.metaMtimeMs,
+						blockedIndexlessSourceKeys,
 					),
 					targetStats,
 				);
@@ -718,9 +764,11 @@ export default function (pi: ExtensionAPI) {
 			sessionId: ctx.sessionManager.getSessionId(),
 			sessionFile: ctx.sessionManager.getSessionFile(),
 		});
-		const bgWaitRecords = extractBgWaitUsage(event.result, sessionIdentity, sessionRunIds);
-		if (bgWaitRecords.length > 0) {
-			ingestSubagentRecords(bgWaitRecords, "pi-subagents");
+		if (typeof event.toolName === "string" && event.toolName.trim().toLowerCase() === "bg_wait") {
+			const bgWaitRecords = extractBgWaitUsage(event.result, sessionIdentity, sessionRunIds);
+			if (bgWaitRecords.length > 0) {
+				ingestSubagentRecords(bgWaitRecords, "pi-subagents");
+			}
 		}
 		// Inlet D: any other tool that follows pi's `result.usage` convention. Its switch
 		// is checked here rather than at session_start so that turning it off leaves the
@@ -839,6 +887,8 @@ export default function (pi: ExtensionAPI) {
 		const startedAtMs = sessionStartedAtMs;
 		const settledTurnStats = turnStats;
 		runUsageTask(() => {
+			const blockedIndexlessSourceKeys = findAmbiguousIndexlessMetaSourceKeys(artifactsDirs);
+			revokeAmbiguousIndexlessMeta(blockedIndexlessSourceKeys);
 			for (const artifactsDir of artifactsDirs) {
 				applySubagentRecords(
 					collectPiSubagentsMetaUsage(
@@ -849,6 +899,7 @@ export default function (pi: ExtensionAPI) {
 						undefined,
 						subagentIngestState.pendingNullMeta,
 						subagentIngestState.metaMtimeMs,
+						blockedIndexlessSourceKeys,
 					),
 					settledTurnStats,
 				);
