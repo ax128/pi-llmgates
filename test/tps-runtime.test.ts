@@ -810,10 +810,16 @@ describe("tps runtime subagent ordering", () => {
 		mkdirSync(artifactsDir, { recursive: true });
 		const runtime = createRuntime(cwd);
 		const writeMeta = (fileName: string, input: number) => {
+			const path = join(artifactsDir, fileName);
 			writeFileSync(
-				join(artifactsDir, fileName),
+				path,
 				JSON.stringify({ agent: "worker", model: "mixed-model", usage: { turns: 1, input, output: 1, cost: 0 } }),
 			);
+			// The scan skips artifacts older than the session. File mtimes come from the
+			// kernel's coarse clock, which can land a tick behind the `Date.now()` taken
+			// at session_start, so a fast runner would otherwise drop this file.
+			const when = Date.now() / 1000 + 1;
+			utimesSync(path, when, when);
 		};
 		const showSession = async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
@@ -856,10 +862,13 @@ describe("tps runtime subagent ordering", () => {
 		const runtime = createRuntime(cwd);
 		// Distinct model labels keep the three children on separate `/calls` rows.
 		const writeMeta = (fileName: string, model: string, input: number) => {
+			const path = join(artifactsDir, fileName);
 			writeFileSync(
-				join(artifactsDir, fileName),
+				path,
 				JSON.stringify({ agent: "worker", model, usage: { turns: 1, input, output: 1, cost: 0 } }),
 			);
+			const when = Date.now() / 1000 + 1;
+			utimesSync(path, when, when);
 		};
 		const showSession = async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
