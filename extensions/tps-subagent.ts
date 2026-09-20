@@ -47,6 +47,12 @@ export interface SubagentUsageRecord extends SubagentModelUsage {
 	revision?: number;
 	/** Revisions are comparable only within this inlet. */
 	revisionSource?: "meta" | "tool";
+	/**
+	 * Set when the record came from an indexless `_meta.json` whose canonical
+	 * index 0 was inferred rather than read off the file name. Only such a key
+	 * may later be revoked when the identity stops being unique.
+	 */
+	metaIndexless?: boolean;
 }
 
 export interface SubagentUsageCounters {
@@ -1003,6 +1009,9 @@ export function collectPiSubagentsMetaUsage(
 			pendingNullMeta?.delete(sourceKey);
 			record.revision = Math.floor(stats.mtimeMs);
 			record.revisionSource = "meta";
+			if (identity?.index === null) {
+				record.metaIndexless = true;
+			}
 			metaMtimeMs?.set(sourceKey, stats.mtimeMs);
 			out.push(record);
 		} else {
@@ -1032,6 +1041,14 @@ export type SubagentIngestState = {
 	metaMtimeMs: Map<string, number>;
 	/** sourceKeys whose current ledger contribution came from a meta snapshot. */
 	metaSnapshotKeys: Set<string>;
+	/** sourceKeys whose current contribution was inferred from an indexless meta file. */
+	metaIndexlessKeys: Set<string>;
+	/**
+	 * sourceKeys that were actually accepted into the ledger. `keys` also holds
+	 * cross-granularity losers, which are recorded as seen but never counted, so
+	 * only this set may be used to rebuild the granularity markers.
+	 */
+	countedKeys: Set<string>;
 };
 
 export function createSubagentIngestState(): SubagentIngestState {
@@ -1044,6 +1061,8 @@ export function createSubagentIngestState(): SubagentIngestState {
 		revisionDomains: new Map(),
 		metaMtimeMs: new Map(),
 		metaSnapshotKeys: new Set(),
+		metaIndexlessKeys: new Set(),
+		countedKeys: new Set(),
 	};
 }
 
@@ -1112,12 +1131,20 @@ export function selectFreshSubagentRecords(
 			}
 		}
 		state.keys.add(record.sourceKey);
+		state.countedKeys.add(record.sourceKey);
 		state.revisions.set(record.sourceKey, nextRev);
 		state.revisionDomains.set(domainKey, nextRev);
 		if (record.revisionSource === "meta") {
 			state.metaSnapshotKeys.add(record.sourceKey);
 		} else {
 			state.metaSnapshotKeys.delete(record.sourceKey);
+		}
+		// An indexed file or a completion event taking the same key clears the
+		// marker: that key is no longer an inference and must not be revoked.
+		if (record.metaIndexless) {
+			state.metaIndexlessKeys.add(record.sourceKey);
+		} else {
+			state.metaIndexlessKeys.delete(record.sourceKey);
 		}
 		const meta = parseMetaSourceKeyGranularity(record.sourceKey);
 		if (meta) {

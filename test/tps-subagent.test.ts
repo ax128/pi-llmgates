@@ -330,6 +330,63 @@ describe("tps subagent usage", () => {
 		}
 	});
 
+	it("marks only an inferred indexless key as revocable, and never counts a cross-granularity loser", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-indexless-marker-"));
+		const artifactsDir = join(root, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		try {
+			const startedAt = Date.now() - 1_000;
+			const allowed = new Set(["abcd"]);
+			writeFileSync(
+				join(artifactsDir, "abcd_worker_meta.json"),
+				JSON.stringify({ agent: "worker", model: "m", usage: { turns: 1, input: 4 } }),
+			);
+			const state = createSubagentIngestState();
+			const inferred = collectPiSubagentsMetaUsage(artifactsDir, startedAt, state.keys, allowed);
+			expect(inferred[0]).toMatchObject({ sourceKey: "meta:abcd:worker:0", metaIndexless: true });
+			expect(selectFreshSubagentRecords(state, inferred)).toHaveLength(1);
+			expect(state.metaIndexlessKeys.has("meta:abcd:worker:0")).toBe(true);
+			expect(state.countedKeys.has("meta:abcd:worker:0")).toBe(true);
+
+			// An indexed `_0` file owns the same canonical key outright. Once it has
+			// taken the key, that key is no longer an inference and an ambiguity
+			// revoke must leave it alone.
+			const indexed = selectFreshSubagentRecords(state, [{
+				sourceKey: "meta:abcd:worker:0",
+				modelLabel: "m",
+				calls: 1,
+				input: 6,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				costUsd: 0,
+				revision: (inferred[0]?.revision ?? 0) + 1,
+				revisionSource: "meta",
+			}]);
+			expect(indexed).toHaveLength(1);
+			expect(state.metaIndexlessKeys.has("meta:abcd:worker:0")).toBe(false);
+			expect(state.countedKeys.has("meta:abcd:worker:0")).toBe(true);
+
+			// A run aggregate dropped against an existing per-child record is recorded
+			// as seen so its file stops being re-read, but it was never counted — the
+			// granularity markers must not be rebuilt from it.
+			expect(selectFreshSubagentRecords(state, [{
+				sourceKey: "meta:abcd",
+				modelLabel: "aggregate",
+				calls: 3,
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				costUsd: 0.5,
+			}])).toEqual([]);
+			expect(state.keys.has("meta:abcd")).toBe(true);
+			expect(state.countedKeys.has("meta:abcd")).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("merges subagent usage into session totals", () => {
 		const stats = new Map<string, import("../extensions/tps-stats.js").ModelUsageEntry>();
 		recordSubagentUsageRecords(stats, [

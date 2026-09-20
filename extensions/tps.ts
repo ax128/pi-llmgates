@@ -304,8 +304,17 @@ export default function (pi: ExtensionAPI) {
 
 	function revokeAmbiguousIndexlessMeta(ambiguousKeys: ReadonlySet<string>): void {
 		if (ambiguousKeys.size === 0) return;
+		// `meta:{runId}:{agent}:0` is also what an indexed `_0_meta.json` and a
+		// completion event for child 0 legitimately own. Only a key whose current
+		// contribution was *inferred* from an indexless file is ambiguous, so
+		// revoking on the canonical name alone would drop a valid child and make
+		// every later scan re-read the file that produced it.
+		const revokedKeys = new Set(
+			[...ambiguousKeys].filter((sourceKey) => subagentIngestState.metaIndexlessKeys.has(sourceKey)),
+		);
+		if (revokedKeys.size === 0) return;
 		const metaSnapshotKeys = new Set(
-			[...ambiguousKeys].filter((sourceKey) => subagentIngestState.metaSnapshotKeys.has(sourceKey)),
+			[...revokedKeys].filter((sourceKey) => subagentIngestState.metaSnapshotKeys.has(sourceKey)),
 		);
 		if (metaSnapshotKeys.size > 0) {
 			usageCollector?.ledger.dropWhere(
@@ -315,12 +324,14 @@ export default function (pi: ExtensionAPI) {
 			);
 		}
 		let stateChanged = false;
-		for (const sourceKey of ambiguousKeys) {
+		for (const sourceKey of revokedKeys) {
 			if (subagentIngestState.keys.delete(sourceKey)) stateChanged = true;
+			if (subagentIngestState.countedKeys.delete(sourceKey)) stateChanged = true;
 			if (subagentIngestState.pendingNullMeta.delete(sourceKey)) stateChanged = true;
 			if (subagentIngestState.revisions.delete(sourceKey)) stateChanged = true;
 			if (subagentIngestState.metaMtimeMs.delete(sourceKey)) stateChanged = true;
 			subagentIngestState.metaSnapshotKeys.delete(sourceKey);
+			subagentIngestState.metaIndexlessKeys.delete(sourceKey);
 			for (const domainKey of [...subagentIngestState.revisionDomains.keys()]) {
 				if (domainKey.startsWith(`${sourceKey}\0`)) {
 					subagentIngestState.revisionDomains.delete(domainKey);
@@ -330,10 +341,13 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (stateChanged) {
 			// A removed child/aggregate must not leave a stale run-level granularity
-			// marker that suppresses a later, now-unambiguous file.
+			// marker that suppresses a later, now-unambiguous file. Rebuild from the
+			// keys that were actually counted: `keys` also holds cross-granularity
+			// losers, and promoting those to markers would suppress both granularities
+			// for that run and freeze its meta growth.
 			subagentIngestState.aggregateRunIds.clear();
 			subagentIngestState.perChildRunIds.clear();
-			for (const sourceKey of subagentIngestState.keys) {
+			for (const sourceKey of subagentIngestState.countedKeys) {
 				const meta = parseMetaSourceKeyGranularity(sourceKey);
 				if (!meta) continue;
 				(meta.kind === "aggregate" ? subagentIngestState.aggregateRunIds : subagentIngestState.perChildRunIds).add(meta.runId);

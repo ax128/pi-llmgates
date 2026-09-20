@@ -844,6 +844,124 @@ describe("tps runtime subagent ordering", () => {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+
+	it("never revokes the indexed _0 child that owns the canonical key", async () => {
+		// `meta:{runId}:{agent}:0` is both the inferred key of an indexless file and
+		// the real key of `_0_meta.json`. Revoking on the name alone drops a child
+		// that was read from a perfectly unambiguous file, and once that file is gone
+		// the usage cannot come back.
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-indexless-zero-"));
+		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const runtime = createRuntime(cwd);
+		// Distinct model labels keep the three children on separate `/calls` rows.
+		const writeMeta = (fileName: string, model: string, input: number) => {
+			writeFileSync(
+				join(artifactsDir, fileName),
+				JSON.stringify({ agent: "worker", model, usage: { turns: 1, input, output: 1, cost: 0 } }),
+			);
+		};
+		const showSession = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", runtime.ctx);
+			return runtime.selections.at(-1) ?? [];
+		};
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			await runtime.emit("tool_execution_end", {
+				toolName: "subagent",
+				toolCallId: "launch-zero",
+				result: { details: { runId: "abcd", async: true, results: [] } },
+			});
+			writeMeta("abcd_worker_0_meta.json", "zero-child", 6);
+			writeMeta("abcd_worker_1_meta.json", "one-child", 5);
+			writeMeta("abcd_worker_meta.json", "indexless-child", 4);
+			await runtime.emit("agent_settled");
+			const first = await showSession();
+			expect(first.some((line) => line.startsWith("zero-child"))).toBe(true);
+			// The indexless file stays fail-closed; only the two indexed children count.
+			expect(first.some((line) => line.startsWith("indexless-child"))).toBe(false);
+
+			// The group is still ambiguous (one indexless, one indexed sibling), but the
+			// file behind the canonical key is gone, so a revoke would be permanent.
+			rmSync(join(artifactsDir, "abcd_worker_0_meta.json"));
+			await runtime.emit("before_agent_start");
+			await runtime.emit("agent_settled");
+			const rows = await showSession();
+			expect(rows.find((line) => line.startsWith("zero-child"))).toContain("in 6");
+			expect(rows.find((line) => line.startsWith("one-child"))).toContain("in 5");
+			expect(rows.some((line) => line.startsWith("indexless-child"))).toBe(false);
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps meta growth flowing for a run whose aggregate was a cross-granularity loser", async () => {
+		// The revoke rebuilds the run-level granularity markers. `keys` also holds
+		// aggregates that were recorded as seen but never counted; promoting those to
+		// markers puts one run in both sets and freezes its child meta at the first
+		// snapshot.
+		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-revoke-rebuild-"));
+		const artifactsDir = join(cwd, ".pi-subagents", "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		const runtime = createRuntime(cwd);
+		const writeMeta = (fileName: string, agent: string, input: number, bumpSeconds: number) => {
+			const path = join(artifactsDir, fileName);
+			writeFileSync(
+				path,
+				JSON.stringify({ agent, model: `${agent}-model`, usage: { turns: 1, input, output: 1, cost: 0 } }),
+			);
+			const when = Date.now() / 1000 + bumpSeconds;
+			utimesSync(path, when, when);
+		};
+		const showSession = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", runtime.ctx);
+			return runtime.selections.at(-1) ?? [];
+		};
+		try {
+			await runtime.emit("session_start");
+			await runtime.emit("before_agent_start");
+			for (const runId of ["abcd", "bcde"]) {
+				await runtime.emit("tool_execution_end", {
+					toolName: "subagent",
+					toolCallId: `launch-${runId}`,
+					result: { details: { runId, async: true, results: [] } },
+				});
+			}
+			// `bcde` is the run that will become ambiguous and trigger the revoke.
+			writeMeta("bcde_helper_meta.json", "helper", 3, 1);
+			writeMeta("abcd_worker_0_meta.json", "worker", 10, 1);
+			await runtime.emit("agent_settled");
+			expect((await showSession()).some((line) => line.includes("in 10"))).toBe(true);
+
+			// A run aggregate for `abcd` loses to its existing per-child record: recorded
+			// as seen, never counted.
+			runtime.emitEvent("subagent:async-complete", {
+				sessionId: "session-1",
+				runId: "abcd",
+				results: [],
+				totalCost: { costUsd: 0.5 },
+				turnCount: 3,
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			await runtime.emit("before_agent_start");
+			writeMeta("bcde_helper_1_meta.json", "helper", 2, 2);
+			writeMeta("abcd_worker_0_meta.json", "worker", 99, 2);
+			await runtime.emit("agent_settled");
+			const rows = await showSession();
+			expect(rows.some((line) => line.includes("in 99"))).toBe(true);
+			expect(rows.some((line) => line.includes("in 10"))).toBe(false);
+		} finally {
+			await runtime.emit("session_shutdown");
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("tps runtime compaction inlet", () => {
