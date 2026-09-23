@@ -16,9 +16,11 @@ import {
 	isDeepSeekCompatModel,
 	isMoonshotKimiCompatModel,
 	isMoonshotKimiK3Model,
+	isZaiGlmCompatModel,
 	mapCompatModelsPayload,
 	moonshotKimiOpenAICompat,
 	resolveCompatContextWindow,
+	zaiGlmOpenAICompat,
 } from "../extensions/compat/catalog.js";
 
 const OPTIONS = {
@@ -482,6 +484,51 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(cached.compat).toEqual(deepseekOpenAICompat());
 	});
+
+	it("injects zai/GLM compat so the system prompt keeps the `system` role", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{ id: "glm-5.3-flash" },
+				{ id: "glm-4.6", provider_id: "zai" },
+				{ id: "custom-alias", provider_id: "zai-coding-cn" },
+				{ id: "gpt-4o", provider_id: "openai" },
+			],
+			OPTIONS,
+		);
+
+		expect(models[0]?.compat).toEqual(zaiGlmOpenAICompat());
+		expect(models[1]?.compat).toEqual(zaiGlmOpenAICompat());
+		expect(models[2]?.compat).toEqual(zaiGlmOpenAICompat());
+		expect((models[2] as { gatewayVendor?: string }).gatewayVendor).toBe("zai-coding-cn");
+		expect(models[3]?.compat).toBeUndefined();
+	});
+
+	it("matches pi-ai's native zai transport metadata", () => {
+		expect(zaiGlmOpenAICompat()).toEqual({
+			supportsStore: false,
+			supportsDeveloperRole: false,
+			maxTokensField: "max_tokens",
+			thinkingFormat: "zai",
+		});
+	});
+
+	it("detects zai/GLM models by vendor or id prefix", () => {
+		expect(isZaiGlmCompatModel("custom-alias", "zai")).toBe(true);
+		expect(isZaiGlmCompatModel("custom-alias", "zai-coding-cn")).toBe(true);
+		expect(isZaiGlmCompatModel("custom-alias", "zhipuai")).toBe(true);
+		expect(isZaiGlmCompatModel("glm-5.3-flash")).toBe(true);
+		expect(isZaiGlmCompatModel("vendor/glm-4.6")).toBe(true);
+		expect(isZaiGlmCompatModel("chatglm3-6b")).toBe(true);
+		expect(isZaiGlmCompatModel("gpt-4o", "openai")).toBe(false);
+		expect(isZaiGlmCompatModel("deepseek-chat", "deepseek")).toBe(false);
+	});
+
+	it("patches cached GLM models with the non-developer role compat", () => {
+		const cached = { id: "glm-5.3-flash", api: "openai-completions" } as unknown as Model<Api>;
+		applyGatewayModelCompat(cached);
+		expect(cached.compat).toEqual(zaiGlmOpenAICompat());
+	});
+
 	it("detects Moonshot/Kimi models by vendor or id prefix", () => {
 		expect(isMoonshotKimiCompatModel("custom-alias", "moonshotai-cn")).toBe(true);
 		expect(isMoonshotKimiCompatModel("kimi-k2.6")).toBe(true);
