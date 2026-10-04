@@ -263,6 +263,12 @@ On top of that, **Moonshot / Kimi** models routed through a gateway lose pi-ai's
 
 **DeepSeek** models routed through a gateway likewise lose pi-ai's URL-based detection, so the extension supplies DeepSeek transport compat keyed on the vendor (`deepseek` / `deepseek-ai`) or an id starting with `deepseek-`. This sends the system prompt with the `system` role, uses DeepSeek's `thinking` parameter for reasoning requests, and disables `store`. It changes request shape only, not endpoint selection or the effort string; the known vendor hint for aliases is persisted with the model cache so offline restores retain the same compat.
 
+**Z.ai / Zhipu GLM** models routed through a gateway receive request-shape compat keyed on the vendor (`zai` / `zai-coding-cn` / `z-ai` / `zhipu` / `zhipuai` / `bigmodel` / `glm`) or the final id segment (`glm` / `glm-*` / `chatglm*`). The system prompt uses the `system` role, the output limit uses `max_tokens`, and `store` is omitted. For Chat Completions, thinking `off` sends `thinking: { type: "disabled" }` without `reasoning_effort`; other levels send `thinking: { type: "enabled", clear_thinking: false }` and pass the effort through verbatim when the endpoint supports it. Known vendor hints for aliases persist with the model cache for offline restoration. Endpoint selection is unchanged, and models routed to `messages` are not stamped with this OpenAI metadata.
+
+When choosing a compatibility family, **recognized DeepSeek, Moonshot/Kimi, or GLM vendor hints take precedence over id heuristics**. Id detection is used only for absent or unrecognized vendor hints, so cross-family alias names do not replace the identified upstream's compat.
+
+This GLM compat is **not a complete copy of each native Z.ai model's metadata**: model-specific `supportsReasoningEffort` / `zaiToolStream` flags are not copied. Sending `reasoning_effort` still follows pi-ai's endpoint detection (ordinary OpenAI-compatible gateways default to passing it through); this patch does not opt into the native `tool_stream` extension. This does not certify every GLM model and gateway: which efforts an endpoint accepts still needs verification against its actual behavior.
+
 **User-level fine-tuning (pi's own hook):** override a single model's thinking levels through `providers.<instance-id>.modelOverrides` in `~/.pi/agent/models.json` (top level, merge semantics — only the keys you write are overridden):
 
 ```jsonc
@@ -637,6 +643,7 @@ When one of these is **actually in effect** — a recognized value that really o
 | `401` / `403` at startup | Reconfigure that instance's key with `/login <instance-id>` |
 | `/balance` shows *not available* | That gateway exposes no recognizable quota endpoint (CLIProxyAPI, for example) — expected behaviour |
 | Kimi / `tokenization failed` | Upgrade this extension and `/reload`; Kimi rejects the `developer` role and the extension injects a compat shim. Starting a fresh session also helps (switching to K3 from another model mid-session is unreliable) |
+| GLM / `400001` “角色信息不正确” (invalid role) | Upgrade this extension and `/reload`; a GLM id or recognized `provider_id` enables the `system`-role compat patch. Custom aliases need a recognized vendor hint |
 | A wrong endpoint causes a 400 | Fall back with `/endpoint auto <model-id>` or `auto` in `/endpoint-setting` |
 | Cost does not match the bill | The TUI cost is an upstream retail estimate; check `/balance` or the gateway console for account spend |
 | Cost shows as a `~` estimate, or prices look stale | The price table could not be fetched (offline, `raw.githubusercontent.com` blocked, or Node `fetch` ignoring `HTTPS_PROXY`), or the response was not structurally a price table (`Implausible LiteLLM pricing table` — usually a proxy or error page in its place); cost falls back to cached or static rates and nothing else is affected. **No warning is printed by default**; `LLMGATES_DEBUG=1` then `/reload` shows `LiteLLM pricing sync failed` with the cause, or edit `~/.pi/agent/llmgates/pricing.json` by hand |

@@ -52,8 +52,23 @@ const MOONSHOT_KIMI_VENDOR_IDS = new Set([
 	"kimi-coding-cn",
 ]);
 
-function isPersistedCompatVendor(vendor: string): boolean {
-	return DEEPSEEK_VENDOR_IDS.has(vendor) || MOONSHOT_KIMI_VENDOR_IDS.has(vendor);
+/** Z.ai / Zhipu (BigModel) GLM upstreams, as gateways spell them. */
+const ZAI_GLM_VENDOR_IDS = new Set([
+	"zai",
+	"zai-coding-cn",
+	"z-ai",
+	"zhipu",
+	"zhipuai",
+	"bigmodel",
+	"glm",
+]);
+
+function isKnownCompatVendor(vendor: string): boolean {
+	return (
+		DEEPSEEK_VENDOR_IDS.has(vendor) ||
+		MOONSHOT_KIMI_VENDOR_IDS.has(vendor) ||
+		ZAI_GLM_VENDOR_IDS.has(vendor)
+	);
 }
 
 function gatewayVendorFromModel(model: Model<Api>): string | undefined {
@@ -85,6 +100,32 @@ export function isDeepSeekCompatModel(modelId: string, vendor?: string): boolean
 
 	const bareId = bareCompatModelId(modelId);
 	return bareId === "deepseek" || bareId.startsWith("deepseek-");
+}
+
+export function isZaiGlmCompatModel(modelId: string, vendor?: string): boolean {
+	const normalizedVendor = vendor?.trim().toLowerCase();
+	if (normalizedVendor && ZAI_GLM_VENDOR_IDS.has(normalizedVendor)) {
+		return true;
+	}
+
+	const bareId = bareCompatModelId(modelId);
+	return (
+		bareId === "glm" ||
+		bareId.startsWith("glm-") ||
+		bareId.startsWith("chatglm")
+	);
+}
+
+/** Gateway Z.ai/GLM request shape, not a full clone of native model metadata. */
+export function zaiGlmOpenAICompat(): OpenAICompletionsCompat {
+	return {
+		supportsStore: false,
+		supportsDeveloperRole: false,
+		maxTokensField: "max_tokens",
+		thinkingFormat: "zai",
+		// Keep detected effort support (normally true for gateways), and do not
+		// opt gateways into Z.ai's optional tool_stream without verified support.
+	};
 }
 
 /** Align gateway-routed DeepSeek models with pi-ai's native DeepSeek transport metadata. */
@@ -140,8 +181,8 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
 }
 
 /**
- * Patch compat metadata onto gateway-routed Kimi/DeepSeek models (including
- * cached catalog entries).
+ * Patch compat metadata onto gateway-routed Kimi/DeepSeek/Z.ai-GLM models
+ * (including cached catalog entries).
  *
  * `moonshotKimiOpenAICompat()` returns an OpenAICompletionsCompat, whose load-
  * bearing field here is `supportsDeveloperRole: false` — without it pi-ai sends
@@ -160,14 +201,30 @@ export function applyGatewayModelCompat<T extends Model<Api>>(
 	if (model.api === "anthropic-messages") {
 		return applyUniversalThinkingLevelMapToModel(model);
 	}
-	const effectiveVendor = vendor ?? gatewayVendorFromModel(model);
-	const isDeepSeek = isDeepSeekCompatModel(model.id, effectiveVendor);
-	const isMoonshotKimi = isMoonshotKimiCompatModel(model.id, effectiveVendor);
-	if (!isMoonshotKimi && !isDeepSeek) {
+	const effectiveVendor = (vendor ?? gatewayVendorFromModel(model) ?? "").trim().toLowerCase();
+	// Aliases may look like another family; an identified upstream wins.
+	// Use id heuristics only when the vendor hint is absent or unrecognized.
+	const isKnownVendor = isKnownCompatVendor(effectiveVendor);
+	const isDeepSeek = isKnownVendor
+		? DEEPSEEK_VENDOR_IDS.has(effectiveVendor)
+		: isDeepSeekCompatModel(model.id);
+	const isMoonshotKimi = isKnownVendor
+		? MOONSHOT_KIMI_VENDOR_IDS.has(effectiveVendor)
+		: isMoonshotKimiCompatModel(model.id);
+	const isZaiGlm = isKnownVendor
+		? ZAI_GLM_VENDOR_IDS.has(effectiveVendor)
+		: isZaiGlmCompatModel(model.id);
+	if (!isMoonshotKimi && !isDeepSeek && !isZaiGlm) {
 		return model;
 	}
 
-	model.compat = isDeepSeek ? deepseekOpenAICompat() : moonshotKimiOpenAICompat(model.id);
+	if (isDeepSeek) {
+		model.compat = deepseekOpenAICompat();
+	} else if (isZaiGlm) {
+		model.compat = zaiGlmOpenAICompat();
+	} else {
+		model.compat = moonshotKimiOpenAICompat(model.id);
+	}
 	return applyUniversalThinkingLevelMapToModel(model);
 }
 
@@ -321,7 +378,7 @@ export function mapCompatModelsPayload(
 			maxTokens,
 			thinkingLevelMap: thinking.thinkingLevelMap,
 			...(thinking.compat ? { compat: thinking.compat } : {}),
-			...(vendor && isPersistedCompatVendor(vendor) ? { gatewayVendor: vendor } : {}),
+			...(vendor && isKnownCompatVendor(vendor) ? { gatewayVendor: vendor } : {}),
 		};
 		models.push(applyGatewayModelCompat(model, vendor));
 		catalogRefs.push(

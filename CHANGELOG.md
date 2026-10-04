@@ -8,6 +8,13 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **经网关路由的 Z.ai / 智谱 GLM 模型补齐请求形状 compat。** 按已知 vendor 或 `glm` / `glm-*` / `chatglm*` 的末段 id 识别，系统提示使用 `system` role，Chat Completions 思考使用 `thinking` 参数、输出上限使用 `max_tokens`，不发送 `store`。
+  - 这不是原生 Z.ai 各型号 metadata 的完整复制：保留端点检测决定的 effort 透传，不主动启用 `tool_stream`；不改变 endpoint 或 effort 字符串，不宣称所有型号 / 网关都已实测。
+  - 已知 vendor 的别名提示随缓存保存，离线恢复可重新应用 compat；`anthropic-messages` 路由不注入 OpenAI-shaped metadata。
+  - 修复跨厂商别名的识别优先级：已识别的 DeepSeek / Moonshot-Kimi / GLM vendor 优先于 id 启发式，避免 Kimi 的 `glm-*` 别名被误打为 GLM，或 GLM 的 `deepseek-*` 别名被误打为 DeepSeek。
+
 ## [0.8.0] — 2026-09-23
 
 ### 新增

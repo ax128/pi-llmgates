@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import {
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_MAX_TOKENS,
@@ -16,9 +17,11 @@ import {
 	isDeepSeekCompatModel,
 	isMoonshotKimiCompatModel,
 	isMoonshotKimiK3Model,
+	isZaiGlmCompatModel,
 	mapCompatModelsPayload,
 	moonshotKimiOpenAICompat,
 	resolveCompatContextWindow,
+	zaiGlmOpenAICompat,
 } from "../extensions/compat/catalog.js";
 
 const OPTIONS = {
@@ -482,6 +485,161 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(cached.compat).toEqual(deepseekOpenAICompat());
 	});
+
+	it("injects Z.ai/GLM request compat without changing unrelated models", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{ id: "glm-5.3-flash" },
+				{ id: "glm-4.6", provider_id: "zai" },
+				{ id: "custom-alias", provider_id: "zai-coding-cn" },
+				{ id: "gpt-4o", provider_id: "openai" },
+			],
+			OPTIONS,
+		);
+
+		expect(models[0]?.compat).toEqual(zaiGlmOpenAICompat());
+		expect(models[1]?.compat).toEqual(zaiGlmOpenAICompat());
+		expect(models[2]?.compat).toEqual(zaiGlmOpenAICompat());
+		expect((models[2] as { gatewayVendor?: string }).gatewayVendor).toBe("zai-coding-cn");
+		expect(models[3]?.compat).toBeUndefined();
+	});
+
+	it("shares native Z.ai role/thinking flags without cloning model-specific options", () => {
+		const nativeCompat = getBuiltinModel("zai", "glm-4.7").compat;
+		const gatewayCompat = zaiGlmOpenAICompat();
+
+		expect(gatewayCompat).toMatchObject({
+			supportsStore: nativeCompat?.supportsStore,
+			supportsDeveloperRole: nativeCompat?.supportsDeveloperRole,
+			thinkingFormat: nativeCompat?.thinkingFormat,
+		});
+		expect(gatewayCompat.maxTokensField).toBe("max_tokens");
+		// Effort support stays endpoint-detected; native tool_stream is not opted in.
+		expect(gatewayCompat).not.toHaveProperty("supportsReasoningEffort");
+		expect(gatewayCompat).not.toHaveProperty("zaiToolStream");
+	});
+
+	it("detects Z.ai/GLM models by normalized vendor or id prefix", () => {
+		for (const vendor of ["zai", "zai-coding-cn", "z-ai", "zhipu", "zhipuai", "bigmodel", "glm"]) {
+			expect(isZaiGlmCompatModel("custom-alias", ` ${vendor.toUpperCase()} `)).toBe(true);
+		}
+		expect(isZaiGlmCompatModel("glm")).toBe(true);
+		expect(isZaiGlmCompatModel("glm-5.3-flash")).toBe(true);
+		expect(isZaiGlmCompatModel(" vendor/GLM-4.6 ")).toBe(true);
+		expect(isZaiGlmCompatModel("chatglm3-6b")).toBe(true);
+		expect(isZaiGlmCompatModel("gpt-4o", "openai")).toBe(false);
+		expect(isZaiGlmCompatModel("deepseek-chat", "deepseek")).toBe(false);
+	});
+
+	it("patches cached GLM models with the non-developer role compat", () => {
+		const cached = { id: "glm-5.3-flash", api: "openai-completions" } as unknown as Model<Api>;
+		applyGatewayModelCompat(cached);
+
+		expect(cached.compat).toEqual(zaiGlmOpenAICompat());
+	});
+
+	it("persists the GLM vendor hint and reapplies compat after JSON cache serialization", () => {
+		const { models } = mapCompatModelsPayload(
+			[{ id: "custom-glm", provider_id: " ZHIPUAI " }],
+			OPTIONS,
+		);
+		const cached = JSON.parse(JSON.stringify(models[0])) as Model<Api>;
+		delete cached.compat;
+
+		applyGatewayModelCompat(cached);
+
+		expect((cached as { gatewayVendor?: string }).gatewayVendor).toBe("zhipuai");
+		expect(cached.compat).toEqual(zaiGlmOpenAICompat());
+		expect(cached.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
+	});
+
+	it.each([
+		["deepseek", "deepseek"],
+		["deepseek-ai", "deepseek"],
+		["moonshotai", "kimi"],
+		["moonshotai-cn", "kimi"],
+		["moonshot", "kimi"],
+		["kimi-coding", "kimi"],
+		["kimi-coding-cn", "kimi"],
+		["zai", "glm"],
+		["zai-coding-cn", "glm"],
+		["z-ai", "glm"],
+		["zhipu", "glm"],
+		["zhipuai", "glm"],
+		["bigmodel", "glm"],
+		["glm", "glm"],
+	] as const)("gives known vendor %s priority over fresh and cached alias names", (vendor, family) => {
+		for (const id of ["glm-alias", "deepseek-alias", "kimi-alias", "k3", "vendor/chatglm-alias"]) {
+			const expectedCompat = {
+				deepseek: deepseekOpenAICompat(),
+				kimi: moonshotKimiOpenAICompat(id),
+				glm: zaiGlmOpenAICompat(),
+			}[family];
+			const { models } = mapCompatModelsPayload(
+				[{ id, provider_id: ` ${vendor.toUpperCase()} ` }],
+				OPTIONS,
+			);
+			expect(models[0]?.compat).toEqual(expectedCompat);
+
+			const cached = JSON.parse(JSON.stringify(models[0])) as Model<Api>;
+			delete cached.compat;
+			applyGatewayModelCompat(cached);
+			expect(cached.compat).toEqual(expectedCompat);
+		}
+	});
+
+	it.each([
+		["some-reseller", "glm-alias", "glm"],
+		["openai", "deepseek-alias", "deepseek"],
+		["some-reseller", "kimi-alias", "kimi"],
+		[undefined, "vendor/chatglm3-6b", "glm"],
+	] as const)("falls back to id detection for unrecognized vendor %s and id %s", (vendor, id, family) => {
+		const expectedCompat = {
+			deepseek: deepseekOpenAICompat(),
+			kimi: moonshotKimiOpenAICompat(id),
+			glm: zaiGlmOpenAICompat(),
+		}[family];
+		const { models } = mapCompatModelsPayload([{ id, provider_id: vendor }], OPTIONS);
+		expect(models[0]?.compat).toEqual(expectedCompat);
+	});
+
+	it("prefers an explicit known vendor to both the model id and cached vendor hint", () => {
+		const cached = {
+			id: "glm-alias",
+			api: "openai-completions",
+			gatewayVendor: "zai",
+		} as unknown as Model<Api>;
+
+		applyGatewayModelCompat(cached, " MOONSHOTAI ");
+
+		expect(cached.compat).toEqual(moonshotKimiOpenAICompat(cached.id));
+	});
+
+	it.each(["openai-completions", "openai-responses"] as const)(
+		"keeps the GLM system-role patch without changing api %s",
+		(api) => {
+			const cached = { id: "glm-4.7", api } as unknown as Model<Api>;
+			applyGatewayModelCompat(cached);
+
+			expect(cached.api).toBe(api);
+			expect(cached.compat).toMatchObject({ supportsDeveloperRole: false });
+		},
+	);
+
+	it("does not stamp OpenAI-shaped compat on a GLM model routed to messages", () => {
+		const { models } = mapCompatModelsPayload(
+			[{ id: "glm-4.7", provider_id: "zhipuai", inference_endpoint: "messages" }],
+			OPTIONS,
+		);
+		const routed = models[0]!;
+		expect(routed.api).toBe("anthropic-messages");
+		expect(routed.compat).toBeUndefined();
+
+		const cached = { ...routed, compat: { supportsTemperature: false } } as Model<"anthropic-messages">;
+		applyGatewayModelCompat(cached);
+		expect(cached.compat).toEqual({ supportsTemperature: false });
+	});
+
 	it("detects Moonshot/Kimi models by vendor or id prefix", () => {
 		expect(isMoonshotKimiCompatModel("custom-alias", "moonshotai-cn")).toBe(true);
 		expect(isMoonshotKimiCompatModel("kimi-k2.6")).toBe(true);

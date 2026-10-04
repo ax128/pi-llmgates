@@ -261,6 +261,12 @@ pi
 
 经网关路由的 **DeepSeek** 模型也会丢掉 pi-ai 基于 URL 的识别，因此扩展按 vendor（`deepseek` / `deepseek-ai`）或 `deepseek-` 开头的 id 补齐 DeepSeek transport compat：系统提示使用 `system` role，推理请求使用 `thinking` 参数，并关闭 `store`。这只改变请求形状，不改变 endpoint 或 effort 字符串；已知 vendor 的别名提示会随模型缓存保存，以便离线恢复时继续使用相同 compat。
 
+经网关路由的 **Z.ai / 智谱 GLM** 模型按 vendor（`zai` / `zai-coding-cn` / `z-ai` / `zhipu` / `zhipuai` / `bigmodel` / `glm`）或末段 id（`glm` / `glm-*` / `chatglm*`）补请求形状：系统提示使用 `system` role，输出上限使用 `max_tokens`，不发送 `store`。Chat Completions 下，思考 `off` 发 `thinking: { type: "disabled" }`、不发 `reasoning_effort`；其他档位发 `thinking: { type: "enabled", clear_thinking: false }`，在端点支持 effort 时原样透传档位。已知 vendor 的别名提示随缓存保存，离线恢复同样生效；不改变 endpoint，路由到 `messages` 的模型不打这份 OpenAI metadata。
+
+选择兼容族时，**已识别的 DeepSeek / Moonshot-Kimi / GLM vendor 优先于模型名启发式**；只有 vendor 缺失或未识别时才按 id 推断。因此，别名即使长得像另一个厂商的模型，也不会覆盖已识别上游的 compat。
+
+这份 GLM compat **不是原生 Z.ai 各型号 metadata 的完整副本**：不复制型号专属的 `supportsReasoningEffort` / `zaiToolStream`。是否发送 `reasoning_effort` 仍遵循 pi-ai 对端点的检测（普通 OpenAI 兼容网关默认透传），本补丁不主动启用原生 `tool_stream` 扩展。这不代表所有 GLM 型号与网关都已实测；某个端点接受哪些 effort，仍需按其实际行为验证。
+
 **用户级微调（pi 原生钩子）**：在 `~/.pi/agent/models.json` 用 `providers.<实例 ID>.modelOverrides` 覆盖单个模型的思考等级（最顶层，合并语义，只覆盖你写的 key）：
 
 ```jsonc
@@ -635,6 +641,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | 启动时 `401` / `403` | `/login <实例 id>` 重新配置该实例的 key |
 | `/balance` 显示 *not available* | 该网关未暴露可识别的额度接口（如 CLIProxyAPI），属预期行为 |
 | Kimi / `tokenization failed` | 升级本扩展后 `/reload`；Kimi 不接受 `developer` role，扩展会注入 compat。也可新建会话再试（中途从其他模型切到 K3 不稳定） |
+| GLM / `400001`「角色信息不正确」 | 升级本扩展后 `/reload`；扩展会按 GLM id 或已知 `provider_id` 注入 `system` role compat。自定义别名需有可识别的 vendor 提示 |
 | 模型出口选错导致 400 | `/endpoint auto <model-id>` 或 `/endpoint-setting` 选 `auto` 回落 |
 | 费用与账单不一致 | TUI 费用为上游零售价估算；账户消费看 `/balance` 或网关控制台 |
 | 费用显示 `~` 估算值、价格明显过期 | 定价表拉不到（离线 / `raw.githubusercontent.com` 被墙 / Node `fetch` 不走 `HTTPS_PROXY`），或返回的内容结构上不像定价表（`Implausible LiteLLM pricing table`，通常是被代理或错误页替换）；费用回退到已缓存或静态价，功能不受影响。**默认不打印警告**，`LLMGATES_DEBUG=1` 后 `/reload` 可见 `LiteLLM pricing sync failed` 及原因；或手工编辑 `~/.pi/agent/llmgates/pricing.json` |

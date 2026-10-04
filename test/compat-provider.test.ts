@@ -457,6 +457,11 @@ describe("compat instance provider", () => {
 				reasoning: true,
 				gatewayVendor: "deepseek-ai",
 			} as Model<Api>;
+			const glmAlias = {
+				...model("custom-glm"),
+				reasoning: true,
+				gatewayVendor: "zhipuai",
+			} as Model<Api>;
 			const plain: Model<Api> = {
 				...model("plain-model"),
 				reasoning: true,
@@ -474,7 +479,7 @@ describe("compat instance provider", () => {
 			await provider.refreshModels!({
 				credential: credential("key", INSTANCE.baseUrl),
 				store: createMemoryStore({
-					models: [kimiMessages, kimiCompletions, deepseekAlias, plain],
+					models: [kimiMessages, kimiCompletions, deepseekAlias, glmAlias, plain],
 					checkedAt: 1,
 				}),
 				allowNetwork: true,
@@ -500,6 +505,13 @@ describe("compat instance provider", () => {
 				supportsDeveloperRole: false,
 				thinkingFormat: "deepseek",
 			});
+			expect(byId.get("custom-glm")?.compat).toMatchObject({
+				supportsStore: false,
+				supportsDeveloperRole: false,
+				maxTokensField: "max_tokens",
+				thinkingFormat: "zai",
+			});
+			expect(byId.get("custom-glm")?.thinkingLevelMap).toEqual(universal);
 			expect(byId.get("plain-model")?.thinkingLevelMap).toEqual(universal);
 		} finally {
 			cleanup();
