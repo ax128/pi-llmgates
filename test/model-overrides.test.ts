@@ -788,17 +788,28 @@ describe("in-process lock queueing", () => {
 	it("keeps different paths independent", async () => {
 		let concurrent = 0;
 		let peak = 0;
+		let releaseHolders!: () => void;
+		const hold = new Promise<void>((resolve) => {
+			releaseHolders = resolve;
+		});
 		const body = async () => {
 			concurrent += 1;
 			peak = Math.max(peak, concurrent);
-			await new Promise((resolve) => setTimeout(resolve, 5));
+			// Keep the first holder live until both enter, regardless of filesystem latency.
+			await hold;
 			concurrent -= 1;
 		};
 
-		await Promise.all([
+		const holders = [
 			withFileLock(join(dir, "llmgates/a.json"), body),
 			withFileLock(join(dir, "llmgates/b.json"), body),
-		]);
+		];
+		try {
+			await vi.waitFor(() => expect(concurrent).toBe(2), { timeout: 2_000 });
+		} finally {
+			releaseHolders();
+			await Promise.all(holders);
+		}
 
 		expect(peak).toBe(2);
 	});

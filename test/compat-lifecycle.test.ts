@@ -259,10 +259,11 @@ describe("compat lifecycle", () => {
 		try {
 			seedStartup(agentDir, [instance]);
 			registerCompatGateways(pi.pi, agentDir);
-			await pi.emit("session_start", { reason: "start" });
 
 			// A file caught mid-rewrite must not be read as "all credentials logged out".
+			// Use the session_start cleanup trigger, not platform-dependent fs.watch delivery.
 			writeFileSync(join(agentDir, "auth.json"), "{");
+			await pi.emit("session_start", { reason: "start" });
 			await vi.waitFor(
 				() => expect(warn).toHaveBeenCalledWith(expect.stringMatching(/temporarily unreadable/i)),
 				{ timeout: 5_000 },
@@ -286,8 +287,9 @@ describe("compat lifecycle", () => {
 		try {
 			seedStartup(agentDir, [instance]);
 			registerCompatGateways(pi.pi, agentDir);
-			await pi.emit("session_start", { reason: "start" });
+			// Arm the retry through session_start so the test does not depend on fs.watch timing.
 			writeFileSync(join(agentDir, "auth.json"), "{");
+			await pi.emit("session_start", { reason: "start" });
 			await vi.waitFor(
 				() => expect(warn).toHaveBeenCalledWith(expect.stringMatching(/temporarily unreadable/i)),
 				{ timeout: 5_000 },
