@@ -124,7 +124,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider
 pi update npm:@llmgates_api/pi-llmgates-provider
 
 # 固定版本（发布后）
-pi install npm:@llmgates_api/pi-llmgates-provider@0.8.0
+pi install npm:@llmgates_api/pi-llmgates-provider@0.8.1
 
 # 仅当前项目
 pi install -l npm:@llmgates_api/pi-llmgates-provider
@@ -143,7 +143,7 @@ npm view @llmgates_api/pi-llmgates-provider versions --json
 
 ```bash
 pi update npm:@llmgates_api/pi-llmgates-provider           # 升到 latest
-pi install npm:@llmgates_api/pi-llmgates-provider@0.8.0    # 装到指定版本（会把条目钉死）
+pi install npm:@llmgates_api/pi-llmgates-provider@0.8.1    # 装到指定版本（会把条目钉死）
 ```
 
 然后 `/reload`。peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <0.87.0`（0.7.1 起；0.86.0 的实测范围见 README「环境要求」）。

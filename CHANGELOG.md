@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-10-05
+
 ### 修复
 
 - **经网关路由的 Z.ai / 智谱 GLM 模型补齐请求形状 compat。** 按已知 vendor 或 `glm` / `glm-*` / `chatglm*` 的末段 id 识别，系统提示使用 `system` role，Chat Completions 思考使用 `thinking` 参数、输出上限使用 `max_tokens`，不发送 `store`。
@@ -322,7 +324,9 @@
 
 0.1.x 的历史未回补，请查阅 git log 与各 `v0.1.*` tag。
 
-[Unreleased]: https://github.com/ax128/pi-llmgates/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/ax128/pi-llmgates/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/ax128/pi-llmgates/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/ax128/pi-llmgates/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/ax128/pi-llmgates/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ax128/pi-llmgates/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ax128/pi-llmgates/compare/v0.5.0...v0.6.0

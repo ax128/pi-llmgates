@@ -52,7 +52,9 @@ pi
 
 ## 安装
 
-**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.87.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1、0.83.0、0.84.0 与 0.84.3 也已验证）。0.7.1 发版门禁在 **pi 0.86.0** 上实测了扩展加载、七个命令注册、两个网关的 catalog 刷新、DeepSeek 推理（思考档 off/high）、状态行账本与质量标记、`/calls` 三视图以及子代理用量归属；`/endpoint`、`/balance`、`/logout`、输入历史跨进程与 `restoreLastModel` 完整矩阵在 0.86.0 上**未**逐条复验，仍以 0.84.3 的结论为准。**0.8.0** 同在 pi 0.86.0 上用解包 tarball 实测了 `/model-audit`（三 API mismatch 与 `response≥1`、开关与等价表、clear）；子代理 / lite 归属与 peer 0.81.0 floor 仍未在安装包门禁中认证。
+**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.87.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1、0.83.0、0.84.0 与 0.84.3 也已验证）。0.7.1 发版门禁在 **pi 0.86.0** 上实测了扩展加载、七个命令注册、两个网关的 catalog 刷新、DeepSeek 推理（思考档 off/high）、状态行账本与质量标记、`/calls` 三视图以及子代理用量归属；`/endpoint`、`/balance`、`/logout`、输入历史跨进程与 `restoreLastModel` 完整矩阵在 0.86.0 上**未**逐条复验，仍以 0.84.3 的结论为准。**0.8.0** 同在 pi 0.86.0 上用解包 tarball 实测了 `/model-audit`（三 API mismatch 与 `response≥1`、开关与等价表、clear）；子代理 / lite 归属与 peer 0.81.0 floor 未在该次 0.8.0 安装包门禁中认证。
+
+**0.8.1 发布前门禁**在 Node **22.19.0** 上将升版本前的 `0.8.0` tarball 解包目录分别安装到隔离的 **pi 0.81.0 / 0.86.0**：实测登录重配、八个命令原名注册、`/reload`、0.86.0 的模型选择与流式推理；89 轮 loopback 请求覆盖 GLM 六档思考、跨厂商别名优先级、三种 API、会话重启，以及清除 `compat` 后依靠缓存 vendor 提示恢复。只验证请求与缓存契约，**不认证真实上游的全型号能力**，也不扩展 `/model-audit`、子代理 / lite 或其他功能的既有认证范围。
 
 本扩展使用 **native Provider** API，**不支持 pi 0.80.x**。
 
@@ -60,7 +62,7 @@ pi
 
 ```bash
 pi install npm:@llmgates_api/pi-llmgates-provider          # 首次安装（最新版）
-pi install npm:@llmgates_api/pi-llmgates-provider@0.8.0    # 指定版本
+pi install npm:@llmgates_api/pi-llmgates-provider@0.8.1    # 指定版本
 pi install -l npm:@llmgates_api/pi-llmgates-provider       # 仅当前项目（否则装到 ~/.pi/agent/）
 ```
 
