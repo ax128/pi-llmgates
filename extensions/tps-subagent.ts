@@ -6,7 +6,7 @@ import {
 	type ModelUsageStats,
 } from "./tps-stats.js";
 import { isPlainObject } from "./util.js";
-import type { MetricQuality } from "./usage/contract.js";
+import type { MetricQuality, UsageObservationV1 } from "./usage/contract.js";
 
 export const PI_SUBAGENTS_DIR = ".pi-subagents";
 export const PI_SUBAGENTS_ARTIFACTS_DIR = join(PI_SUBAGENTS_DIR, "artifacts");
@@ -47,6 +47,8 @@ export interface SubagentUsageRecord extends SubagentModelUsage {
 	revision?: number;
 	/** Revisions are comparable only within this inlet. */
 	revisionSource?: "meta" | "tool";
+	/** Explicit terminal event, not a progress snapshot or historical replay. */
+	trustedFinal?: boolean;
 	/**
 	 * Set when the record came from an indexless `_meta.json` whose canonical
 	 * index 0 was inferred rather than read off the file name. Only such a key
@@ -1028,6 +1030,8 @@ export function collectPiSubagentsMetaUsage(
 }
 
 export type SubagentIngestState = {
+	/** v1 stores receipt revisions, never source-domain watermarks. */
+	restoredKeys: Set<string>;
 	keys: Set<string>;
 	aggregateRunIds: Set<string>;
 	perChildRunIds: Set<string>;
@@ -1051,8 +1055,27 @@ export type SubagentIngestState = {
 	countedKeys: Set<string>;
 };
 
+export function restoreSubagentIngestState(rows: readonly UsageObservationV1[]): SubagentIngestState {
+	const state = createSubagentIngestState();
+	for (const obs of rows) {
+		const key = obs.executionId;
+		if (obs.source.runner === "parent-assistant" || key.startsWith("entry:") || key.startsWith("toolprogress:")) continue;
+		if (state.keys.size >= 10_000 && !state.keys.has(key)) break;
+		state.keys.add(key);
+		state.revisions.set(key, obs.kind === "snapshot" ? 1 : 0);
+		if (obs.kind === "snapshot") state.restoredKeys.add(key);
+		const meta = parseMetaSourceKeyGranularity(key);
+		if (meta?.kind === "aggregate" && state.perChildRunIds.has(meta.runId)) continue;
+		if (meta?.kind === "child" && state.aggregateRunIds.has(meta.runId)) continue;
+		state.countedKeys.add(key);
+		if (meta) (meta.kind === "aggregate" ? state.aggregateRunIds : state.perChildRunIds).add(meta.runId);
+	}
+	return state;
+}
+
 export function createSubagentIngestState(): SubagentIngestState {
 	return {
+		restoredKeys: new Set(),
 		keys: new Set(),
 		aggregateRunIds: new Set(),
 		perChildRunIds: new Set(),
@@ -1092,10 +1115,15 @@ export function selectFreshSubagentRecords(
 	for (const record of records) {
 		const nextRev = record.revision ?? 0;
 		const domainKey = `${record.sourceKey}\0${record.revisionSource ?? "legacy"}`;
+		if (!state.keys.has(record.sourceKey) && state.keys.size >= 10_000) continue;
+		if (state.restoredKeys.has(record.sourceKey) && nextRev > 0 && !record.trustedFinal && !state.revisionDomains.has(domainKey)) {
+			state.revisionDomains.set(domainKey, nextRev);
+			continue; // first re-observation establishes a baseline; do not replace stored usage
+		}
 		if (state.keys.has(record.sourceKey)) {
 			const prevRev = state.revisions.get(record.sourceKey) ?? 0;
 			const domainRev = state.revisionDomains.get(domainKey);
-			if (prevRev === 0 || nextRev === 0 || (domainRev !== undefined && nextRev <= domainRev)) {
+			if (!record.trustedFinal && (prevRev === 0 || nextRev === 0 || (domainRev !== undefined && nextRev <= domainRev))) {
 				continue;
 			}
 			const meta = parseMetaSourceKeyGranularity(record.sourceKey);

@@ -1,8 +1,8 @@
-# 用量对账执行记录：P0，后续阶段受门禁阻塞
+# 用量对账执行记录：分阶段交付
 
 依据：[实施设计](../specs/2026-10-06-usage-accounting-reconciliation-design.md)。
 
-**状态：仅 P0 已实现并通过下列源码检查；P1a/P1b/P1c/P2 未实施。没有合并、发布、部署或安装包认证。设计原文作为冻结输入保留，不用修改其“尚未实施”来暗示整个方案已交付。**
+**当前：P0 与 P1a/P1b/P1c 已实现；P2 留在后续依赖分支。用户随后授权完整 build、隔离多版本 runtime 与 CI 调查。下文 P0 检查和阻塞段保留为历史记录，已由文末 P1 记录更新。没有合并、发布、部署或安装包认证。**
 
 ## 基线、隔离与可行性
 
@@ -64,7 +64,7 @@ git diff --check
 
 单机单次采样，不能外推更大规模或其他 Pi/Node/终端。
 
-## 阻塞、未验证与风险
+## P0 当时的阻塞、未验证与风险（历史记录）
 
 **必须用户决策：是否授权在隔离环境执行一次完整 `npm run build`，并使用产物开展多版本、无付费模型调用的 runtime 门禁？** 当前请求明确禁止未授权的全量构建；设计 §9.2 同时要求安装/runtime 前生成 dist。不能用源码 mock 或本机超范围 Pi 1.0.4 替代这个门禁。
 
@@ -73,3 +73,35 @@ git diff --check
 - R3：1.0.4 父最终工具池化 usage、排除来源嵌套、公开空闲发现未完成。不启用新版采集入口、不扩大 peer。
 - 60 列为格式 fixture，不是真实交互式窄终端验收；Pi 仍可能按实际终端宽度截断长状态行。
 - 没有构建或安装产物验证，也没有 npm 发布门禁；这不是可发布认证。P0 可独立评审，P1/P2 不能标成完成或支持。
+
+## P1 实施与 R1/R2 记录（取代上述阻塞状态）
+
+用户已明确授权继续整体方案、完整构建与隔离 runtime。P1 的三个层次组合成一个基于 `feat/usage-reconciliation-p0` 的依赖 PR，避免自动恢复与安全基础被拆开合入。未扩大 peer、未升级依赖、未修改观察 v1。
+
+- **P1a**：`entry:<encoded-session>:<encoded-entry>` 父身份；工具沿用 `toolusage:<toolCallId>`、`tool:<id>:…`、`meta:<run>:…`；摘要 `compact:<entry>` / `branch:<entry>`。重复入口共享身份。历史只取保存值，不按新价格估价。模型分区先验证再整组原子提交；同组混合 revision 拒绝。provisional 不进入已确认 All。
+- **P1b**：完整 archive 与当前策略 projection 分开；未知来源/旧进度隔离，配置排除不删档。恢复 producer sequence、turn 下界和来源去重；不能把接收 revision 当源 revision。多模型/snapshot 只通过完整 checkpoint 确认 durable；pending-durable 单独展示。损坏、截断、根身份错误、未知版本、容量超限、写锁冲突均保护整个 root，不用部分投影覆盖原文件。旧父 identity 或未读尾部无法排除重叠时使用 legacy-window。
+- **P1c**：generation-owned coordinator，startup 一次 `getEntries()`，live 优先公开 leaf/parent 链，边界快照合并并至少间隔 2s；2048 队列、256/30s 待关联、200 条/256KiB/50ms 切片、10k 身份索引。只看固定元数据，不复制 prompt/content；取消与 shutdown 有界 drain。历史 run proof 不授予 live ownership。未知 origin 留在 All，不占当前 Turn。
+- **对账**：稳定父 entry 的本地估价差异与可证明的类别排除做互斥分类；其余保持 unexplained。恢复有缺口时不输出精确残差。菜单仍为冻结、只读、有界小计。
+
+### R1：真实公开 SDK 生命周期
+
+`test/runtime/usage-sdk.mjs` 载入编译的 `dist/tps.js`，使用临时 cwd/agentDir/session 文件和内存合成 provider。没有真实网关、API 密钥或付费请求。Pi **0.81.0、0.81.1、0.86.0** 各在 persist 关闭/开启时运行一次：
+
+- new / resume / fork / reload 均通过；3+5=All 8，reload 后 +2=All 10、Turn 2；fork 独立 root，恢复该分支保存的 3。
+- 三版 `message_end` 触发时条目尚不可见；随后 public SessionManager 保留原消息引用，能关联稳定 entry。引用被换掉的 focused fixture 只保留历史/unknown origin，不猜时间或哈希。
+- 使用 `npm run build` 产物复制到临时 SDK prefix 的 plugin 子目录，按该 prefix 的精确 peer 解析；不是 `pi install`，也不是发布门禁。首次 npm 临时安装未锁精确版本，补装后确认输出为上述 `.0/.1/.0`，不把升级到 patch 的结果当 floor 证据。
+
+复现：在临时 prefix 中 `npm install --save-exact --ignore-scripts --no-audit --no-fund --package-lock=false @earendil-works/pi-coding-agent@<版本> @earendil-works/pi-ai@<版本> proper-lockfile@4.1.2`；复制构建后的 dist/package.json 到 `<prefix>/plugin`；执行 `node test/runtime/usage-sdk.mjs <prefix> <prefix>/plugin [persist]`。
+
+### R2 与局部验证
+
+`npm run typecheck`、`npm run build`、`git diff --check` 通过；`npx --no-install vitest run test/usage-*.test.ts test/tps-*.test.ts test/model-audit-status.test.ts`：21 文件 / 243 项通过。R2 focused 覆盖 persist 开/关重启、旧父 legacy-window 再重启、隐藏类别存档保持、坏行/错 root/未知版本/截断/容量失败只读、原子分区回滚、checkpoint 不足时不伪造 durable、全树分支、待关联/队列/索引上限、generation 取消。既有 ENOSPC/符号链接/写锁检查保留。LSP 的 5 个核心文件未报 TypeScript error，仅 unused hint（随后清理）；通用 AST 建议保留，未为消除风格提示进行无关重构。没有真实磁盘填满或 OS 崩溃注入；原子 checkpoint 依赖既有 atomic rename 写法。
+
+独立 CI 修复 PR #100 改善兼容 watcher 测试真实 I/O 等待而不放宽断言；25 项本地测试、typecheck 通过，GitHub Node 22 push/PR check 均通过。P0 #99 不改兼容生产代码。
+
+### 保留限制/偏差
+
+- v1 checkpoint 上限 **256KiB**，不是 journal 的 8MiB；超限保留旧文件与 pending-durable，不通过调大限额绕过门禁。公开 getEntries 浅复制仍不可抢占。
+- 没有持久化 source-domain watermark；重启后首份 snapshot 仅建立 baseline，不以重放次数替换旧金额，之后只能比较同一入口的源 revision；因此保守 partial。
+- 不实现上游没有提供的 child factory hook、任意 CLI/其他会话扫描或默认持久化。保留期轮转及持久化自动重试不在本次新恢复能力中冒充实现。
+- 60 列仍为格式 fixture，不是实际终端验收；P2 的 1.0.4 新入口与 idle 发现单独依赖 R3。

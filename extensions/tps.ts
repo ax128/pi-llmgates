@@ -2,7 +2,7 @@
  * TUI elapsed timer + cost / usage summary after each agent turn.
  * Adapted from @router-for-me/pi-cliproxyapi-provider (MIT).
  *
- * Usage aggregation runs on a background task chain so pi event handlers return
+ * Usage aggregation runs on a bounded session-owned queue so pi event handlers return
  * immediately and never block the agent loop.
  */
 
@@ -18,6 +18,7 @@ import {
 import {
 	collectPiSubagentsMetaUsage,
 	createSubagentIngestState,
+	restoreSubagentIngestState,
 	extractBgWaitUsage,
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
@@ -29,7 +30,6 @@ import {
 	selectFreshSubagentRecords,
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
-import { extractCompactionUsage, extractToolResultUsage } from "./tps-usage-inlets.js";
 import { extractUsageFromToolUpdate, stampSnapshotRevision } from "./usage/adapters/pi-subagents.js";
 import { registerThirdPartyUsageProbes } from "./usage/adapters/third-party.js";
 import {
@@ -44,9 +44,11 @@ import {
 } from "./tps-stats.js";
 import { envFlag } from "./util.js";
 import { createUsageCollector, type UsageCollector } from "./usage/collector.js";
+import { SessionRecovery } from "./usage/session-recovery.js";
+import { boundedUsageMetadata } from "./usage/adapters/session-entries.js";
 import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, formatUsageScopeTitleFromLedger, replaceModelUsageStats } from "./usage/format.js";
 import { resolveUsagePolicy, USAGE_LIMITS } from "./usage/policy.js";
-import { formatPolicyExclusions, formatReconciliationLines, summarizeNativeCosts, type NativeCostSnapshot } from "./usage/reconciliation.js";
+import { classifyCostDifferences, formatPolicyExclusions, formatReconciliationLines, summarizeNativeCosts, type NativeCostSnapshot } from "./usage/reconciliation.js";
 import { isModelAuditEnabled } from "./model-audit/runtime.js";
 import {
 	MODEL_AUDIT_ROOT_ENV,
@@ -61,8 +63,7 @@ const REFRESH_INTERVAL_MS = 1000;
 const SUBAGENT_META_SCAN_DEBOUNCE_MS = 250;
 /**
  * Model-audit history poll: a 1s interval that only polls every other tick
- * while idle (1s active / 2s idle, design §4.4). An interval rather than a
- * timeout chain keeps the meta-scan debounce the only setTimeout in this path.
+ * while idle (1s active / 2s idle, design §4.4).
  */
 const AUDIT_POLL_TICK_MS = 1000;
 
@@ -108,8 +109,7 @@ export default function (pi: ExtensionAPI) {
 	let turnStats: ModelUsageStats = createEmptyStats();
 	let sessionStats: ModelUsageStats = createEmptyStats();
 	let lastSettledTurnStats: ModelUsageStats = createEmptyStats();
-	let usageTaskChain: Promise<void> = Promise.resolve();
-	let usageQueueStatus = { pending: 0 };
+	let recovery: SessionRecovery | undefined;
 	let statusRefreshScheduled = false;
 	let sessionActive = false;
 	let sessionGeneration = 0;
@@ -167,7 +167,7 @@ export default function (pi: ExtensionAPI) {
 	function formatSettledSegments(args: SettledStatusArgs): { all: string; turn: string; idle: string } {
 		if (usageCollector) {
 			return {
-				all: formatTpsScopeWithQuality("all", args.sessionElapsed, usageCollector.sessionTotals(), { historyPartial: true }),
+				all: formatTpsScopeWithQuality("all", args.sessionElapsed, usageCollector.sessionTotals(), { historyPartial: usageCollector.historyPartial }),
 				turn: formatTpsScopeWithQuality("turn", args.turnElapsed, usageCollector.turnTotals()),
 				idle: formatIdleMarker(usageCollector.ledger.hasActiveProducers(), 2),
 			};
@@ -184,23 +184,14 @@ export default function (pi: ExtensionAPI) {
 		return count > 0 ? ctx.ui.theme.fg("error", `.x${count}`) : "";
 	}
 
-	function runUsageTask(task: () => void | Promise<void>): void {
+	function runUsageTask(task: () => void | Promise<void>, bytes = 128): void {
 		const expectedGeneration = sessionGeneration;
-		const queueStatus = usageQueueStatus;
-		queueStatus.pending += 1;
-		usageTaskChain = usageTaskChain
-			.then(async () => {
-				if (!sessionActive || sessionGeneration !== expectedGeneration) {
-					return;
-				}
-				await task();
-			})
-			.catch((error) => {
-				logTpsIssue(
-					`TPS background processing failed: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			})
-			.finally(() => { queueStatus.pending -= 1; });
+		const owner = usageCollector;
+		recovery?.enqueue(async () => {
+			if (!sessionActive || sessionGeneration !== expectedGeneration || usageCollector !== owner) return;
+			try { await task(); }
+			catch { owner?.noteGap("live-task-failed"); }
+		}, bytes);
 	}
 
 	function safeUi(ctx: ExtensionContext | null | undefined, action: () => void): void {
@@ -501,18 +492,14 @@ export default function (pi: ExtensionAPI) {
 		if (!usageCollector.enabled(category)) {
 			return;
 		}
+		if (records.length > USAGE_LIMITS.perTickEvents || records.some((r) => (r.modelBreakdown?.length ?? 1) > USAGE_LIMITS.perTickEvents)) {
+			usageCollector.noteGap("metadata-budget-exceeded"); return;
+		}
 		const fresh = selectFreshSubagentRecords(subagentIngestState, records);
 		if (fresh.length === 0) {
 			return;
 		}
-		let runId: string | undefined;
-		for (const record of fresh) {
-			const meta = parseMetaSourceKeyGranularity(record.sourceKey);
-			if (meta) {
-				usageCollector.bindRun(meta.runId, originAtEvent ?? usageCollector.currentOriginTurnId());
-				runId = meta.runId;
-			}
-		}
+		const runId = undefined; // ingestion is never evidence of a launch origin
 		usageCollector.ingestLegacyRecords(
 			// Source watermarks were checked above. Only the local acceptance clock
 			// orders replacement in the shared ledger, never mtime versus tool count.
@@ -520,7 +507,7 @@ export default function (pi: ExtensionAPI) {
 			category,
 			runId,
 			Date.now(),
-			originAtEvent ?? usageCollector.currentOriginTurnId(),
+			originAtEvent ?? (category === "pi-subagents" ? "unassigned" : usageCollector.currentOriginTurnId()),
 		);
 		syncStatsFromLedger();
 		if (requestStartMs !== null) {
@@ -541,10 +528,11 @@ export default function (pi: ExtensionAPI) {
 	function ingestSubagentRecords(
 		records: readonly SubagentUsageRecord[],
 		category: "pi-subagents" | "sync-subagent" | "tool-nested" | "compaction" = "pi-subagents",
+		originOverride?: string,
 	): void {
-		const originAtEvent = usageCollector?.currentOriginTurnId();
+		const originAtEvent = originOverride ?? (category === "pi-subagents" ? "unassigned" : usageCollector?.currentOriginTurnId());
 		const targetStats = requestStartMs !== null ? turnStats : sessionStats;
-		runUsageTask(() => applySubagentRecords(records, targetStats, category, originAtEvent));
+		runUsageTask(() => applySubagentRecords(records, targetStats, category, originAtEvent), Buffer.byteLength(JSON.stringify(records)));
 	}
 
 	function scanSubagentMetaArtifacts(): void {
@@ -676,25 +664,29 @@ export default function (pi: ExtensionAPI) {
 		if (collector) {
 			const plugin = collector.sessionTotals();
 			const projectionVersion = collector.ledger.version;
-			const pending = usageQueueStatus.pending;
+			const pending = recovery?.pendingCount ?? 0;
 			let native: NativeCostSnapshot | undefined;
+			let classified: ReturnType<typeof classifyCostDifferences> | undefined;
 			// getEntries() itself is a synchronous O(N) shallow copy and cannot be
 			// preempted. Only parse one bounded slice; never retain message bodies.
 			const deadline = performance.now() + USAGE_LIMITS.perTickMs;
 			try {
-				native = summarizeNativeCosts(ctx.sessionManager.getEntries(), { deadline });
+				const entries = ctx.sessionManager.getEntries();
+				native = summarizeNativeCosts(entries, { deadline });
+				if (native.complete && performance.now() < deadline) classified = classifyCostDifferences(entries, collector.ledger.observations(), sessionId, collector.policy);
 			} catch {
 				// Missing/failed public API is unavailable, not a zero native total.
 			}
 			const exclusions = formatPolicyExclusions(collector.policy);
 			coverage.unshift(
-				"History: partial — current collection window / restored legacy ledger only; no history replay.",
+				`History: ${collector.recoveryState}; current-session entries / archive; ${collector.gapReasons().join(", ") || "declared entry sources processed"}`,
 				`Collection started: ${new Date(collector.ledger.collectedSinceMs).toISOString()}; pending ${pending}`,
 				exclusions,
 			);
 			reconciliation = formatReconciliationLines({
 				plugin, native, collectedSinceMs: collector.ledger.collectedSinceMs,
-				generation, projectionVersion, pending,
+				generation, projectionVersion, pending, classified,
+				historyState: collector.recoveryState, historyPartial: collector.historyPartial,
 			});
 			reconciliation.push(exclusions);
 		}
@@ -755,11 +747,15 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", (_event, ctx) => {
-		sessionGeneration += 1;
+	pi.on("session_start", async (_event, ctx) => {
+		const oldRecovery = recovery;
+		const oldCollector = usageCollector;
+		const generation = ++sessionGeneration;
+		recovery = undefined;
+		if (oldRecovery) await oldRecovery.stopAndDrain();
+		if (oldCollector) await oldCollector.checkpointAndClose();
+		if (sessionGeneration !== generation) return;
 		sessionActive = true;
-		usageTaskChain = Promise.resolve();
-		usageQueueStatus = { pending: 0 };
 		clearRefreshTimer();
 		clearStatus(statusCtx);
 		requestStartMs = null;
@@ -804,9 +800,33 @@ export default function (pi: ExtensionAPI) {
 				usagePolicy,
 				stableSessionId ? agentDir : "",
 			);
-			usageCollector?.restorePersisted();
-			for (const observation of usageCollector?.ledger.snapshot() ?? []) {
-				usageRevisionClock = Math.max(usageRevisionClock, observation.revision ?? 0);
+			const owner = usageCollector;
+			if (owner) {
+				statusCtx = ctx;
+				recovery = new SessionRecovery(owner, ctx.sessionManager, {
+					isOwner: () => sessionActive && sessionGeneration === generation && usageCollector === owner,
+					onRestored: () => {
+						subagentIngestState = restoreSubagentIngestState(owner.archivedObservations());
+						usageRevisionClock = owner.revisionClock;
+					},
+					onRecords: (records, category, origin, historical) => {
+						if (!historical) {
+							applySubagentRecords(records, turnStats, category as "sync-subagent", origin);
+						} else {
+							const storedKeys = new Set(owner.archivedObservations().map((o) => o.executionId));
+							const proven = records.filter((r) => storedKeys.has(r.sourceKey) && subagentIngestState.countedKeys.has(r.sourceKey));
+							const fresh = selectFreshSubagentRecords(subagentIngestState, records);
+							owner.ingestLegacyRecords([...proven, ...fresh], category, undefined, Date.now(), origin, true);
+						}
+					},
+					onChange: () => {
+						syncStatsFromLedger();
+						if (requestStartMs !== null) scheduleStatusRefresh();
+						else setSettledStatus(ctx, sessionElapsedSeconds, sessionStats, lastTurnElapsedSeconds, turnStats);
+					},
+				});
+				await recovery.start();
+				if (sessionGeneration !== generation) return;
 			}
 			syncStatsFromLedger();
 			if (usageCollector && pi.events) {
@@ -842,26 +862,20 @@ export default function (pi: ExtensionAPI) {
 								}
 							: null,
 					);
-					const originAtEvent = usageCollector?.currentOriginTurnId();
 					const runId = typeof (data as { runId?: unknown }).runId === "string"
 						? (data as { runId: string }).runId
 						: undefined;
-					if (runId) {
-						usageCollector?.bindRun(runId, originAtEvent);
-						sessionRunIds.add(runId);
-					}
+					if (runId && sessionRunIds.size < USAGE_LIMITS.maxMemoryObservations) sessionRunIds.add(runId);
+					const completionOrigin = usageCollector?.originForRun(runId) ?? "unassigned";
 					const targetStats = requestStartMs !== null ? turnStats : sessionStats;
-					runUsageTask(() => {
-						const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity);
-						if (records.length > 0) {
-							applySubagentRecords(records, targetStats, "pi-subagents", originAtEvent);
-						}
-					});
+					const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity);
+					if (records.length > 0) runUsageTask(() => applySubagentRecords(records, targetStats, "pi-subagents", completionOrigin), Buffer.byteLength(JSON.stringify(records)));
 				},
 				onRunObserved: (runId) => {
-					usageCollector?.bindRun(runId);
+					// Completion proves session ownership, never the originating turn.
 					ensureSubagentWatcher();
-					sessionRunIds.add(runId);
+					if (sessionRunIds.size < USAGE_LIMITS.maxMemoryObservations) sessionRunIds.add(runId);
+					else usageCollector?.noteGap("ownership-capacity");
 					// A child's `_meta.json` is usually already on disk by the time its
 					// completion event arrives, so the watcher scan that saw it ran while
 					// ownership was still unknown and dropped it. Rescan now that this run
@@ -873,8 +887,13 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("tool_execution_start", (event, ctx) => {
+		if (isPrimaryUiSession(ctx) && usageCollector) recovery?.noteTool(event.toolCallId, usageCollector.currentOriginTurnId());
+	});
+
 	pi.on("tool_execution_update", (event, ctx) => {
-		if (!isPrimaryUiSession(ctx)) return;
+		if (!isPrimaryUiSession(ctx) || !usageCollector) return;
+		if (!boundedUsageMetadata(event.partialResult)) { usageCollector.noteGap("metadata-budget-exceeded"); return; }
 		const { subagent, toolNested } = extractUsageFromToolUpdate(
 			event.toolName,
 			event.partialResult,
@@ -893,11 +912,15 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {
-		if (!isPrimaryUiSession(ctx)) return;
+		if (!isPrimaryUiSession(ctx) || !usageCollector) return;
+		if (!boundedUsageMetadata(event.result)) { usageCollector.noteGap("metadata-budget-exceeded"); return; }
+		const toolOrigin = recovery?.originForTool(event.toolCallId) ?? "unassigned";
+		recovery?.noteTool(event.toolCallId, toolOrigin);
 		ensureSubagentWatcher();
 		for (const runId of extractSubagentRunIdsFromToolExecution(event.toolName, event.result)) {
-			sessionRunIds.add(runId);
-			usageCollector?.bindRun(runId);
+			if (sessionRunIds.size < USAGE_LIMITS.maxMemoryObservations) sessionRunIds.add(runId);
+			else usageCollector.noteGap("ownership-capacity");
+			usageCollector.bindRun(runId, toolOrigin);
 		}
 		const records = stampSnapshotRevision(
 			extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId),
@@ -908,7 +931,7 @@ export default function (pi: ExtensionAPI) {
 			usageCollector?.dropProgressForToolCall(toolCallId);
 		});
 		if (records.length > 0) {
-			ingestSubagentRecords(records, "sync-subagent");
+			ingestSubagentRecords(records.map((r) => ({ ...r, trustedFinal: true })), "sync-subagent", toolOrigin);
 		}
 		// pi-subagents 0.69's bg_wait is a management projection.  Its pooled
 		// top-level usage is already represented by async/meta ownership and must
@@ -921,22 +944,14 @@ export default function (pi: ExtensionAPI) {
 		if (typeof event.toolName === "string" && event.toolName.trim().toLowerCase() === "bg_wait") {
 			const bgWaitRecords = extractBgWaitUsage(event.result, sessionIdentity, sessionRunIds);
 			if (bgWaitRecords.length > 0) {
-				ingestSubagentRecords(bgWaitRecords, "pi-subagents");
+				ingestSubagentRecords(bgWaitRecords, "pi-subagents", "unassigned");
 			}
 		}
 		// Inlet D: any other tool that follows pi's `result.usage` convention. Its switch
 		// is checked here rather than at session_start so that turning it off leaves the
 		// subagent / task parsing above running — both are zero-IO parses of a payload
 		// that already arrived, so there is no subscription to tear down either way.
-		if (envFlag("LLMGATES_TPS_TOOL_USAGE") !== false) {
-			const toolUsageRecords = stampSnapshotRevision(
-				extractToolResultUsage(event.toolName, event.result, event.toolCallId),
-				nextUsageRevision(),
-			);
-			if (toolUsageRecords.length > 0) {
-				ingestSubagentRecords(toolUsageRecords, "tool-nested");
-			}
-		}
+		// Generic usage waits for the canonical public toolResult entry. No event-only identity is finalized.
 		scheduleSubagentMetaScan();
 	});
 
@@ -952,26 +967,25 @@ export default function (pi: ExtensionAPI) {
 	 */
 	function recordCompactionEntry(
 		entry: unknown,
-		kind: "compact" | "branch",
 		ctx: ExtensionContext,
 	): void {
 		if (!isPrimaryUiSession(ctx)) return;
 		if (envFlag("LLMGATES_TPS_COMPACTION") === false) return;
-		const record = extractCompactionUsage(entry, kind, ctx.model);
-		if (record) {
-			// Manual /compact fires outside a turn and automatic compaction inside one;
-			// ingestSubagentRecords picks the turn or session bucket on its own.
-			ingestSubagentRecords([record], "compaction");
+		if (entry && typeof (entry as { id?: unknown }).id === "string") {
+			recovery?.setModel(ctx.model);
+			recovery?.noteEntry((entry as { id: string }).id, requestStartMs !== null ? usageCollector?.currentOriginTurnId() ?? "unassigned" : "unassigned");
+			recovery?.boundary();
 		}
 	}
 
 	pi.on("session_compact", (event, ctx) => {
-		recordCompactionEntry(event.compactionEntry, "compact", ctx);
+		recordCompactionEntry(event.compactionEntry, ctx);
 	});
 
 	pi.on("session_tree", (event, ctx) => {
+		recovery?.boundary();
 		// summaryEntry is absent when the navigation produced no summary.
-		recordCompactionEntry(event.summaryEntry, "branch", ctx);
+		recordCompactionEntry(event.summaryEntry, ctx);
 	});
 
 	pi.on("message_end", (event, ctx) => {
@@ -980,13 +994,7 @@ export default function (pi: ExtensionAPI) {
 		if (requestStartMs === null) return;
 		if (!usageCollector) return;
 
-		const message = event.message;
-		const originTurnId = usageCollector.currentOriginTurnId();
-		runUsageTask(() => {
-			usageCollector?.ingestAssistant(message, Date.now(), originTurnId);
-			syncStatsFromLedger();
-			scheduleStatusRefresh(turnStats);
-		});
+		recovery?.noteAssistant(event.message, usageCollector.currentOriginTurnId());
 	});
 
 	pi.on("before_agent_start", (_event, ctx) => {
@@ -1006,6 +1014,7 @@ export default function (pi: ExtensionAPI) {
 		// The audit owner just moved to a fresh turn id; its count starts at 0 and
 		// the next poll picks up anything recorded for it.
 		auditCounts = { all: auditCounts.all, turn: 0 };
+		recovery?.setModel(ctx.model);
 		usageCollector?.beginTurn();
 		resetTurnStats();
 		if (usageCollector) {
@@ -1024,6 +1033,7 @@ export default function (pi: ExtensionAPI) {
 		if (requestStartMs === null) return;
 
 		ensureSubagentWatcher();
+		recovery?.boundary();
 		const turnElapsedSeconds = getTurnElapsedSeconds();
 		lastTurnElapsedSeconds = turnElapsedSeconds;
 
@@ -1040,6 +1050,11 @@ export default function (pi: ExtensionAPI) {
 			subagentMetaScanTimer = undefined;
 		}
 
+		if (!usageCollector) {
+			updateSessionElapsed();
+			setSettledStatus(ctx, sessionElapsedSeconds, sessionStats, turnElapsedSeconds, turnStats);
+			return;
+		}
 		const artifactsDirs = [...sessionArtifactDirs];
 		const startedAtMs = sessionStartedAtMs;
 		const settledTurnStats = turnStats;
@@ -1083,10 +1098,20 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		const closingRecovery = recovery;
+		const generation = sessionGeneration;
+		const closingCollector = usageCollector;
+		clearRefreshTimer();
+		clearStatus(statusCtx); clearStatus(ctx);
+		statusCtx = null;
+		stopSubagentWatcher();
 		unregisterSubagentBridge?.();
 		unregisterSubagentBridge = undefined;
 		unregisterThirdPartyProbes?.();
 		unregisterThirdPartyProbes = undefined;
+		await closingRecovery?.stopAndDrain();
+		if (sessionGeneration !== generation) { await closingCollector?.checkpointAndClose(); return; }
+		recovery = undefined;
 		sessionActive = false;
 		sessionGeneration += 1;
 		clearRefreshTimer();

@@ -11,6 +11,9 @@
 import {
 	appendFileSync,
 	lstatSync,
+	openSync,
+	readSync,
+	closeSync,
 	readdirSync,
 	readFileSync,
 	writeFileSync,
@@ -34,13 +37,17 @@ import { USAGE_DIR_NAME, USAGE_LIMITS } from "./policy.js";
 export const USAGE_CHECKPOINT_VERSION = 1 as const;
 
 export type PersistStatus = "off" | "memory" | "durable" | "storage-exhausted";
-export type PersistLoadGap = "checkpoint-incomplete" | "journal-truncated";
+export type PersistLoadGap = "checkpoint-incomplete" | "journal-truncated" | "load-budget-exceeded" | "identity-conflict" | "writer-unavailable";
 
 export interface UsagePersist {
 	readonly enabled: boolean;
 	status(): PersistStatus;
 	acquireWriter(): boolean;
 	load(): UsageObservationV1[];
+	loadBatches(): AsyncGenerator<readonly UsageObservationV1[]>;
+	isReadOnly(): boolean;
+	protect(reason: PersistLoadGap): void;
+	checkpointWritten(): boolean;
 	/** Set by the latest `load()`. Undefined when every stored observation was applied. */
 	loadGap(): PersistLoadGap | undefined;
 	append(observation: UsageObservationV1): Promise<PersistStatus>;
@@ -130,6 +137,10 @@ class NoopPersist implements UsagePersist {
 	load(): UsageObservationV1[] {
 		return [];
 	}
+	async *loadBatches(): AsyncGenerator<readonly UsageObservationV1[]> {}
+	isReadOnly(): boolean { return true; }
+	protect(): void {}
+	checkpointWritten(): boolean { return false; }
 	loadGap(): PersistLoadGap | undefined {
 		return undefined;
 	}
@@ -164,18 +175,22 @@ export class FsUsagePersist implements UsagePersist {
 	private writerFailed = false;
 	private writerUnlock: (() => void) | undefined;
 	private lastLoadGap: PersistLoadGap | undefined;
+	private loaded = false;
+	private readOnly = false;
+	private didWriteCheckpoint = false;
 
 	constructor(
 		readonly agentDir: string,
 		readonly rootSessionId: string,
-		private readonly limits = USAGE_LIMITS,
+		private readonly limits: { readonly [K in keyof typeof USAGE_LIMITS]: number } = USAGE_LIMITS,
 		private readonly io: PersistIo = defaultIo,
 	) {
 		this.rootDir = join(agentDir, USAGE_DIR_NAME, sanitizeRootId(rootSessionId));
 		this.journalPath = join(this.rootDir, "journal.jsonl");
 		this.checkpointPath = join(this.rootDir, "checkpoint.json");
 		this.lockPath = join(this.rootDir, ".writer");
-		this.checkpointWritable = this.inspectCheckpoint();
+		const checkpointStats = lstatOrNull(this.checkpointPath);
+		this.checkpointWritable = !checkpointStats || (!checkpointStats.isSymbolicLink() && checkpointStats.isFile() && checkpointStats.size <= this.limits.checkpointTmpBudgetBytes);
 		if (this.checkpointWritable) {
 			this.persistStatus = "memory";
 		}
@@ -185,7 +200,12 @@ export class FsUsagePersist implements UsagePersist {
 		return this.persistStatus;
 	}
 
+	isReadOnly(): boolean { return this.readOnly || !this.checkpointWritable; }
+	protect(reason: PersistLoadGap): void { this.noteLoadGap(reason); }
+	checkpointWritten(): boolean { return this.didWriteCheckpoint; }
+
 	acquireWriter(): boolean {
+		if (this.isReadOnly()) return false;
 		if (this.isWriter) return true;
 		if (this.writerFailed) return false;
 		const usageDir = join(this.agentDir, USAGE_DIR_NAME);
@@ -221,23 +241,79 @@ export class FsUsagePersist implements UsagePersist {
 	}
 
 	load(): UsageObservationV1[] {
-		this.lastLoadGap = undefined;
-		if (this.layoutIsUnsafe()) return [];
+		this.loaded = true;
+		if (this.layoutIsUnsafe()) { this.noteLoadGap("checkpoint-incomplete"); return []; }
 		const checkpointStats = lstatOrNull(this.checkpointPath);
 		if (checkpointStats && (checkpointStats.isSymbolicLink() || !checkpointStats.isFile() || !this.checkpointWritable)) {
 			this.noteLoadGap("checkpoint-incomplete");
 		}
 		const fromCheckpoint = this.readCheckpointObservations();
 		const fromJournal = this.readJournalObservations();
-		return [...fromCheckpoint, ...fromJournal];
+		const rows = [...fromCheckpoint, ...fromJournal];
+		if (rows.length > this.limits.maxMemoryObservations) this.noteLoadGap("load-budget-exceeded");
+		return rows.slice(0, this.limits.maxMemoryObservations);
+	}
+
+	/** Runtime loading yields after each bounded metadata slice; never scans session files. */
+	async *loadBatches(): AsyncGenerator<readonly UsageObservationV1[]> {
+		this.loaded = true;
+		if (this.layoutIsUnsafe()) { this.noteLoadGap("checkpoint-incomplete"); return; }
+		if (!this.checkpointWritable) this.noteLoadGap("checkpoint-incomplete");
+		const checkpoint = this.readCheckpointObservations();
+		let count = 0;
+		for (let i = 0; i < checkpoint.length; i += USAGE_LIMITS.perTickEvents) {
+			const rows = checkpoint.slice(i, i + USAGE_LIMITS.perTickEvents);
+			count += rows.length;
+			yield rows;
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		}
+		const stats = lstatOrNull(this.journalPath);
+		if (!stats) return;
+		if (stats.size > this.limits.maxJournalBytesPerRoot) { this.noteLoadGap("load-budget-exceeded"); return; }
+		let fd: number | undefined;
+		try {
+			fd = openSync(this.journalPath, "r");
+			const buffer = Buffer.alloc(USAGE_LIMITS.perTickReadBytes);
+			let tail = Buffer.alloc(0);
+			let offset = 0;
+			while (offset < stats.size) {
+				const n = readSync(fd, buffer, 0, Math.min(buffer.length, stats.size - offset), offset);
+				if (!n) { this.noteLoadGap("journal-truncated"); break; }
+				offset += n;
+				const chunk = Buffer.concat([tail, buffer.subarray(0, n)]);
+				let start = 0;
+				let batch: UsageObservationV1[] = [];
+				for (let end = chunk.indexOf(10); end !== -1; end = chunk.indexOf(10, start)) {
+					const line = chunk.subarray(start, end); start = end + 1;
+					if (line.length > USAGE_LIMITS.perTickReadBytes) { this.noteLoadGap("load-budget-exceeded"); return; }
+					if (!line.toString("utf8").trim()) continue;
+					try {
+						const parsed = parseUsageObservationV1(JSON.parse(line.toString("utf8")));
+						if (!parsed.ok || parsed.value.rootSessionId !== this.rootSessionId) { this.noteLoadGap("journal-truncated"); continue; }
+						if (++count > this.limits.maxMemoryObservations) { this.noteLoadGap("load-budget-exceeded"); if (batch.length) yield batch; return; }
+						batch.push(parsed.value);
+					} catch { this.noteLoadGap("journal-truncated"); if (batch.length) yield batch; return; }
+					if (batch.length === USAGE_LIMITS.perTickEvents) { yield batch; batch = []; await new Promise<void>((resolve) => setImmediate(resolve)); }
+				}
+				tail = Buffer.from(chunk.subarray(start));
+				if (tail.length > USAGE_LIMITS.perTickReadBytes) { this.noteLoadGap("load-budget-exceeded"); return; }
+				if (batch.length) yield batch;
+				await new Promise<void>((resolve) => setImmediate(resolve));
+			}
+			if (tail.length) this.noteLoadGap("journal-truncated");
+		} catch { this.noteLoadGap("journal-truncated"); }
+		finally { if (fd !== undefined) closeSync(fd); }
 	}
 
 	private noteLoadGap(gap: PersistLoadGap): void {
+		this.readOnly = true;
 		if (this.lastLoadGap === "checkpoint-incomplete") return;
 		this.lastLoadGap = gap;
 	}
 
 	async append(observation: UsageObservationV1): Promise<PersistStatus> {
+		if (!this.loaded) this.load();
+		if (this.isReadOnly()) return this.persistStatus;
 		if (this.persistStatus === "storage-exhausted") return this.persistStatus;
 		if (!this.acquireWriter()) return this.persistStatus;
 		if (this.layoutIsUnsafe()) {
@@ -271,7 +347,9 @@ export class FsUsagePersist implements UsagePersist {
 	async writeCheckpoint(
 		observations: readonly UsageObservationV1[] | (() => readonly UsageObservationV1[]),
 	): Promise<PersistStatus> {
-		if (!this.checkpointWritable) return this.persistStatus;
+		this.didWriteCheckpoint = false;
+		if (!this.loaded) this.load();
+		if (this.isReadOnly()) return this.persistStatus;
 		if (this.persistStatus === "storage-exhausted") return this.persistStatus;
 		if (!this.acquireWriter()) return this.persistStatus;
 		if (this.layoutIsUnsafe() || !this.inspectCheckpoint()) {
@@ -286,7 +364,11 @@ export class FsUsagePersist implements UsagePersist {
 			observations: [...rows],
 		};
 		const encoded = `${JSON.stringify(payload, null, 2)}\n`;
-		if (Buffer.byteLength(encoded) > this.limits.checkpointTmpBudgetBytes) {
+		const bytes = Buffer.byteLength(encoded);
+		if (bytes > this.limits.checkpointTmpBudgetBytes) return this.persistStatus;
+		// During atomic rename both the old files and the temporary checkpoint exist.
+		if (directoryBytes(join(this.agentDir, USAGE_DIR_NAME)) + bytes > this.limits.maxGlobalUsageBytes) {
+			this.persistStatus = "storage-exhausted";
 			return this.persistStatus;
 		}
 		try {
@@ -294,6 +376,7 @@ export class FsUsagePersist implements UsagePersist {
 				fileMode: SECRET_FILE_MODE,
 				dirMode: SECRET_DIR_MODE,
 			});
+			this.didWriteCheckpoint = true;
 			writeFileSync(this.journalPath, "", { mode: SECRET_FILE_MODE });
 			this.persistStatus = "durable";
 			return this.persistStatus;
@@ -340,7 +423,7 @@ export class FsUsagePersist implements UsagePersist {
 	private inspectCheckpoint(): boolean {
 		const stats = lstatOrNull(this.checkpointPath);
 		if (!stats) return true;
-		if (stats.isSymbolicLink() || !stats.isFile()) return false;
+		if (stats.isSymbolicLink() || !stats.isFile() || stats.size > this.limits.checkpointTmpBudgetBytes) return false;
 		try {
 			const raw: unknown = JSON.parse(readFileSync(this.checkpointPath, "utf8"));
 			return checkpointIsVerifiable(raw, this.rootSessionId);
@@ -353,7 +436,9 @@ export class FsUsagePersist implements UsagePersist {
 		if (!this.checkpointWritable) return [];
 		const stats = lstatOrNull(this.checkpointPath);
 		if (!stats) return [];
-		if (stats.isSymbolicLink() || !stats.isFile()) return [];
+		if (stats.isSymbolicLink() || !stats.isFile() || stats.size > this.limits.checkpointTmpBudgetBytes) {
+			this.noteLoadGap("checkpoint-incomplete"); return [];
+		}
 		try {
 			const raw: unknown = JSON.parse(readFileSync(this.checkpointPath, "utf8"));
 			if (!checkpointIsVerifiable(raw, this.rootSessionId)) {
@@ -361,8 +446,9 @@ export class FsUsagePersist implements UsagePersist {
 				return [];
 			}
 			const parsed = parseObservationList((raw as CheckpointFile).observations);
-			if (parsed.dropped) this.noteLoadGap("checkpoint-incomplete");
-			return parsed.observations;
+			if (parsed.dropped || parsed.observations.some((row) => row.rootSessionId !== this.rootSessionId)) this.noteLoadGap("checkpoint-incomplete");
+			if (parsed.observations.length > this.limits.maxMemoryObservations) this.noteLoadGap("load-budget-exceeded");
+			return parsed.observations.filter((row) => row.rootSessionId === this.rootSessionId).slice(0, this.limits.maxMemoryObservations);
 		} catch {
 			this.checkpointWritable = false;
 			this.noteLoadGap("checkpoint-incomplete");
@@ -373,12 +459,15 @@ export class FsUsagePersist implements UsagePersist {
 	private readJournalObservations(): UsageObservationV1[] {
 		const stats = lstatOrNull(this.journalPath);
 		if (!stats || stats.isSymbolicLink() || !stats.isFile()) return [];
+		if (stats.size > this.limits.maxJournalBytesPerRoot) { this.noteLoadGap("load-budget-exceeded"); return []; }
 		let text: string;
 		try {
 			text = readFileSync(this.journalPath, "utf8");
 		} catch {
+			this.noteLoadGap("journal-truncated");
 			return [];
 		}
+		if (text && !text.endsWith("\n")) this.noteLoadGap("journal-truncated");
 		const out: UsageObservationV1[] = [];
 		for (const line of text.split("\n")) {
 			const trimmed = line.trim();

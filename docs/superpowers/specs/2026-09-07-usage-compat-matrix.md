@@ -8,6 +8,12 @@
 
 **2026-09-19 当前代码对账：** 本次实现以 pi 0.81.1 的实际类型与运行时行为为准；pi-subagents 0.69 的 `bg_wait` 使用带版本标注的 `wired` fixture 接线，未宣称真实包 runtime-certified。`bg_wait` 只接受当前会话已受信观察的 completion/run，忽略 pooled 顶层 usage 与 `details.results`；indexless meta 只有在同一 parent/agent 唯一时归一化。通用工具的 numeric/完整 Pi cost object（含明确 0）保留 `reported`，未知 model/provider 不套默认费率，旧 progress key 在终态统一清理。peer 范围仍为 `>=0.81.0 <0.85.0`。
 
+## 2026-10-06 恢复验证补充（优先于上方历史基线）
+
+当前 peer 仍为 `>=0.81.0 <0.87.0`。编译产物在真实 Pi **0.81.0、0.81.1、0.86.0** SDK 的隔离运行时执行 new/resume/fork/reload（持久化开/关各一次），合成 in-process provider 验证 3+5→8、reload 后 +2→10/Turn=2。三版 `message_end` 回调时条目尚不可见，随后公开 SessionManager 保留同一对象引用。不是收费网关、真实窄 TUI 或其他扩展的认证。
+
+稳定 entry 身份、有界当前会话恢复、完整存档/策略投影、批次原子提交和只读损坏保护已接线；旁路及隐藏 child factory 仍 partial。详情与命令见[执行记录](../plans/2026-10-06-usage-accounting-execution.md)。
+
 ## 证据等级
 
 | 等级 | 含义 |

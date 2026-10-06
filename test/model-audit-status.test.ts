@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import tpsExtension from "../extensions/tps.js";
+import { withSessionEntries } from "./helpers/tps-session-entries.js";
 import { createModelAuditRuntime } from "../extensions/model-audit/runtime.js";
 import {
 	appendModelAuditMismatch,
@@ -107,7 +108,7 @@ function setup() {
 			notify: () => {},
 		},
 	} as unknown as ExtensionContext;
-	tpsExtension(pi);
+	tpsExtension(withSessionEntries(pi));
 	const emit = (event: string, payload: unknown = {}) => handlers.get(event)?.(payload as never, ctx);
 	return { ...temp, marker, rootCwd, setTurn, mismatch, statuses, emit };
 }
@@ -174,7 +175,7 @@ describe("status-line model audit suffix", () => {
 			await h.emit("agent_settled");
 			await tick();
 			expect(h.statuses.at(-1)).toMatch(
-				/^\[dim\]All\(partial\) 1c\.~?\$0\.010\[error\]\.x2\[dim\], Turn \d+s\.1c\.~?\$0\.010\[error\]\.x2$/,
+				/^\[dim\]All 1c\.~?\$0\.010\[error\]\.x2\[dim\], Turn \d+s\.1c\.~?\$0\.010\[error\]\.x2$/,
 			);
 		} finally {
 			await h.emit("session_shutdown");

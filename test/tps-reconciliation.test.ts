@@ -18,7 +18,8 @@ function runtime() {
 	const getEntries = vi.fn(() => [...entries]);
 	const ctx = {
 		hasUI: true, mode: "tui", cwd: process.cwd(),
-		sessionManager: { getSessionId: () => id, getEntries },
+		sessionManager: { getSessionId: () => id, getSessionFile: () => undefined, getEntries,
+			getLeafEntry: () => entries.at(-1), getEntry: (entryId: string) => entries.find((e: any) => e.id === entryId) },
 		ui: {
 			theme: { fg: (_color: string, text: string) => text },
 			setStatus: (_key: string, text?: string) => { if (text) statuses.push(text); },
@@ -33,7 +34,11 @@ function runtime() {
 	} as unknown as ExtensionAPI);
 	return {
 		ctx, getEntries, menus, statuses,
-		emit: (name: string, event = {}) => handlers.get(name)?.(event, ctx),
+		emit: async (name: string, event: any = {}) => {
+			const result = handlers.get(name)?.(event, ctx);
+			if (name === "message_end") entries.push({ type: "message", id: `e${entries.length}`, parentId: (entries.at(-1) as any)?.id ?? null, message: event.message });
+			await result;
+		},
 		calls: () => calls!("", ctx),
 		setEntries: (value: unknown[]) => { entries = value; },
 		setId: (value: string) => { id = value; },
@@ -63,8 +68,8 @@ describe("/calls reconciliation snapshots", () => {
 				await r.emit("agent_settled");
 				await tick();
 			}
-			expect(r.statuses.at(-1)).toMatch(/^All\(partial\) 2c\.~\$8\.00, Turn \d+s\.1c\.~\$5\.00$/);
-			expect(r.getEntries).not.toHaveBeenCalled(); // no new background history work
+			expect(r.statuses.at(-1)).toMatch(/^All 2c\.~\$8\.00, Turn \d+s\.1c\.~\$5\.00$/);
+			expect(r.getEntries).toHaveBeenCalledTimes(1); // initial snapshot only; live uses leaf walk
 		} finally { await r.emit("session_shutdown"); }
 	});
 
@@ -89,7 +94,7 @@ describe("/calls reconciliation snapshots", () => {
 			expect(text).toContain("Plugin All: ~$3.00");
 			expect(text).toContain("Native checked subtotal: $3.00");
 			expect(text).not.toContain("$8.00");
-			expect(r.getEntries).toHaveBeenCalledTimes(1);
+			expect(r.getEntries).toHaveBeenCalledTimes(2); // startup + command
 		} finally { await r.emit("session_shutdown"); }
 	});
 
@@ -110,7 +115,7 @@ describe("/calls reconciliation snapshots", () => {
 			expect(r.menus.at(-1)!.title).toContain("cost ~$3.00");
 			r.choose(async (title) => title === "Usage scope" ? "Coverage" : undefined);
 			await r.calls();
-			expect(r.menus.at(-1)!.options.join("\n")).toContain("History: partial");
+			expect(r.menus.at(-1)!.options.join("\n")).toContain("History: ready");
 			expect(r.menus.at(-1)!.options.join("\n")).toContain("Configuration exclusions:");
 		} finally { await r.emit("session_shutdown"); }
 	});

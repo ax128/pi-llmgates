@@ -30,6 +30,12 @@ export interface ObservationIdentity {
 	childId?: string;
 	executionId?: string;
 	attemptId?: string;
+	callId?: string;
+	runner?: string;
+}
+
+export function entryUsageId(sessionId: string, entryId: string): string {
+	return `entry:${encodeURIComponent(sessionId)}:${encodeURIComponent(entryId)}`;
 }
 
 function readCostUsd(raw: Record<string, unknown>): number | undefined {
@@ -73,6 +79,7 @@ function copyPresentCounters(raw: unknown, present: ReadonlySet<string>): UsageC
 export function observationFromAssistantMessage(
 	message: unknown,
 	identity: ObservationIdentity,
+	options: { costMode?: "live" | "stored-only" } = {},
 ): UsageObservationV1 | null {
 	if (!isPlainObject(message) || message.role !== "assistant") return null;
 	const model = typeof message.model === "string" ? message.model.trim() : "";
@@ -99,7 +106,7 @@ export function observationFromAssistantMessage(
 	quality.calls = "reported";
 	if (isPlainObject(rawUsage)) {
 		let costUsd = readCostUsd(rawUsage);
-		if (costUsd === undefined || costUsd === 0) {
+		if (options.costMode !== "stored-only" && (costUsd === undefined || costUsd === 0)) {
 			const estimated = estimateCostFromRates(rawUsage, model, provider);
 			if (estimated > 0) costUsd = estimated;
 		}
@@ -123,7 +130,7 @@ export function observationFromAssistantMessage(
 		sequence: identity.sequence,
 		observedAt: identity.observedAt,
 		kind: "response",
-		callId: parentCallId(message, identity),
+		callId: identity.callId ?? parentCallId(message, identity),
 		model,
 		provider,
 		phase: "final",
@@ -200,7 +207,7 @@ export function observationFromLegacyRecord(
 
 	const parsed = parseUsageObservationV1({
 		schemaVersion: 1,
-		source: { package: PACKAGE_NAME, version: PACKAGE_VERSION, runner: "legacy" },
+		source: { package: PACKAGE_NAME, version: PACKAGE_VERSION, runner: identity.runner ?? "legacy" },
 		rootSessionId: identity.rootSessionId,
 		sessionId: identity.sessionId,
 		originTurnId: identity.originTurnId,
