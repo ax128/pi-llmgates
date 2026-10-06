@@ -2,6 +2,7 @@ import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as realDelay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	registerCompatGateways,
@@ -636,13 +637,17 @@ describe("auth cleanup reconciliation", () => {
 		}
 	}
 
-	/** Same drain, but stops as soon as the expected state is reached. */
+	/** Wait for real filesystem/lock I/O without fabricating another 60s poll. */
 	async function settleUntil(reached: () => boolean): Promise<void> {
 		for (let i = 0; i < 500; i++) {
 			if (reached()) return;
-			await new Promise((resolve) => setImmediate(resolve));
+			// Hundreds of setImmediate turns can elapse before libuv completes one
+			// fs operation on a busy CI worker. Give I/O a real, bounded 5s budget;
+			// the fake retry clock still advances by at most the original 10s.
+			await realDelay(10);
 			await vi.advanceTimersByTimeAsync(20);
 		}
+		expect(reached(), "filesystem cleanup did not finish within the bounded wait").toBe(true);
 	}
 
 	it("cleans up after a silent watcher once the poll interval elapses", async () => {
