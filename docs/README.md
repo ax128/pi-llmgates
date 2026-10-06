@@ -21,6 +21,12 @@
 
 实施时的设计记录，可作为实现背景参考。**与代码冲突时一律以代码及其注释为准**——每份文档的抬头都注明了它的状态与已知偏差。
 
+### 待实施方案
+
+| 文档 | 说明 | 状态 |
+| --- | --- | --- |
+| [2026-10-06-usage-accounting-reconciliation-design.md](./superpowers/specs/2026-10-06-usage-accounting-reconciliation-design.md) | 用量统计优化：All / Turn 费用与对账视图、当前会话历史恢复、实时 / 回放 / 旧账本统一去重、新版 Pi 独立 usage 入口与有界核对 | 仅方案落盘，未实施；先展示与对账，再身份去重、历史恢复和新版适配，不默认开启持久化或扩大 peer 范围 |
+
 ### 本次实施记录
 
 2026-09-07 用量/计费优化已按当前代码与 pi 0.81.1 实际行为复核后落地：包括 `bg_wait` ownership、通用工具 progress 清理、Pi cost object 质量和未知模型 fail-closed 定价，以及对应 focused fixtures/tests。pi-subagents 0.69 仍标为 `wired`（有版本标注 fixture，未作真实包 runtime-certified）；peer 范围在 0.7.1 发版时按 pi 0.86.0 实测放宽到 `<0.87.0`（上表各份 spec 里「peer 不抬」指的是那些文档冻结时的边界）。历史设计中的旧行号和未认证边界，以当前代码与下方兼容矩阵为准。
