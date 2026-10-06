@@ -1,6 +1,6 @@
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { UsageCollector } from "../extensions/usage/collector.js";
 import { createUsagePersist } from "../extensions/usage/persist.js";
 import { resolveUsagePolicy, USAGE_LIMITS } from "../extensions/usage/policy.js";
@@ -103,6 +103,22 @@ describe("bounded current-session recovery", () => {
 		expect(large.collector.historyPartial).toBe(true);
 		expect(large.collector.gapReasons().join()).toContain("entry-index-capacity");
 		await large.close();
+	});
+
+	it("V16: expired associations release references and never assign late entries to the current turn", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		const h = harness();
+		try {
+			await h.recovery.start(); await settled(h);
+			const reply = message(2), origin = h.collector.beginTurn();
+			h.recovery.noteAssistant(reply, origin); expect(h.recovery.pendingCount).toBe(1);
+			await vi.advanceTimersByTimeAsync(USAGE_LIMITS.orphanTtlMs + 1);
+			expect(h.recovery.pendingCount).toBe(0);
+			expect(h.collector.gapReasons().join()).toContain("origin-association-expired");
+			h.manager.appendMessage(reply); h.recovery.boundary(); await tick(); await tick();
+			expect(h.collector.sessionTotals().costUsd).toBe(2);
+			expect(h.collector.turnTotals().costUsd).toBe(0);
+		} finally { await h.close(); vi.useRealTimers(); }
 	});
 
 	it("V15: historical run proofs stay local to replay; all tree branches are counted", async () => {

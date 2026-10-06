@@ -2,7 +2,7 @@
 
 依据：[实施设计](../specs/2026-10-06-usage-accounting-reconciliation-design.md)。
 
-**当前：P0 与 P1a/P1b/P1c 已实现；P2 留在后续依赖分支。用户随后授权完整 build、隔离多版本 runtime 与 CI 调查。下文 P0 检查和阻塞段保留为历史记录，已由文末 P1 记录更新。没有合并、发布、部署或安装包认证。**
+**当前：P0、P1a/P1b/P1c 与 P2 均已实现，按依赖分支分别提交评审。用户随后授权完整 build、隔离多版本 runtime 与 CI 调查。下文 P0 检查和阻塞段保留为历史记录，已由文末 P1 记录更新。没有合并、发布、部署或安装包认证。**
 
 ## 基线、隔离与可行性
 
@@ -15,13 +15,13 @@
 
 | 阶段 | 修改模块及影响面 | 前置依赖与目标 |
 | --- | --- | --- |
-| P0（本 PR） | `usage/format.ts`、`usage/reconciliation.ts`、`tps.ts`；`ledger.ts` 只增加投影版本读数；中英文 README 与对应 focused tests | 可独立提交到 main；不改变采集身份、来源闸或持久化 |
-| P1a（未实施） | `legacy-adapter.ts`、`collector.ts`、`ledger.ts`、`tps.ts`、来源命名空间表；稳定 entry identity、stored-only、原子分区与事件待关联 | 基于 P0；对象关联策略须核验目标 Pi 版本，不把回放次数当源 revision |
-| P1b（未实施） | `collector.ts`、`persist.ts`、子代理去重状态；完整存档与可计入投影、旧父 legacy-window、只读损坏保护、批次耐久状态 | 基于 P1a；v1 不迁移，配置隐藏不删档；故障/重启 focused 检查 |
-| P1c（未实施） | 新 `adapters/session-entries.ts` / 必要的 `session-recovery.ts`，`collector.ts` / `tps.ts` 生命周期；S0、矩阵、双 README | 基于 P1b，限额及 R1/R2 全过才接自动恢复；否则只交付 P0 |
-| P2（未实施） | session adapter、`tps.ts`、`policy.ts`；先嵌套工具树认领，再独立 usage / 空闲发现 | 基于 P1c，独立 R3；不调整 peer、不绕过工具名/来源排除 |
+| P0（#99） | `usage/format.ts`、`usage/reconciliation.ts`、`tps.ts`；`ledger.ts` 只增加投影版本读数；中英文 README 与对应 focused tests | 可独立提交到 main；不改变采集身份、来源闸或持久化 |
+| P1a（#101） | `legacy-adapter.ts`、`collector.ts`、`ledger.ts`、`tps.ts`、来源命名空间表；稳定 entry identity、stored-only、原子分区与事件待关联 | 基于 P0；对象关联策略须核验目标 Pi 版本，不把回放次数当源 revision |
+| P1b（#101） | `collector.ts`、`persist.ts`、子代理去重状态；完整存档与可计入投影、旧父 legacy-window、只读损坏保护、批次耐久状态 | 基于 P1a；v1 不迁移，配置隐藏不删档；故障/重启 focused 检查 |
+| P1c（#101） | 新 `adapters/session-entries.ts` / 必要的 `session-recovery.ts`，`collector.ts` / `tps.ts` 生命周期；S0、矩阵、双 README | 基于 P1b，限额及 R1/R2 全过才接自动恢复；否则只交付 P0 |
+| P2（本分支） | session adapter、`tps.ts`、`policy.ts`；先嵌套工具树认领，再独立 usage / 空闲发现 | 基于 P1c，独立 R3；不调整 peer、不绕过工具名/来源排除 |
 
-后续若建 PR 栈，依次以直接前置阶段分支为 base；P1/P2 当前没有空占位 PR，也没有宣称已完成。
+PR 栈按直接前置分支设 base；所有 PR 均有实际实现，不创建空占位。独立 CI 测试修复为 #100。
 
 ## P0 实现与方案调整
 
@@ -105,3 +105,19 @@ git diff --check
 - 没有持久化 source-domain watermark；重启后首份 snapshot 仅建立 baseline，不以重放次数替换旧金额，之后只能比较同一入口的源 revision；因此保守 partial。
 - 不实现上游没有提供的 child factory hook、任意 CLI/其他会话扫描或默认持久化。保留期轮转及持久化自动重试不在本次新恢复能力中冒充实现。
 - 60 列仍为格式 fixture，不是实际终端验收；P2 的 1.0.4 新入口与 idle 发现单独依赖 R3。
+
+## P2 / R3 与最终验证
+
+分支 `feat/usage-nested-idle` 基于 #101，保持 package peer 和所有依赖不变；只对 SDK `VERSION === "1.0.4"` 启用经门禁核验的新路径，不推断未测未来版本，也不宣称整个插件支持 1.0.4。
+
+- 工具池化：记录公开 parentToolCallId/name/origin，普通子事件不 finalized；父最终条目要求完整、无排除来源、与 live 证据一致的 nestedCalls。仅保存最小身份，不读取 arguments/content。父记录落地后释放临时树；10k 上限。专用来源沿旧闸独立计量，无法拆分的父池整段 partial。
+- 独立条目：内部 `session-usage` 仅随 master；未知有效 kind 可计，无请求次数证据不造 1，reasoning/cacheWrite1h 不重复相加。**保守调整：** compaction/tool/subagent 等类别别名及携带 run/source 身份的条目缺乏第二出口关联合同，隔离为 `session-usage-source-unresolved`，而不是使用总开关绕过类别开关。
+- Idle：仅 verified TUI owner 的 2s unref public leaf/parent 探测，不使用内部 entry_count/entry_appended 或读 session JSONL；不重复 full snapshot，无变化不重绘，关闭/换代取消。纯函数门禁与实际 SDK 共同验证。
+- 收尾审查补强：meta 来源/版本域索引显式上限与缺口；同一 metadata 工作跨目录共享 256KiB/200 项/50ms，单个超大文件跳过但留下证据缺口。后台 meta 补扫排在已接收 live 任务之后，避免预算切片改变 aggregate/child 先到者规则。fixture 的单个 0ms timer 改为有界 macrotask drain，计量断言没有放宽。
+- 命名空间与认领关系已补入 2026-08-22 §3.2/§3.3；P1 原 PR 已在执行记录登记，权威表的同步在本次收尾完成。
+
+最终 focused：**22 文件 / 259 测试通过**；typecheck、完整 build 通过。新增 TTL 过期、checkpoint rename 后 journal 未 truncate 的旧模型分区不复活、嵌套所有排除名/截断/身份冲突、不可读取 arguments、未知有效 kind/畸形 usage/类别开关/调用次数/子集 tokens、无变化 idle 与取消检查。
+
+最终真实 runtime：Pi **0.81.0 / 0.81.1 / 0.86.0 / 1.0.4**，persist off/on 共 **8 组**。全部执行 new/resume/fork/reload，并退出 owner 后启动**独立 Node 子进程**，从临时 session 文件/可选存档冷恢复（无模型调用）。1.0.4 另验证：多层并行 child 3+2+3 与 parent 5 的最终池为 13，而父 end 事件只有 5；All 只增加 13；排除的管理子工具/超长参数导致 incomplete 的父池不计；idle cache_warm 0.25 与未知有效 kind 0.5 只加 All，不改变 Turn、不增加 calls、不调用 provider；reload 与独立进程均保留 22.75 的可确认小计。全部为合成数据，不触碰用户账本。
+
+仍未认证：实际窄 TUI、真实付费网关、1.0.4 provider/登录/其他扩展整包兼容、真实 ENOSPC/断电。v1 解析合同未变，保留旧数据与未知来源；没有执行旧版本插件的破坏性写入回退实验，也不承诺旧程序获得新策略保护。没有 `pi install`、npm gate、合并、发布或部署。

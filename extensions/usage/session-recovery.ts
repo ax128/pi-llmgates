@@ -13,8 +13,10 @@ export class SessionRecovery {
 	private readonly startupIds = new Set<string>();
 	private readonly historicalRuns = new Set<string>();
 	private readonly tools = new Map<string, string>();
+	private readonly nested = new Map<string, { parentId: string; rootId: string; name: string; origin: string; conflicted?: boolean }>();
+	private idleTimer: ReturnType<typeof setInterval> | undefined;
 	private readonly pending: Pending[] = [];
-	private readonly queue: Array<{ run: () => void | Promise<void>; bytes: number }> = [];
+	private readonly queue: Array<{ run: () => void | Promise<void>; bytes: number; background: boolean }> = [];
 	private entries: readonly unknown[] | undefined;
 	private cursor = 0;
 	private lastSnapshot = -Infinity;
@@ -31,6 +33,7 @@ export class SessionRecovery {
 
 	constructor(readonly collector: UsageCollector, private readonly manager: ReadonlySessionManager, private readonly options: {
 		isOwner: () => boolean;
+		modernUsage?: boolean;
 		onRestored: () => void;
 		onRecords: (records: readonly SubagentUsageRecord[], category: UsageSwitchCategory, origin: string, historical: boolean) => void;
 		onChange: () => void;
@@ -44,15 +47,33 @@ export class SessionRecovery {
 		if (!this.owns()) return;
 		this.options.onRestored();
 		this.initialized = true;
+		if (this.options.modernUsage) {
+			if (typeof this.manager.getLeafEntry !== "function" || typeof this.manager.getEntry !== "function") this.collector.noteGap("idle-discovery-unavailable");
+			else {
+				this.idleTimer = setInterval(() => { if (!this.closing && this.owns()) { this.leafDirty = true; this.schedule(); } }, USAGE_LIMITS.idleRefreshMs);
+				this.idleTimer.unref?.();
+			}
+		}
 		this.schedule();
 	}
-	enqueue(run: () => void | Promise<void>, bytes = 128): boolean {
+	enqueue(run: () => void | Promise<void>, bytes = 128, background = false): boolean {
 		if (this.closing || !this.owns()) return false;
 		if (this.queue.length >= USAGE_LIMITS.queueSoftLimit || bytes > USAGE_LIMITS.perTickReadBytes) { this.collector.noteGap("live-queue-overflow"); return false; }
-		this.queue.push({ run, bytes }); this.schedule(); return true;
+		const firstBackground = background ? -1 : this.queue.findIndex((item) => item.background);
+		if (firstBackground < 0) this.queue.push({ run, bytes, background });
+		else this.queue.splice(firstBackground, 0, { run, bytes, background });
+		this.schedule(); return true;
 	}
 	noteAssistant(message: unknown, origin: string): void { this.addPending({ message, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
-	originForTool(toolCallId: string): string { return this.pending.find((p) => p.toolCallId === toolCallId)?.origin ?? "unassigned"; }
+	originForTool(toolCallId: string): string { return this.pending.find((p) => p.toolCallId === toolCallId)?.origin ?? this.nested.get(toolCallId)?.origin ?? "unassigned"; }
+	noteNestedTool(id: string, parentId: string, name: string): void {
+		if (this.closing || !this.owns()) return;
+		if (!id || !parentId || id === parentId || id.length > 1024 || parentId.length > 1024 || name.length > 256 || this.nested.size >= USAGE_LIMITS.maxMemoryObservations) { this.collector.noteGap("nested-ownership-capacity"); return; }
+		const record = { parentId, rootId: this.nested.get(parentId)?.rootId ?? parentId, name: name.trim().toLowerCase(), origin: this.originForTool(parentId) };
+		const old = this.nested.get(id);
+		if (old && (old.parentId !== parentId || old.name !== record.name)) { this.collector.noteGap("nested-evidence-conflict"); this.nested.set(id, { ...old, conflicted: true }); return; }
+		this.nested.set(id, old?.conflicted ? { ...record, conflicted: true } : record);
+	}
 	noteTool(toolCallId: string, origin: string): void {
 		if (this.tools.has(toolCallId)) return;
 		if (!toolCallId || toolCallId.length > 1024) { this.collector.noteGap("invalid-tool-identity"); return; }
@@ -131,8 +152,10 @@ export class SessionRecovery {
 			policy: this.collector.policy, historicalRuns: this.historicalRuns,
 			sessionIdentity: normalizeSubagentSessionIdentity({ sessionId: this.manager.getSessionId(), sessionFile: this.manager.getSessionFile() }),
 			live: !historical && pending !== undefined, model: this.liveModel,
+			modernUsage: this.options.modernUsage, observedNested: this.nested,
 		});
 		for (const gap of parsed.gaps) this.collector.noteGap(gap);
+		if (message?.role === "toolResult") for (const [id, record] of this.nested) if (record.rootId === message.toolCallId) this.nested.delete(id);
 		for (const id of parsed.runIds) {
 			if (this.historicalRuns.size < USAGE_LIMITS.maxMemoryObservations) this.historicalRuns.add(id);
 			else this.collector.noteGap("ownership-capacity");
@@ -151,12 +174,14 @@ export class SessionRecovery {
 				if (historical && this.collector.legacyParentWindow) continue;
 				this.collector.ingestAssistantEntry(candidate.message, candidate.entryId, origin, !historical && pending !== undefined);
 				if (!historical && !pending) this.collector.noteGap("origin-unassigned");
-			} else this.options.onRecords(candidate.records, candidate.category, origin, historical || !pending);
+			} else if (candidate.kind === "session-usage") this.collector.ingestSessionUsage(candidate.entry, historical);
+			else this.options.onRecords(candidate.records, candidate.category, origin, historical || !pending);
 		}
 	}
 	private async drain(): Promise<void> {
 		if (this.draining || !this.owns()) return;
 		this.draining = true;
+		const previousState = this.collector.recoveryState;
 		const deadline = performance.now() + USAGE_LIMITS.perTickMs;
 		let count = 0, bytes = 0;
 		try {
@@ -198,7 +223,7 @@ export class SessionRecovery {
 				}
 			}
 			if (!this.entries && !this.queue.length) this.collector.finishRecovery();
-			if (this.owns() && !this.closing) this.options.onChange();
+			if (this.owns() && !this.closing && (count > 0 || previousState !== this.collector.recoveryState)) this.options.onChange();
 		} catch { this.collector.noteGap("recovery-task-failed"); }
 		finally {
 			this.draining = false;
@@ -207,6 +232,7 @@ export class SessionRecovery {
 	}
 	async stopAndDrain(): Promise<void> {
 		this.closing = true;
+		if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = undefined; }
 		// Final public leaf check before dropping history also commits entries whose
 		// message_end preceded append immediately before shutdown/reload.
 		if (this.initialized && this.owns()) for (const entry of this.leafSlice()) this.process(entry);

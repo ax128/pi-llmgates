@@ -24,7 +24,7 @@ export interface NativeCostSnapshot {
  */
 export function summarizeNativeCosts(
 	entries: readonly unknown[],
-	options: { now?: () => number; deadline?: number; maxEntries?: number } = {},
+	options: { now?: () => number; deadline?: number; maxEntries?: number; modernUsage?: boolean } = {},
 ): NativeCostSnapshot {
 	const now = options.now ?? (() => performance.now());
 	const deadline = options.deadline ?? now() + USAGE_LIMITS.perTickMs;
@@ -49,7 +49,7 @@ export function summarizeNativeCosts(
 			if (entry.message.role === "assistant") usage = entry.message.usage;
 			else if (entry.message.role === "toolResult" && entry.message.usage !== undefined) usage = entry.message.usage;
 			else continue;
-		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
+		} else if ((options.modernUsage && entry.type === "usage") || entry.type === "compaction" || entry.type === "branch_summary") {
 			// A summary without usage is missing evidence, not a proven free call.
 			usage = entry.usage;
 		} else {

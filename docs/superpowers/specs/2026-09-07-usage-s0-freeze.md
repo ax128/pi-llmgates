@@ -54,6 +54,7 @@
 
 | 能力 | env | config 键 | 默认 | 关闭时 |
 | --- | --- | --- | --- | --- |
+| 独立会话 usage（Pi 1.0.4 专项） | —，仅随总开关 | — | 核验版本才启用 | 不造 calls，不绕过已有来源开关；未知有效 kind 可计，类别别名或来源重叠不明则隔离 |
 | 总采集 | `LLMGATES_TPS` | `tps` | 开 | 全部入口停：父 assistant、子代理、压缩、工具嵌套、第三方、持久化写入 |
 | 持久化 | `LLMGATES_TPS_PERSIST` | `tpsPersist` | **关** | 不创建 journal/checkpoint；内存采集可继续（若总开关仍开） |
 | 第三方 adapter | `LLMGATES_TPS_EXT` | `tpsExt` | 开 | 不注册第三方 EventBus 观察；不影响 pi-subagents / 父模型 |
@@ -91,7 +92,7 @@
 
 达限或 `ENOSPC`：保留最后有效 checkpoint，停止新增 journal，coverage=`storage-exhausted`/`partial`。内存继续有界计量并标明非 durable。内存也满时记缺口，不换目录、不无限排队。损坏/未知版本 checkpoint：**不覆盖、不修复、不删除**。
 
-当前实现限制：保留期与 journal 分段仍是冻结目标，尚未实施自动清理/轮转；append 同步遍历 usage 目录，完整 checkpoint 超过 256KiB 会跳过写入并保留 journal。**下列常量只是冻结目标，当前没有对应实现，不得写成已交付：** `persistRetryMax` / `persistRetryBaseMs`（append 失败即降级，无重试）、持久化重试参数。2026-10-06 恢复实现已接入 `maxPendingOrphans` / `orphanTtlMs`、`queueSoftLimit`、`perTickReadBytes` / `perTickEvents` / `perTickMs`；公开 `getEntries()` 同步浅复制仍不能抢占。加载时跳过损坏观察会把 Coverage 标 `partial`（`checkpoint-incomplete` / `journal-truncated`），不把缺口当成完整 durable。持久化专项须在默认启用前解决。
+当前实现限制：保留期与 journal 分段仍是冻结目标，尚未实施自动清理/轮转；append 同步遍历 usage 目录，完整 checkpoint 超过 256KiB 会跳过写入并保留 journal。**下列常量只是冻结目标，当前没有对应实现，不得写成已交付：** `persistRetryMax` / `persistRetryBaseMs`（append 失败即降级，无重试）。2026-10-06 恢复实现已接入 `maxPendingOrphans` / `orphanTtlMs`、`queueSoftLimit`、`perTickReadBytes` / `perTickEvents` / `perTickMs`；公开 `getEntries()` 同步浅复制仍不能抢占。加载时跳过损坏观察会把 Coverage 标 `partial`（`checkpoint-incomplete` / `journal-truncated`），不把缺口当成完整 durable。持久化专项须在默认启用前解决。
 
 ## 6. 迁移与回退
 

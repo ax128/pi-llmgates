@@ -168,6 +168,7 @@ tool.execute() → finalized.result                       (pi-agent-core/dist/ag
 | `meta:{runId}` / `meta:{runId}:{agent}:{index}` | B/C（现有） | pi-subagents runId + 跨粒度互斥（`tps-subagent.ts:369,380`） |
 | `async:{dir}:{agent}:{index}` / `async:unknown:{agent}:{index}` | C（现有兜底） | async 目录名（`:399`、`:1079`） |
 | **`tool:{toolCallId}:{index}` / `tool:{toolCallId}:aggregate`** | **B（现有，rev 1 漏记）** | 工具结果无 runId 时的兜底（`:449`、`:643`） |
+| **`entry:{encodedSessionId}:{encodedEntryId}`** | **2026-10-06：父 assistant 与 Pi 1.0.4 独立 usage** | 当前会话公开 entry id；分别使用 `parent-assistant` / `session-usage` producer 与 runner，事件/回放同一 identity，不改写旧账身份 |
 | **`toolusage:{toolCallId}`** | **D（新，legacy final）** | pi 的 toolCallId，每次工具调用唯一 |
 | **`toolprogress:{encodedToolCallId}:{encodedSourceKey}`** | **B/D progress（当前）** | toolCallId 与来源身份的编码组合；终态会清理 legacy progress |
 | **`compact:{entryId}`** / **`branch:{entryId}`** | **E（新）** | session entry `id`（`SessionEntryBase.id`，`session-manager.d.ts:17-22`；同一会话内由 `generateId(this.byId)` 保证唯一） |
@@ -192,7 +193,9 @@ tool.execute() → finalized.result                       (pi-agent-core/dist/ag
 | `@tintinweb` 的 `subagents:completed` / `subagents:failed` 事件 | F | — |
 | 其他任意工具结果顶层 `usage` | D | — |
 | `compaction` / `branch_summary` 条目 | E | — |
-| 主会话 assistant 消息 | A | — |
+| 主会话 assistant 消息 | A：稳定 entry | 事件先有界关联到公开条目，回放 stored-only；旧父使用 legacy-window，不重复认领 |
+| Pi 1.0.4 普通嵌套工具树 | D：父最终 toolResult 的池化 usage | 子事件不独立 finalized；完整 nestedCalls 全部允许且无专用认领才计父一次，冲突/截断/排除来源则整段 partial |
+| Pi 1.0.4 独立 UsageEntry | `session-usage`（仅总开关） | 未知有效 kind 可计；已知类别别名/来源身份不明确时隔离，不绕过旧类别开关；无请求次数证据不造 1 |
 
 **F 未落地时的中间态（rev 3 补）：** 排除集在 D 落地时就含 `TINTINWEB_TOOL_NAMES`，而 F 默认不排期（§9）。这段时间里，若用户手动开了对方默认关闭的 `reportUsage`，那三个工具结果的 usage 会被 D 排除、又无人接手 → **少算**。方向安全（不会双计），且触发条件本身就要求用户主动改第三方设置，接受。若最终决定不做 F，这一行就是永久口径，须同步写进 §10 与 README。
 

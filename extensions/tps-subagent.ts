@@ -6,6 +6,7 @@ import {
 	type ModelUsageStats,
 } from "./tps-stats.js";
 import { isPlainObject } from "./util.js";
+import { USAGE_LIMITS } from "./usage/policy.js";
 import type { MetricQuality, UsageObservationV1 } from "./usage/contract.js";
 
 export const PI_SUBAGENTS_DIR = ".pi-subagents";
@@ -932,11 +933,15 @@ export function collectPiSubagentsMetaUsage(
 	pendingNullMeta?: Map<string, number>,
 	metaMtimeMs?: Map<string, number>,
 	blockedIndexlessSourceKeys?: ReadonlySet<string>,
+	sharedBudget?: { bytes: number; reads: number; deadline: number },
+	onGap?: () => void,
 ): SubagentUsageRecord[] {
 	const out: SubagentUsageRecord[] = [];
-	let reads = 0;
+	let reads = 0, bytes = 0;
+	const deadline = sharedBudget?.deadline ?? performance.now() + USAGE_LIMITS.perTickMs;
 	let truncated = false;
 	const metaPaths = listPiSubagentMetaFiles(artifactsDir);
+	if (metaPaths.length > USAGE_LIMITS.maxMemoryObservations) { onTruncated?.(); return out; }
 	const identities = metaPaths.map((metaPath) => ({
 		metaPath,
 		identity: parseMetaFileIdentity(metaPath.split(/[/\\]/).pop() ?? ""),
@@ -998,14 +1003,21 @@ export function collectPiSubagentsMetaUsage(
 			ingested.delete(sourceKey);
 			pendingNullMeta.delete(sourceKey);
 		}
-		if (reads >= MAX_SUBAGENT_META_READS_PER_SCAN) {
+		if (!ingested.has(sourceKey) && ingested.size + out.length >= USAGE_LIMITS.maxMemoryObservations) { truncated = true; break; }
+		if (reads >= MAX_SUBAGENT_META_READS_PER_SCAN || (sharedBudget?.reads ?? 0) >= USAGE_LIMITS.perTickEvents || performance.now() >= deadline) { truncated = true; break; }
+		if (stats.size > USAGE_LIMITS.perTickReadBytes) {
+			reads++; if (sharedBudget) sharedBudget.reads++;
+			ingested.add(sourceKey); pendingNullMeta?.set(sourceKey, stats.mtimeMs); onGap?.(); continue;
+		}
+		if ((sharedBudget?.bytes ?? bytes) + stats.size > USAGE_LIMITS.perTickReadBytes) {
 			// Not a silent truncation: everything skipped here is still un-ingested,
 			// so the next scan starts from it. Bail out rather than block the turn on
 			// the whole backlog, and tell the caller to queue that next scan.
 			truncated = true;
 			break;
 		}
-		reads += 1;
+		reads += 1; bytes += stats.size;
+		if (sharedBudget) { sharedBudget.reads++; sharedBudget.bytes += stats.size; }
 		const record = readPiSubagentsMetaUsage(metaPath, stats.size, sourceKey);
 		if (record) {
 			pendingNullMeta?.delete(sourceKey);
@@ -1110,12 +1122,13 @@ export function parseMetaSourceKeyGranularity(
 export function selectFreshSubagentRecords(
 	state: SubagentIngestState,
 	records: readonly SubagentUsageRecord[],
+	onCapacity?: () => void,
 ): SubagentUsageRecord[] {
 	const fresh: SubagentUsageRecord[] = [];
 	for (const record of records) {
 		const nextRev = record.revision ?? 0;
 		const domainKey = `${record.sourceKey}\0${record.revisionSource ?? "legacy"}`;
-		if (!state.keys.has(record.sourceKey) && state.keys.size >= 10_000) continue;
+		if ((!state.keys.has(record.sourceKey) && state.keys.size >= USAGE_LIMITS.maxMemoryObservations) || (!state.revisionDomains.has(domainKey) && state.revisionDomains.size >= USAGE_LIMITS.maxMemoryObservations)) { onCapacity?.(); continue; }
 		if (state.restoredKeys.has(record.sourceKey) && nextRev > 0 && !record.trustedFinal && !state.revisionDomains.has(domainKey)) {
 			state.revisionDomains.set(domainKey, nextRev);
 			continue; // first re-observation establishes a baseline; do not replace stored usage
