@@ -445,7 +445,7 @@ describe("tps runtime subagent ordering", () => {
 			await runtime.emit("session_start");
 			const calls = runtime.commands.get("calls")!;
 			await calls.handler("", runtime.ctx);
-			expect(runtime.selections[0]).toEqual(["This turn", "This session", "Coverage"]);
+			expect(runtime.selections[0]).toEqual(["This turn", "This session", "Coverage", "Reconciliation"]);
 		} finally {
 			await runtime.emit("session_shutdown");
 			rmSync(cwd, { recursive: true, force: true });

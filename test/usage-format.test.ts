@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	formatCostWithQuality,
+	formatIdleMarker,
 	formatTpsScopeWithQuality,
 	formatUsageBreakdownFromLedger,
 	formatUsageScopeTitleFromLedger,
@@ -41,7 +42,31 @@ describe("usage format", () => {
 		expect(formatCostWithQuality(0.01, "estimated")).toBe("~$0.010");
 		expect(formatCostWithQuality(0, "unknown")).toBe("?");
 		expect(formatTpsScopeWithQuality("turn", 45, totals())).toBe("Turn 45s.2c.~$0.010");
-		expect(formatTpsScopeWithQuality("all", 3661, totals())).toBe("All 1h1m.2c");
+		expect(formatTpsScopeWithQuality("all", 3661, totals())).toBe("All 2c.~$0.010");
+		expect(formatTpsScopeWithQuality("all", 3661, totals(), { historyPartial: true })).toBe("All(partial) 2c.~$0.010");
+	});
+
+	it("never rounds tiny positive costs to free and shares precision across scopes", () => {
+		for (const amount of [0.0000001, 0.000001, 0.00001, 0.00009, 0.001, 3, 5]) {
+			const cost = formatCostWithQuality(amount, "estimated");
+			expect(Number(cost.slice(2))).toBeGreaterThan(0);
+			for (const scope of ["all", "turn"] as const) {
+				expect(formatTpsScopeWithQuality(scope, 1, totals({ costUsd: amount }))).toContain(cost);
+			}
+		}
+		expect(formatCostWithQuality(NaN, "reported")).toBe("?");
+		expect(formatCostWithQuality(Infinity, "reported")).toBe("?");
+		expect(formatCostWithQuality(-1, "reported")).toBe("?");
+	});
+
+	it("fits representative partial, quality, audit and idle markers in 60 columns", () => {
+		const all = formatTpsScopeWithQuality("all", 6000, totals({ calls: 68, callsQuality: "unknown", costUsd: 12.761 }), { historyPartial: true });
+		const turn = formatTpsScopeWithQuality("turn", 1200, totals({ calls: 41, callsQuality: "unknown", costUsd: 9.57 }));
+		const line = `${all}.x3, ${turn}.x1${formatIdleMarker(true, 2)}`;
+		expect([...line].length).toBeLessThanOrEqual(60);
+		expect(line).toContain("All(partial) ≥68.~$");
+		expect(line).toContain(".x3, Turn");
+		expect(line).toContain(".x1 ↻ 2s");
 	});
 
 	it("formats /calls model lines with ~ and ? instead of $0.000", () => {

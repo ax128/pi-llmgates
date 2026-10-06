@@ -39,7 +39,10 @@ export function replaceModelUsageStats(
 }
 
 export function formatCostWithQuality(amount: number, quality: MetricQuality, hasEstimate = false): string {
-	const base = `${quality === "estimated" || hasEstimate ? "~" : ""}${formatCostUsd(amount)}`;
+	if (!Number.isFinite(amount) || amount < 0) return "?";
+	// Preserve existing precision except where it would round a real charge to free.
+	const cost = amount > 0 && amount < 0.0001 ? `$${amount.toPrecision(3)}` : formatCostUsd(amount);
+	const base = `${quality === "estimated" || hasEstimate ? "~" : ""}${cost}`;
 	if (quality === "unknown") {
 		return amount > 0 ? `${base} + ?` : "?";
 	}
@@ -88,14 +91,14 @@ export function formatTpsScopeWithQuality(
 	scope: "turn" | "all",
 	elapsedSeconds: number,
 	totals: LedgerTotals,
+	options: { historyPartial?: boolean } = {},
 ): string {
-	const elapsed = formatElapsed(elapsedSeconds);
-	const prefix = scope === "all" ? "All" : "Turn";
 	const calls = formatCallsLabel(totals.calls, totals.callsQuality);
+	const cost = formatCostWithQuality(totals.costUsd, totals.costQuality, totals.hasEstimatedCost);
 	if (scope === "all") {
-		return `${prefix} ${elapsed}.${calls}`;
+		return `All${options.historyPartial ? "(partial)" : ""} ${calls}.${cost}`;
 	}
-	return `${prefix} ${elapsed}.${calls}.${formatCostWithQuality(totals.costUsd, totals.costQuality, totals.hasEstimatedCost)}`;
+	return `Turn ${formatElapsed(elapsedSeconds)}.${calls}.${cost}`;
 }
 
 export function formatUsageBreakdownFromLedger(models: ReadonlyMap<string, LedgerTotals>): string[] {

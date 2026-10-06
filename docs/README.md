@@ -21,11 +21,12 @@
 
 实施时的设计记录，可作为实现背景参考。**与代码冲突时一律以代码及其注释为准**——每份文档的抬头都注明了它的状态与已知偏差。
 
-### 待实施方案
+### 用量对账方案与执行状态
 
 | 文档 | 说明 | 状态 |
 | --- | --- | --- |
-| [2026-10-06-usage-accounting-reconciliation-design.md](./superpowers/specs/2026-10-06-usage-accounting-reconciliation-design.md) | 用量统计优化：All / Turn 费用与对账视图、当前会话历史恢复、实时 / 回放 / 旧账本统一去重、新版 Pi 独立 usage 入口与有界核对 | 仅方案落盘，未实施；先展示与对账，再身份去重、历史恢复和新版适配，不默认开启持久化或扩大 peer 范围 |
+| [2026-10-06-usage-accounting-reconciliation-design.md](./superpowers/specs/2026-10-06-usage-accounting-reconciliation-design.md) | 用量统计优化：All / Turn 费用与对账视图、当前会话历史恢复、实时 / 回放 / 旧账本统一去重、新版 Pi 独立 usage 入口与有界核对 | 冻结设计原文；仅 P0 展示与只读对账已实施，P1/P2 尚未实施，不默认开启持久化或扩大 peer 范围 |
+| [2026-10-06-usage-accounting-execution.md](./superpowers/plans/2026-10-06-usage-accounting-execution.md) | 隔离基线、模块依赖、P0 调整、实际 focused 验证与后续门禁阻塞 | 80 项 focused 测试及 typecheck 通过；未构建、安装或认证 R1/R2/R3 |
 
 ### 本次实施记录
 
