@@ -3,7 +3,7 @@ import type { UsageObservationV1 } from "./contract.js";
 import { UsageLedger, usageIdentity, usageSnapshotGroup, type CoverageRow, type LedgerTotals } from "./ledger.js";
 import { isUsageCategoryEnabled, isUsagePersistEnabled, USAGE_LIMITS, type UsagePolicy, type UsageSwitchCategory } from "./policy.js";
 import { entryUsageId, observationFromAssistantMessage, observationFromLegacyRecord, type ObservationIdentity } from "./legacy-adapter.js";
-import { parseMetaSourceKeyGranularity, restoreSubagentIngestState, type SubagentUsageRecord } from "../tps-subagent.js";
+import { isUnprovenMetaObservation, normalizeRunIdForSourceKey, parseMetaSourceKeyGranularity, restoreSubagentIngestState, type SubagentUsageRecord } from "../tps-subagent.js";
 import { createUsagePersist, persistToLedgerState, type UsagePersist } from "./persist.js";
 import { declaredExternalCoverage } from "./adapters/external.js";
 
@@ -47,12 +47,12 @@ export class UsageCollector {
 	finishRecovery(): void { this.recoveryState = this.gaps.size ? "partial" : "ready"; }
 
 	bindRun(runId: string, originTurnId = this.originTurnId): void {
-		const id = runId.trim();
-		if (!id || this.runOrigin.has(id)) return;
+		const id = normalizeRunIdForSourceKey(runId);
+		if (!id || this.runOrigin.has(id) || originTurnId === "unassigned" || originTurnId === "history") return;
 		if (this.runOrigin.size >= USAGE_LIMITS.maxMemoryObservations) { this.noteGap("ownership-capacity"); return; }
 		this.runOrigin.set(id, assignableOriginTurnId(originTurnId));
 	}
-	originForRun(runId: string | undefined): string { return runId ? this.runOrigin.get(runId) ?? "unassigned" : "unassigned"; }
+	originForRun(runId: string | undefined): string { return runId ? this.runOrigin.get(normalizeRunIdForSourceKey(runId)) ?? "unassigned" : "unassigned"; }
 	enabled(category: UsageSwitchCategory, sourceId?: Parameters<typeof isUsageCategoryEnabled>[2]): boolean { return isUsageCategoryEnabled(category, this.policy, sourceId); }
 
 	/** Legacy API retained for old adapters; runtime parents use the entry method. */
@@ -85,7 +85,7 @@ export class UsageCollector {
 		if (records.length > USAGE_LIMITS.perTickEvents) { this.noteGap("batch-capacity"); return 0; }
 		let accepted = 0;
 		for (const record of records) {
-			const stored = [...this.archive.values()].filter((o) => o.executionId === record.sourceKey);
+			const stored = [...this.archive.values()].filter((o) => o.executionId === record.sourceKey && !isUnprovenMetaObservation(o));
 			if (historical && stored.length && stored.every((o) => !(o.source.runner === "legacy" && o.kind === "snapshot" && o.executionId.startsWith("tool:")))) {
 				// Proven tool/entry association preserves the old identity, amount and quality.
 				this.ledger.ingestBatch(stored);
@@ -95,12 +95,15 @@ export class UsageCollector {
 			const partitions = record.modelBreakdown ?? [record];
 			if (partitions.length > USAGE_LIMITS.perTickEvents) { this.noteGap("batch-capacity"); continue; }
 			const parsedRun = parseMetaSourceKeyGranularity(record.sourceKey)?.runId;
-			const origin = (parsedRun && this.runOrigin.get(parsedRun)) || (runId && this.runOrigin.get(runId)) || fallbackOriginTurnId;
+			const origin = [this.originForRun(parsedRun), this.originForRun(runId)].find((id) => id !== "unassigned") ?? fallbackOriginTurnId;
+			const runner = category !== "pi-subagents" ? category
+				: record.revisionSource === "meta" ? (record.metaIndexless ? "pi-subagents-meta-indexless" : "pi-subagents-meta-indexed")
+				: record.trustedFinal && record.revisionSource === "completion" ? "pi-subagents-completion" : category;
 			const observations: UsageObservationV1[] = [];
 			for (const partition of partitions) {
 				const obs = observationFromLegacyRecord({ ...partition, sourceKey: record.sourceKey }, {
 					...this.identity(record.sourceKey, observedAt, origin), executionId: record.sourceKey,
-					runId: parsedRun ?? runId ?? record.sourceKey, childId: record.sourceKey, runner: category,
+					runId: parsedRun ?? runId ?? record.sourceKey, childId: record.sourceKey, runner,
 				}, record.revision ? { kind: "snapshot", snapshotEpoch: record.sourceKey, revision: record.revision } : undefined);
 				if (!obs) break;
 				if (record.modelBreakdown && obs.kind === "response") obs.callId = `${record.sourceKey}:model:${partition.modelLabel}`;
@@ -147,6 +150,7 @@ export class UsageCollector {
 		this.restored = true;
 		const ingestState = restoreSubagentIngestState(this.archivedObservations());
 		for (const obs of this.archive.values()) {
+			if (isUnprovenMetaObservation(obs)) { this.noteGap("indexless-origin-unproven"); continue; }
 			if (parseMetaSourceKeyGranularity(obs.executionId) && !ingestState.countedKeys.has(obs.executionId)) { this.noteGap("overlap-unresolved"); continue; }
 			if (obs.kind === "snapshot") this.noteGap("revision-baseline-unknown");
 			if (obs.source.runner === "parent-assistant" && !obs.callId?.startsWith("entry:")) this.legacyParentWindow = true;
@@ -168,6 +172,7 @@ export class UsageCollector {
 	}
 	private archivedAllowed(obs: UsageObservationV1): boolean {
 		const runner = obs.source.runner;
+		if (["pi-subagents-meta-indexed", "pi-subagents-completion"].includes(runner)) return this.enabled("pi-subagents");
 		if (["parent-assistant", "sync-subagent", "pi-subagents", "compaction", "tool-nested"].includes(runner)) return this.enabled(runner as UsageSwitchCategory);
 		if (runner !== "legacy") { this.noteGap("legacy-source-unresolved"); return false; }
 		if (/^(compact:|branch:)/.test(obs.executionId)) return this.enabled("compaction");

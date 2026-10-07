@@ -369,7 +369,7 @@ Reconciliation 只读比较插件 All 与当前 Pi 会话 `getEntries()` 中 ass
 
 恢复使用 entry/toolCallId 稳定身份，历史与未归属用量不塞入当前 Turn；新的 Turn 序号越过已恢复序号。队列最多 2048、待关联最多 256/30s，每片最多 200 条 / 256KiB / 50ms，状态只说明可见证据范围，不扫描其他会话文件。进度仅供展示，终态才进入 All；多模型分区整批提交，持久化通过完整 checkpoint 确认耐久。
 
-meta 与 tool 各自检查本入口的 revision，再按本会话接收顺序替换同 key 的账本记录，不比较 mtime 毫秒与工具计数器。无 revision 的完成事件仍保留既有去重边界。并行工具进度保留各 child 身份，每次有 usage 的进度快照替换该工具前一份进度；终态结果再统一替换进度。Coverage 的序号按 producer 独立递增，不把其他来源插入的观察误报为缺口。内存达 10,000 条且无法淘汰 provisional 时标 `partial · memory-exhausted`，与磁盘 `storage-exhausted` 分开；已知总量降为下界。账本未变化时，1s 状态刷新复用缓存投影。
+meta 与 tool 各自检查本入口的 revision，再按本会话接收顺序替换同 key 的账本记录，不比较 mtime 毫秒与工具计数器。通过会话 ownership 校验的完成事件即使没有 source revision，也会原子替换此前恢复的同执行快照；重复完成事件与后续 meta 不再替换这份终态，多模型分区不会残留旧模型。并行工具进度保留各 child 身份，每次有 usage 的进度快照替换该工具前一份进度；终态结果再统一替换进度。Coverage 的序号按 producer 独立递增，不把其他来源插入的观察误报为缺口。内存达 10,000 条且无法淘汰 provisional 时标 `partial · memory-exhausted`，与磁盘 `storage-exhausted` 分开；已知总量降为下界。账本未变化时，1s 状态刷新复用缓存投影。
 
 | 模式 | `/calls` |
 | --- | --- |
@@ -380,9 +380,10 @@ meta 与 tool 各自检查本入口的 revision，再按本会话接收顺序替
 ### 统计范围
 
 - 父会话 assistant 用量在 `message_end` 时统计；跳过本插件 `preprocessAssistantMessage` 补零。Pi SDK 已预建的 0 当 unknown，不把缺省字段当成已上报。
-- 子代理与压缩/工具用量按**启动时所在父轮**归入 This turn，不按数据稍后到达时的轮次。会话开始后、第一轮 `before_agent_start` 之前观察到的 run 归入第一轮。
+- 有可信启动证据的子代理与工具用量按**启动时所在父轮**归入 This turn，不按数据稍后到达时的轮次；UUID 的大小写/连字符在绑定与查询时一致归一，完成事件中不同 ID 的 child 沿用已证明的父 run 归属。没有启动证据的完成事件只计 All/未归属；第一轮前明确启动的 run 仍归第一轮。
 - 同步 pi `subagent` / Cursor `Task` 工具结果与 `_meta.json` 汇总计入同一计数器；扫描 `.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧版 `.pi-subagents/artifacts` 及会话文件旁的 `subagent-artifacts/`。
 - async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 事件旁路采集：数字取事件自带的 `usage` / `modelAttempts` / `totalCost` / `tokens`，事件没带就等上一条那三个目录里的 `_meta.json`。pi-subagents 0.69 的 `bg_wait` 是 management projection：只读取已经由当前会话受信路径观察过的 completion child，忽略 pooled 顶层 `usage` 和 `details.results`，不从 wait 结果新绑定 run。进行中的 `tool_execution_update` 若自带 usage 也会入账；同一 `toolCallId` 的 `tool_execution_end` 会换掉这份进行中进度（即使两边因载荷形状不同而 sourceKey 不一致）。同一 `_meta.json` 仅在 **该文件** mtime 变新时替换自己先前的快照，已被跨粒度丢弃的 sibling 不会因为文件又增长而重新入账。**无 revision 的完成事件一旦占住同一 `sourceKey`，后续 meta 不再替换**（先到者胜，防双计）；只有事件没带数字时才等 meta。普通 0.69 child 按 parent-run + flat index 归一；无 index 的 meta 只有在同一 parent/agent 没有其他 indexed child 时才映射为 index 0，否则 fail-closed。**不读 pi-subagents 临时目录里的 `status.json`，也不扫子会话 `session.jsonl`**——两者在默认布局下都落在工作区之外（asyncDir 在 `os.tmpdir()`、子会话在 `~/.pi/`），而这两条兜底当初就限定只读工作区内的路径，实际从未生效，已连同那道门禁一起删除。
+- indexless meta 的唯一性是本次扫描的证据，不能直接跨重启沿用。存档通过既有 `source.runner` 区分 indexed、indexless 与 completion，不修改 v1 字段集合。恢复时 indexless 及旧版无法区分来源的 child-0 snapshot 保留在存档但暂不计入，标 `indexless-origin-unproven`；只有新的受信证据才能重新计量，已撤销的推断不会因重载或来源开关切换复活。明确 indexed 与 completion 记录正常恢复。
 - 事件里的 `sessionId` 可能是裸 ID、会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。
 - 子代理的**费用**只在上游报了金额时才有：按 `usage.cost` → `modelAttempts[].usage.cost` 之和 → `totalCost.costUsd` 的顺序取第一个有值的，原样采用；只报到 token（`tokens` / `totalTokens`）时，**token 照记、费用显示 unknown（`?`）**，不按父模型的费率倒推。所以 `/calls` 里子代理行的费用偏低是预期行为，不代表 token 漏算。
 - 任何按 pi 约定在工具结果顶层挂 `usage` 的工具（不限于某个具体扩展），其用量都会计入。结果自报模型时按 `<provider>/<模型>` 分行——与父模型同名时并入同一行；未自报模型时记为 `tool/<工具名>`；若也没有可确认的自报费用，则费用显示 `?`。Pi-compatible numeric `usage.cost` 与完整 `{input, output, cacheRead, cacheWrite, total}` object（含 total 为 0）标为来源自报 `reported`；缺失 cost 才在命中明确 pricing rule/registry 时 `estimated`，未知 model/provider 不套默认费率，部分/非法 object 保持 `unknown`。已被子代理路径认领或计了会重复的工具名不在此列：`subagent`、`task`、`bg_wait`、`subagent_wait`、`subagent_supervisor`、`intercom`，以及 `@tintinweb/pi-subagents` 的 `Agent` / `get_subagent_result` / `steer_subagent`。
@@ -394,9 +395,9 @@ meta 与 tool 各自检查本入口的 revision，再按本会话接收顺序替
 - 设 `LLMGATES_TPS_SUBAGENT=0` 可关闭子代理旁路与 meta 扫描（父模型与同步 `subagent` / Cursor `Task` 工具结果仍统计）。
 - 设 `LLMGATES_TPS_COMPACTION=0` 可关闭压缩 / 分支摘要统计。
 - 设 `LLMGATES_TPS_TOOL_USAGE=0` 可关闭通用工具结果用量统计（`subagent` / Cursor `Task` 仍统计）。
-- 用量聚合通过异步任务链排序，不触发额外模型调用；计数只在交互式父会话（TUI）进行。未开持久化时重载/重启不恢复用量。第三方运行器与外部 CLI **不是已支持清单**：Coverage 里它们标 `unavailable` / unverified（EventBus 只做 fail-closed probe，usage 形 payload 不进 All）。**空会话会预列 CLI/job/runs 三行 S4 占位**（不是已装运行器）；tintinweb 一类 npm probe 只有收到对应事件才出现。调研清单的目录匹配项不是兼容认证。
+- 用量聚合通过异步任务链排序，不触发额外模型调用；计数只在交互式父会话（TUI）进行。未开持久化时仅恢复当前会话公开条目能证明的用量，不承诺恢复纯旁路历史。第三方运行器与外部 CLI **不是已支持清单**：Coverage 里它们标 `unavailable` / unverified（EventBus 只做 fail-closed probe，usage 形 payload 不进 All）。**空会话会预列 CLI/job/runs 三行 S4 占位**（不是已装运行器）；tintinweb 一类 npm probe 只有收到对应事件才出现。调研清单的目录匹配项不是兼容认证。
 
-持久化目前仍是可选能力：每次追加会同步核对整个 usage 目录容量；尚无已闭合 root 的自动保留期清理。完整 checkpoint 超过 256KiB 时保留原 checkpoint/journal 并跳过写入，长会话可能最终触及单 root 8MiB 或全局 64MiB 上限。写入重试、orphan 队列与每 tick 读预算尚未实现。这些限制须在默认开启持久化前由独立专项解决；当前不承诺自动轮转或自动恢复写入。
+持久化目前仍是可选能力：每次追加会同步核对整个 usage 目录容量；尚无已闭合 root 的自动保留期清理。完整 checkpoint 超过 256KiB 时保留原 checkpoint/journal 并跳过写入，长会话可能最终触及单 root 8MiB 或全局 64MiB 上限。恢复队列与切片限制见上文；持久化写入重试尚未实现。这些限制须在默认开启持久化前由独立专项解决；当前不承诺自动轮转或自动恢复写入。
 
 ### 定价数据
 
