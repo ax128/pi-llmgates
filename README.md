@@ -361,13 +361,13 @@ TUI 扩展状态行：
 
 状态行段末的红色 `.xN`（例如 `All(partial) 100c.~$18.10.x3, Turn 30m.20c.~$10.10.x1`）是 [上游响应模型审计](#上游响应模型审计) 的不一致次数，与用量无关，0 时不显示。
 
-`/calls` 查看 per-model 明细。This session 在本轮尚未 settle 时也含本轮已确认数字。This turn / This session / Coverage / Reconciliation 都固定为打开菜单那一瞬间的快照，不随后台更新而改变；live 总额仍看状态行。Coverage 单列采集起点、待处理数与配置排除。
+`/calls` 查看 per-model 明细。This session 在本轮尚未 settle 时也含本轮已确认数字。This turn / This session / Coverage / Reconciliation 都固定为打开菜单那一瞬间的快照，不随后台更新而改变；live 总额仍看状态行。Coverage 单列采集起点、待处理数与配置排除。打开 `/calls` 会请求恢复协调器核对公开条目边界；未追平时标 pending，不输出精确残差，已打开的菜单不会被补账结果改写。
 
 Reconciliation 只读比较插件 All 与当前 Pi 会话 `getEntries()` 中 assistant、toolResult、压缩及分支摘要的原始 `cost.total` 小计（0.81.1 基线合同，包含其他树分支；不代表新的跨版本认证）。不按当前价格重估、不写账、不扫描其他会话、不新增 watcher。每次菜单最多解析 200 条 / 50ms；`getEntries()` 本身的同步浅复制不能抢占，长会话可能阻塞这一获取步骤。未读全、费用非法或遇到未适配的独立 usage 时，明确标为「Native checked subtotal」及 partial/unknown，不冒充 Pi 完整累计。有采集积压时不等待任务链或分解精确差额；其余差额仍叫 unexplained，不认定漏算或追平目标。两边范围、本地估价与原始费用可能不同；仅凭稳定父 entry 身份分类本地估价差异，以及可证明的配置类别排除；其他差额保留 unexplained。历史恢复未完成或有缺口时不输出精确残差。比较使用未舍入金额，容差为 `max(1e-9 USD, 1e-9 × max(|a|, |b|))`。`LLMGATES_TPS=0` 时不枚举历史，非 TUI 降级行为不变。
 
 状态行、`/calls` 标题与模型明细采用同一质量口径：缺失指标不会被其他记录的已知数字掩盖。金额可显示 `~$0.010 + ?`，token 可显示 `10 + ?`；完全未知显示 `?`。本地估算保留 `~`，协议自报数字费用为 reported，无法辨认来源的旧金额保持 unknown。All / Turn 金额采用相同精度；小于 $0.0001 的正费用显示三位有效数字（必要时科学记数），不舍入成免费。多模型 `modelAttempts` 保留各模型分行；同一快照的新 revision 替换整组旧模型分区。
 
-恢复使用 entry/toolCallId 稳定身份，历史与未归属用量不塞入当前 Turn；新的 Turn 序号越过已恢复序号。队列最多 2048、待关联最多 256/30s，每片最多 200 条 / 256KiB / 50ms，状态只说明可见证据范围，不扫描其他会话文件。进度仅供展示，终态才进入 All；多模型分区整批提交，持久化通过完整 checkpoint 确认耐久。
+恢复使用 entry/toolCallId 稳定身份，历史与未归属用量不塞入当前 Turn；新的 Turn 序号越过已恢复序号。队列最多 2048、待关联最多 256/30s，每片最多 200 条 / 256KiB / 50ms；存档合并与投影恢复也检查时间预算及会话取消，不逐条复制全量存档。状态只说明可见证据范围，不扫描其他会话文件。进度仅供展示，终态才进入 All；多模型分区整批提交，持久化通过完整 checkpoint 确认耐久。
 
 meta 与 tool 各自检查本入口的 revision，再按本会话接收顺序替换同 key 的账本记录，不比较 mtime 毫秒与工具计数器。通过会话 ownership 校验的完成事件即使没有 source revision，也会原子替换此前恢复的同执行快照；重复完成事件与后续 meta 不再替换这份终态，多模型分区不会残留旧模型。并行工具进度保留各 child 身份，每次有 usage 的进度快照替换该工具前一份进度；终态结果再统一替换进度。Coverage 的序号按 producer 独立递增，不把其他来源插入的观察误报为缺口。内存达 10,000 条且无法淘汰 provisional 时标 `partial · memory-exhausted`，与磁盘 `storage-exhausted` 分开；已知总量降为下界。账本未变化时，1s 状态刷新复用缓存投影。
 

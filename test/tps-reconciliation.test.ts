@@ -120,6 +120,26 @@ describe("/calls reconciliation snapshots", () => {
 		} finally { await r.emit("session_shutdown"); }
 	});
 
+	it("uses /calls as a recovery boundary while keeping the open snapshot read-only", async () => {
+		const r = runtime();
+		try {
+			await r.emit("session_start"); await tick();
+			r.setEntries([{ type: "message", id: "missed-event", parentId: null, message: assistant(3) }]);
+			r.choose(async (title) => title === "Usage scope" ? "Reconciliation" : undefined);
+			await r.calls();
+			const first = r.menus.at(-1)!.options.join("\n");
+			expect(first).toContain("Plugin All: $0.000");
+			expect(first).toContain("Native checked subtotal: $3.00");
+			expect(first).toContain("Collection has not caught up");
+			expect(first).toContain("Unexplained difference: unknown");
+			await tick(); await tick();
+			await r.calls();
+			expect(r.menus.at(-1)!.options.join("\n")).toContain("Plugin All: ~$3.00");
+			expect(r.getEntries).toHaveBeenCalledTimes(3); // startup + two commands, no extra full copy
+			expect(first).toContain("Plugin All: $0.000"); // the earlier menu never changes
+		} finally { await r.emit("session_shutdown"); }
+	});
+
 	it("reports backlog instead of waiting for it or claiming an exact difference", async () => {
 		const r = runtime();
 		try {

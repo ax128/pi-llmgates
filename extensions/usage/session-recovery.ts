@@ -39,6 +39,7 @@ export class SessionRecovery {
 		onChange: () => void;
 	}) {}
 	get pendingCount(): number { return this.queue.length + this.pending.length; }
+	get hasPendingRecovery(): boolean { return !this.initialized || Boolean(this.entries) || this.boundaryDirty || this.leafDirty || this.draining; }
 	private owns(): boolean { return !this.cancelled && this.options.isOwner(); }
 	async start(): Promise<void> {
 		this.collector.recoveryState = "recovering";
@@ -108,11 +109,25 @@ export class SessionRecovery {
 		if (this.closing || !this.owns()) return;
 		this.boundaryDirty = true; this.leafDirty = true; this.schedule();
 	}
-	private capture(initial = false): void {
+	/** Reuse the command's public snapshot without ingesting on the UI stack. */
+	reconcileSnapshot(snapshot: readonly unknown[]): void {
+		if (this.closing || !this.owns()) return;
+		// Public session entries are append-only. Equal cardinality means every
+		// current entry identity has been processed; no second copy is needed.
+		if (!this.entries && snapshot.length === this.seen.size) {
+			this.boundaryDirty = false;
+			if (this.boundaryTimer) { clearTimeout(this.boundaryTimer); this.boundaryTimer = undefined; }
+			return;
+		}
+		this.collector.recoveryState = "recovering";
+		this.boundary();
+		if (!this.entries && Date.now() >= this.lastSnapshot + USAGE_LIMITS.reconcileIntervalMs) this.capture(false, snapshot);
+	}
+	private capture(initial = false, suppliedSnapshot?: readonly unknown[]): void {
 		if (this.entries || !this.owns()) { this.boundaryDirty = true; return; }
 		this.lastSnapshot = Date.now(); this.boundaryDirty = false;
 		try {
-			const snapshot = this.manager.getEntries();
+			const snapshot = suppliedSnapshot ?? this.manager.getEntries();
 			if (snapshot.length > USAGE_LIMITS.maxMemoryObservations) this.collector.noteGap("entry-index-capacity");
 			this.entries = snapshot.length > USAGE_LIMITS.maxMemoryObservations ? snapshot.slice(0, USAGE_LIMITS.maxMemoryObservations) : snapshot;
 			this.cursor = 0;
@@ -222,7 +237,7 @@ export class SessionRecovery {
 					this.boundaryTimer.unref?.();
 				}
 			}
-			if (!this.entries && !this.queue.length) this.collector.finishRecovery();
+			if (!this.entries && !this.queue.length && !this.leafDirty) this.collector.finishRecovery();
 			if (this.owns() && !this.closing && (count > 0 || previousState !== this.collector.recoveryState)) this.options.onChange();
 		} catch { this.collector.noteGap("recovery-task-failed"); }
 		finally {

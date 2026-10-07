@@ -107,6 +107,13 @@ git diff --check
 - 首次 push 的 Linux CI 暴露 3 个既有 TPS fixture 的 `setTimeout(0)` 等待竞态（另一 pull_request check 通过）：两个用例未等采集切片结束就打开菜单，另一个在关联完成前把模拟 Date 推进 100s，误触发 30s TTL。仅将这些等待改为有界 setImmediate drain，金额、次数和归属断言不变；`tps-runtime` / `tps-ui` / 新回归共 **3 文件 / 41 项**复测通过，typecheck/diff check 通过。
 - 本次没有重跑全量测试/build、多版本 SDK 安装/runtime 或发布门禁；前述 runtime 记录是原 PR 的历史验证，不是本次修复后的重新认证。
 
+### 2026-10-07：合并前补强恢复预算与菜单边界
+
+- 存档以受影响 identity/group 增量合并，不逐行重建完整 Map；恢复存档和投影均检查 50ms/200 项预算并在让出后复核 owner。取消中的不完整存档仍只读，不能 checkpoint。
+- `/calls` 将已有公开快照交给恢复协调器请求合并边界核对；未处理的恢复工作计入 pending，菜单不等待、不直接入账，四个视图仍固定于同一个同步捕获段。
+- 定向 7 文件 / 83 项通过（recovery-storage、persist、collector、session-recovery、tps-reconciliation、tps-runtime、tps-ui）；typecheck 通过。新增慢片/取消和无事件公开条目的菜单补扫回归。LSP 在缺依赖时缓存了解析错误，补齐 worktree 依赖链接后仍未刷新，未当成通过；以实际 tsc 为准。
+- 同一临时 8,000 行 journal 的专项采样：修复前恢复约 2.3s / 最大事件循环间隔 132ms，修复后约 198ms / 7.7ms。仅本机合成采样，不承诺跨设备绝对时延。未进行本地全量测试/build、多版本 runtime 或发布门禁。
+
 ### 保留限制/偏差
 
 - v1 checkpoint 上限 **256KiB**，不是 journal 的 8MiB；超限保留旧文件与 pending-durable，不通过调大限额绕过门禁。公开 getEntries 浅复制仍不可抢占。
