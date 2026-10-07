@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { UsageCollector } from "../extensions/usage/collector.js";
 import { UsageLedger } from "../extensions/usage/ledger.js";
 import { observationFromLegacyRecord } from "../extensions/usage/legacy-adapter.js";
@@ -11,6 +11,36 @@ const identity = { rootSessionId: "root", sessionId: "root", originTurnId: "turn
 const row = () => observationFromLegacyRecord({ sourceKey: "compact:e1", modelLabel: "fixture", input: 3, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 7, costQuality: "estimated", calls: 1 }, identity)!;
 
 describe("recovery archive safety gates", () => {
+	it.each(["archive", "projection"])("yields and honors cancellation inside a slow %s batch", async (phase) => {
+		const temp = withTempAgentDir();
+		const persist = new FsUsagePersist(temp.agentDir, "root");
+		mkdirSync(persist.rootDir, { recursive: true });
+		const rows = Array.from({ length: 40 }, (_, i) => ({ ...row(), callId: `call-${i}`, sequence: i + 1 }));
+		const journal = rows.map((obs) => JSON.stringify(obs)).join("\n") + "\n";
+		writeFileSync(persist.journalPath, journal);
+		const collector = new UsageCollector("root", "root", resolveUsagePolicy(""), persist);
+		let owner = true, clock = 0, countAtYield = 0;
+		const now = vi.spyOn(performance, "now").mockImplementation(() => phase === "archive" ? (clock += 20) : clock);
+		const ingest = collector.ledger.ingest.bind(collector.ledger);
+		const project = vi.spyOn(collector.ledger, "ingest").mockImplementation((obs) => {
+			clock += USAGE_LIMITS.perTickMs;
+			if (project.mock.calls.length === 1 && phase === "projection") setImmediate(() => {
+				countAtYield = collector.ledger.observations().length; owner = false;
+			});
+			return ingest(obs);
+		});
+		if (phase === "archive") setImmediate(() => { countAtYield = collector.archivedObservations().length; owner = false; });
+		try {
+			await collector.restorePersistedBatches(() => owner);
+			expect(countAtYield).toBeGreaterThan(0);
+			expect(countAtYield).toBeLessThan(rows.length);
+			expect(phase === "archive" ? collector.archivedObservations().length : collector.ledger.observations().length).toBe(countAtYield);
+			await collector.checkpointAndClose();
+			expect(persist.isReadOnly()).toBe(true);
+			expect(readFileSync(persist.journalPath, "utf8")).toBe(journal);
+		} finally { now.mockRestore(); project.mockRestore(); await collector.checkpointAndClose(); temp.cleanup(); }
+	});
+
 	it.each(["legacy", "pi-subagents", "pi-subagents-meta-indexless"])("quarantines unproven child-zero provenance (%s) without rewriting archived evidence", async (runner) => {
 		const temp = withTempAgentDir();
 		const persist = new FsUsagePersist(temp.agentDir, "root");

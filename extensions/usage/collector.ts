@@ -18,6 +18,7 @@ export class UsageCollector {
 	private readonly sequences = new Map<string, number>();
 	private readonly runOrigin = new Map<string, string>();
 	private readonly archive = new Map<string, UsageObservationV1>();
+	private readonly archiveGroups = new Map<string, { revision: number; keys: Set<string> }>();
 	private readonly pendingDurable = new Map<string, UsageObservationV1>();
 	private readonly gaps = new Map<string, number>();
 	private extraCoverage: CoverageRow[] = [];
@@ -122,16 +123,29 @@ export class UsageCollector {
 		if (!this.persist.enabled || this.restored) return;
 		if (!this.persist.acquireWriter()) this.persist.protect("writer-unavailable");
 		for (const obs of this.persist.load()) this.restoreRow(obs);
-		this.finishRestore();
+		for (const _ of this.finishRestore()) { /* synchronous compatibility path */ }
 	}
 	async restorePersistedBatches(isOwner: () => boolean): Promise<void> {
 		if (!this.persist.enabled || this.restored) return;
 		if (!this.persist.acquireWriter()) this.persist.protect("writer-unavailable");
+		let count = 0, deadline = performance.now() + USAGE_LIMITS.perTickMs;
+		const yieldSlice = async () => {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			count = 0; deadline = performance.now() + USAGE_LIMITS.perTickMs;
+		};
 		for await (const rows of this.persist.loadBatches()) {
-			if (!isOwner()) return;
-			for (const obs of rows) this.restoreRow(obs);
+			for (const obs of rows) {
+				if (!isOwner()) return;
+				this.restoreRow(obs);
+				if (++count >= USAGE_LIMITS.perTickEvents || performance.now() >= deadline) await yieldSlice();
+			}
 		}
-		if (isOwner()) this.finishRestore();
+		if (!isOwner()) return;
+		const projection = this.finishRestore();
+		while (isOwner() && !projection.next().done) {
+			if (++count >= USAGE_LIMITS.perTickEvents || performance.now() >= deadline) await yieldSlice();
+		}
+		projection.return();
 	}
 	private restoreRow(obs: UsageObservationV1): void {
 		if (obs.rootSessionId !== this.rootSessionId) { this.persist.protect("identity-conflict"); return; }
@@ -146,10 +160,10 @@ export class UsageCollector {
 		if (turn) this.turnSeq = Math.max(this.turnSeq, Number(turn[1]));
 		if (obs.runId && obs.source.runner !== "parent-assistant") this.bindRun(obs.runId, obs.originTurnId);
 	}
-	private finishRestore(): void {
-		this.restored = true;
+	private *finishRestore(): Generator<void, void> {
 		const ingestState = restoreSubagentIngestState(this.archivedObservations());
 		for (const obs of this.archive.values()) {
+			yield;
 			if (isUnprovenMetaObservation(obs)) { this.noteGap("indexless-origin-unproven"); continue; }
 			if (parseMetaSourceKeyGranularity(obs.executionId) && !ingestState.countedKeys.has(obs.executionId)) { this.noteGap("overlap-unresolved"); continue; }
 			if (obs.kind === "snapshot") this.noteGap("revision-baseline-unknown");
@@ -158,7 +172,10 @@ export class UsageCollector {
 			if (this.archivedAllowed(obs)) this.ledger.ingest(obs);
 		}
 		const projected = new Map(this.ledger.observations().map((o) => [usageIdentity(o), o]));
-		for (const key of this.archive.keys()) if (projected.has(key)) this.archive.set(key, projected.get(key)!);
+		for (const key of this.archive.keys()) {
+			yield;
+			if (projected.has(key)) this.archive.set(key, projected.get(key)!);
+		}
 		if (this.legacyParentWindow) this.noteGap("legacy-overlap-unresolved");
 		if (this.persist.loadGap()) {
 			this.noteGap(this.persist.loadGap()!);
@@ -169,6 +186,7 @@ export class UsageCollector {
 		this.updatePersistState();
 		// Do not present the last historical turn as a new task.
 		this.originTurnId = PRE_TURN_ID;
+		this.restored = true;
 	}
 	private archivedAllowed(obs: UsageObservationV1): boolean {
 		const runner = obs.source.runner;
@@ -216,20 +234,34 @@ export class UsageCollector {
 	turnModelStats(origin = this.originTurnId) { return this.ledger.finalizedModelStats({ originTurnId: origin === PRE_TURN_ID ? "no-current-turn" : origin }); }
 
 	private archiveRows(rows: readonly UsageObservationV1[]): boolean {
-		const next = new Map(this.archive);
+		// Stage only the touched identities/groups. Loading N independent journal
+		// rows must not copy the entire growing archive N times.
+		const updates = new Map<string, UsageObservationV1>();
+		const removed = new Set<string>();
+		const groups = new Map<string, { revision: number; keys: Set<string> }>();
 		for (const obs of rows) {
-			const group = usageSnapshotGroup(obs);
-			let stale = false;
-			if (group) for (const [key, old] of next) {
-				if (usageSnapshotGroup(old) !== group) continue;
-				if ((old.revision ?? old.sequence) > (obs.revision ?? obs.sequence)) stale = true;
-				if ((old.revision ?? old.sequence) < (obs.revision ?? obs.sequence)) next.delete(key);
+			const key = usageIdentity(obs), revision = obs.revision ?? obs.sequence;
+			const groupKey = usageSnapshotGroup(obs);
+			if (groupKey) {
+				const current = groups.get(groupKey) ?? this.archiveGroups.get(groupKey);
+				if (current && current.revision > revision) continue;
+				if (current && current.revision < revision) for (const oldKey of current.keys) {
+					updates.delete(oldKey); removed.add(oldKey);
+				}
+				const group = groups.get(groupKey)?.revision === revision ? groups.get(groupKey)!
+					: { revision, keys: new Set(current?.revision === revision ? current.keys : []) };
+				group.keys.add(key); groups.set(groupKey, group);
 			}
-			const old = next.get(usageIdentity(obs));
-			if (!stale && (!old || (old.revision ?? old.sequence) <= (obs.revision ?? obs.sequence))) next.set(usageIdentity(obs), obs);
+			const old = updates.get(key) ?? (removed.has(key) ? undefined : this.archive.get(key));
+			if (!old || (old.revision ?? old.sequence) <= revision) updates.set(key, obs);
 		}
-		if (next.size > USAGE_LIMITS.maxMemoryObservations) { this.noteGap("memory-exhausted"); this.persist.protect("load-budget-exceeded"); return false; }
-		this.archive.clear(); for (const [key, obs] of next) this.archive.set(key, obs);
+		let size = this.archive.size;
+		for (const key of removed) if (this.archive.has(key)) size--;
+		for (const key of updates.keys()) if (removed.has(key) || !this.archive.has(key)) size++;
+		if (size > USAGE_LIMITS.maxMemoryObservations) { this.noteGap("memory-exhausted"); this.persist.protect("load-budget-exceeded"); return false; }
+		for (const key of removed) this.archive.delete(key);
+		for (const [key, obs] of updates) this.archive.set(key, obs);
+		for (const [key, group] of groups) this.archiveGroups.set(key, group);
 		return true;
 	}
 	private acceptBatch(observations: readonly UsageObservationV1[], durable: boolean): boolean {

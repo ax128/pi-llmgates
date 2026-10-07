@@ -666,7 +666,6 @@ export default function (pi: ExtensionAPI) {
 		if (collector) {
 			const plugin = collector.sessionTotals();
 			const projectionVersion = collector.ledger.version;
-			const pending = recovery?.pendingCount ?? 0;
 			let native: NativeCostSnapshot | undefined;
 			let classified: ReturnType<typeof classifyCostDifferences> | undefined;
 			// getEntries() itself is a synchronous O(N) shallow copy and cannot be
@@ -674,11 +673,13 @@ export default function (pi: ExtensionAPI) {
 			const deadline = performance.now() + USAGE_LIMITS.perTickMs;
 			try {
 				const entries = ctx.sessionManager.getEntries();
+				recovery?.reconcileSnapshot(entries);
 				native = summarizeNativeCosts(entries, { deadline });
 				if (native.complete && performance.now() < deadline) classified = classifyCostDifferences(entries, collector.ledger.observations(), sessionId, collector.policy);
 			} catch {
 				// Missing/failed public API is unavailable, not a zero native total.
 			}
+			const pending = (recovery?.pendingCount ?? 0) + (recovery?.hasPendingRecovery ? 1 : 0);
 			const exclusions = formatPolicyExclusions(collector.policy);
 			coverage.unshift(
 				`History: ${collector.recoveryState}; current-session entries / archive; ${collector.gapReasons().join(", ") || "declared entry sources processed"}`,
