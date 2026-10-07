@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseSessionEntry } from "../extensions/usage/adapters/session-entries.js";
 import { UsageCollector } from "../extensions/usage/collector.js";
 import { createUsagePersist } from "../extensions/usage/persist.js";
@@ -130,6 +130,32 @@ describe("Pi 1.0.4 entry-only accounting", () => {
 		}
 		for (const kind of ["compaction", "tool_result", "subagent"]) expect(parseSessionEntry(standalone("u", kind), options()).gaps).toContain("session-usage-source-unresolved");
 		expect(parseSessionEntry({ ...standalone(), runId: "run" }, options()).candidates).toEqual([]);
+	});
+
+	it("stops idle and boundary retries when the entry index cannot grow", async () => {
+		vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const manager = SessionManager.inMemory();
+		for (let i = 0; i < 10_201; i++) manager.appendCustomEntry("fixture");
+		const snapshots = vi.spyOn(manager, "getEntries"), probes = vi.spyOn(manager, "getLeafEntry");
+		const collector = new UsageCollector(manager.getSessionId(), manager.getSessionId(), options().policy, createUsagePersist("", manager.getSessionId(), false));
+		const onChange = vi.fn();
+		const recovery = new SessionRecovery(collector, manager, { modernUsage: true, isOwner: () => true, onRestored() {}, onRecords() {}, onChange });
+		const drain = async () => { for (let i = 0; i < 100; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+		try {
+			await recovery.start(); await drain();
+			await vi.advanceTimersByTimeAsync(2000); await drain();
+			const redraws = onChange.mock.calls.length, leafReads = probes.mock.calls.length;
+			for (let i = 0; i < 3; i++) {
+				recovery.boundary(); await vi.advanceTimersByTimeAsync(2000); await drain();
+			}
+			expect(snapshots).toHaveBeenCalledTimes(1);
+			expect(probes).toHaveBeenCalledTimes(leafReads);
+			expect(onChange).toHaveBeenCalledTimes(redraws);
+			expect(collector.historyPartial).toBe(true);
+			expect(collector.gapReasons().join()).toContain("entry-index-capacity");
+			expect(recovery.hasPendingRecovery).toBe(false);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally { await recovery.stopAndDrain(); await collector.checkpointAndClose(); vi.useRealTimers(); }
 	});
 
 	it("V21/V14: idle leaf discovery never polls full snapshots and stops with its generation", async () => {

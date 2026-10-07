@@ -19,6 +19,7 @@ export class SessionRecovery {
 	private readonly queue: Array<{ run: () => void | Promise<void>; bytes: number; background: boolean }> = [];
 	private entries: readonly unknown[] | undefined;
 	private cursor = 0;
+	private entryDiscoveryStopped = false;
 	private lastSnapshot = -Infinity;
 	private boundaryDirty = false;
 	private leafDirty = false;
@@ -68,7 +69,7 @@ export class SessionRecovery {
 	noteAssistant(message: unknown, origin: string): void { this.addPending({ message, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
 	originForTool(toolCallId: string): string { return this.pending.find((p) => p.toolCallId === toolCallId)?.origin ?? this.nested.get(toolCallId)?.origin ?? "unassigned"; }
 	noteNestedTool(id: string, parentId: string, name: string): void {
-		if (this.closing || !this.owns()) return;
+		if (this.closing || this.entryDiscoveryStopped || !this.owns()) return;
 		if (!id || !parentId || id === parentId || id.length > 1024 || parentId.length > 1024 || name.length > 256 || this.nested.size >= USAGE_LIMITS.maxMemoryObservations) { this.collector.noteGap("nested-ownership-capacity"); return; }
 		const record = { parentId, rootId: this.nested.get(parentId)?.rootId ?? parentId, name: name.trim().toLowerCase(), origin: this.originForTool(parentId) };
 		const old = this.nested.get(id);
@@ -83,7 +84,7 @@ export class SessionRecovery {
 	noteEntry(entryId: string, origin: string): void { this.addPending({ entryId, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
 	setModel(model: { id?: string; provider?: string } | undefined): void { this.liveModel = model; }
 	private addPending(item: Pending): void {
-		if (this.closing || !this.owns()) return;
+		if (this.closing || this.entryDiscoveryStopped || !this.owns()) return;
 		this.expirePending();
 		if (this.pending.some((p) => item.message !== undefined ? p.message === item.message : item.entryId ? p.entryId === item.entryId : p.toolCallId === item.toolCallId)) return;
 		if (this.pending.length >= USAGE_LIMITS.maxPendingOrphans) { this.collector.noteGap("pending-capacity"); return; }
@@ -106,12 +107,12 @@ export class SessionRecovery {
 		}
 	}
 	boundary(): void {
-		if (this.closing || !this.owns()) return;
+		if (this.closing || this.entryDiscoveryStopped || !this.owns()) return;
 		this.boundaryDirty = true; this.leafDirty = true; this.schedule();
 	}
 	/** Reuse the command's public snapshot without ingesting on the UI stack. */
 	reconcileSnapshot(snapshot: readonly unknown[]): void {
-		if (this.closing || !this.owns()) return;
+		if (this.closing || this.entryDiscoveryStopped || !this.owns()) return;
 		// Public session entries are append-only. Equal cardinality means every
 		// current entry identity has been processed; no second copy is needed.
 		if (!this.entries && snapshot.length === this.seen.size) {
@@ -124,6 +125,7 @@ export class SessionRecovery {
 		if (!this.entries && Date.now() >= this.lastSnapshot + USAGE_LIMITS.reconcileIntervalMs) this.capture(false, snapshot);
 	}
 	private capture(initial = false, suppliedSnapshot?: readonly unknown[]): void {
+		if (this.entryDiscoveryStopped) return;
 		if (this.entries || !this.owns()) { this.boundaryDirty = true; return; }
 		this.lastSnapshot = Date.now(); this.boundaryDirty = false;
 		try {
@@ -139,8 +141,19 @@ export class SessionRecovery {
 		this.scheduled = setImmediate(() => { this.scheduled = undefined; void this.drain(); });
 		this.scheduled.unref?.();
 	}
+	private stopEntryDiscovery(): void {
+		if (this.entryDiscoveryStopped) return;
+		this.entryDiscoveryStopped = true;
+		this.collector.noteGap("entry-index-capacity");
+		this.entries = undefined; this.leafDirty = this.boundaryDirty = false;
+		this.pending.length = 0; this.nested.clear();
+		if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = undefined; }
+		if (this.boundaryTimer) { clearTimeout(this.boundaryTimer); this.boundaryTimer = undefined; }
+		if (this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = undefined; }
+	}
 	private leafSlice(): unknown[] {
 		const entries: unknown[] = [];
+		if (this.entryDiscoveryStopped) return entries;
 		try {
 			let entry = this.manager.getLeafEntry();
 			const walked = new Set<string>();
@@ -153,9 +166,9 @@ export class SessionRecovery {
 		return entries.reverse();
 	}
 	private process(entry: unknown): void {
-		if (!this.owns() || !isPlainObject(entry) || typeof entry.id !== "string") return;
+		if (this.entryDiscoveryStopped || !this.owns() || !isPlainObject(entry) || typeof entry.id !== "string") return;
 		if (this.seen.has(entry.id)) return;
-		if (this.seen.size >= USAGE_LIMITS.maxMemoryObservations) { this.collector.noteGap("entry-index-capacity"); return; }
+		if (this.seen.size >= USAGE_LIMITS.maxMemoryObservations) { this.stopEntryDiscovery(); return; }
 		this.seen.add(entry.id);
 		const historical = this.startupIds.has(entry.id);
 		const message = isPlainObject(entry.message) ? entry.message : undefined;
@@ -216,6 +229,7 @@ export class SessionRecovery {
 					const size = usageMetadataBytes(isPlainObject(entry) ? entry.message ?? entry : entry) ?? USAGE_LIMITS.perTickReadBytes;
 					if (bytes + size > USAGE_LIMITS.perTickReadBytes) { this.leafDirty = true; break; }
 					bytes += size; this.process(entry); count++;
+					if (this.entryDiscoveryStopped) break;
 				}
 			}
 			while (!this.closing && this.entries && this.cursor < this.entries.length && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {

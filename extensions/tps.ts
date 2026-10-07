@@ -45,7 +45,7 @@ import {
 import { envFlag } from "./util.js";
 import { createUsageCollector, type UsageCollector } from "./usage/collector.js";
 import { SessionRecovery } from "./usage/session-recovery.js";
-import { boundedUsageMetadata } from "./usage/adapters/session-entries.js";
+import { boundedUsageMetadata, runIdentifiedRecords } from "./usage/adapters/session-entries.js";
 import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, formatUsageScopeTitleFromLedger, replaceModelUsageStats } from "./usage/format.js";
 import { resolveUsagePolicy, USAGE_LIMITS } from "./usage/policy.js";
 import { classifyCostDifferences, formatPolicyExclusions, formatReconciliationLines, summarizeNativeCosts, type NativeCostSnapshot } from "./usage/reconciliation.js";
@@ -938,10 +938,19 @@ export default function (pi: ExtensionAPI) {
 			else usageCollector.noteGap("ownership-capacity");
 			usageCollector.bindRun(runId, toolOrigin);
 		}
-		const records = stampSnapshotRevision(
-			extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId),
-			nextUsageRevision(),
-		);
+		let dedicated = extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId);
+		if (MODERN_USAGE_VERIFIED) {
+			if ("parentToolCallId" in event && typeof event.parentToolCallId === "string") {
+				const identified = runIdentifiedRecords(dedicated);
+				if (identified.length !== dedicated.length) usageCollector.noteGap("nested-dedicated-identity-unresolved");
+				dedicated = identified;
+			} else {
+				// A root's end event lacks the final nestedCalls evidence. Let the
+				// canonical entry apply the same ownership gate as historical replay.
+				dedicated = [];
+			}
+		}
+		const records = stampSnapshotRevision(dedicated, nextUsageRevision());
 		const toolCallId = event.toolCallId;
 		runUsageTask(() => {
 			usageCollector?.dropProgressForToolCall(toolCallId);

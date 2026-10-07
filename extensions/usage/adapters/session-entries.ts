@@ -1,7 +1,7 @@
 /** Pure current-session entry adapter. Never opens files or grants live run ownership. */
 import { isPlainObject } from "../../util.js";
 import { extractCompactionUsage, extractToolResultUsage, TOOL_USAGE_CLAIMED_ELSEWHERE } from "../../tps-usage-inlets.js";
-import { extractBgWaitUsage, extractSubagentRunIdsFromToolExecution, extractSubagentUsageFromToolExecution, type SubagentSessionIdentity, type SubagentUsageRecord } from "../../tps-subagent.js";
+import { extractBgWaitUsage, extractSubagentRunIdsFromToolExecution, extractSubagentUsageFromToolExecution, parseMetaSourceKeyGranularity, type SubagentSessionIdentity, type SubagentUsageRecord } from "../../tps-subagent.js";
 import { isUsageCategoryEnabled, USAGE_LIMITS, type UsagePolicy, type UsageSwitchCategory } from "../policy.js";
 
 export type SessionCandidate =
@@ -28,6 +28,11 @@ export function usageMetadataBytes(value: unknown): number | undefined {
 export function boundedUsageMetadata(value: unknown): boolean { return usageMetadataBytes(value) !== undefined; }
 
 export type NestedOwnership = ReadonlyMap<string, { parentId: string; rootId?: string; name: string; origin: string; conflicted?: boolean }>;
+
+/** Tool-local fallback IDs cannot prove independence from a nested parent/child. */
+export function runIdentifiedRecords(records: readonly SubagentUsageRecord[]): SubagentUsageRecord[] {
+	return records.filter((record) => parseMetaSourceKeyGranularity(record.sourceKey) !== null);
+}
 
 /** Pi 1.0.4 records a flat, bounded nested call list; never inspect its arguments/results. */
 export function pooledToolGap(message: Record<string, unknown>, observed?: NestedOwnership): string | undefined {
@@ -93,6 +98,11 @@ export function parseSessionEntry(entry: unknown, options: {
 			if (name === "subagent" || name === "task") {
 				category = "sync-subagent";
 				records = extractSubagentUsageFromToolExecution(name, dedicatedResult, id);
+				if (nestedGap) {
+					const identified = runIdentifiedRecords(records);
+					if (identified.length !== records.length) out.gaps.push("nested-dedicated-identity-unresolved");
+					records = identified;
+				}
 				if (!records.length) out.gaps.push("side-channel-history-unavailable");
 			} else if (name === "bg_wait") {
 				category = "pi-subagents";

@@ -142,3 +142,10 @@ git diff --check
 继承 #101 的存档/终态/归属修复，依赖分支使用普通 merge，不重写历史、不合并 PR。父嵌套池的拒绝不再提前跳过专用 adapter：仅把原有 details 与必要身份交给 subagent/Task/bg_wait，剥离被拒绝的 root usage；仍保留源开关、ownership 和独立 metadata 预算。没有专用证据或元数据超限时继续 fail closed，不从 nestedCalls 生成费用。
 
 新增 fixture 覆盖 subagent/Task 的排除名、截断、超预算、未认证版本与 live/tree 冲突；验证实时/历史同口径、bg_wait 未授权/跨会话/关闭来源仍拒绝，以及 persist-off 连续恢复只计专用 $3、不计父池 $7。`usage-session-entries` / `usage-session-recovery` / `tps-recovery-regressions` / `tps-runtime` / `tps-usage-inlets` / `tps-subagent-bridge` / `usage-recovery-storage` / `usage-collector` / `tps-subagent` 共 **9 文件 / 175 项通过**；typecheck/diff check 通过。LSP 无 error，但部分 push-only 文件无法确认 clean，以 tsc 补证。本次未重跑全量 build、多版本 SDK runtime、安装或发布门禁；上节版本门禁是原 PR 的历史记录。
+
+## 2026-10-07：合并前补强嵌套认领与容量停止
+
+- 继承 #101 的增量存档/恢复切片与 `/calls` 边界修复。Pi 1.0.4 根专用工具等待最终条目后才计量；嵌套子事件及被拒绝父池中的专用 details 只有稳定 run identity 才可独立认领。tool-local fallback 不能证明父子结果独立，隔离为 `nested-dedicated-identity-unresolved`，不凭金额或内容猜相等。非嵌套 fallback 不变。
+- 歧义 fixture 原来一笔 $3 实时计 $6、persist-off reload 变 $3；现在明确隔离未知重叠，不将其计入确认小计。带共同 run identity 的同一 fixture 实时与 reload 始终只计 $3。两类均覆盖 persist 开/关；这是保守少计并披露缺口，不是猜出唯一费用。
+- 索引无法增长时停止条目发现，释放快照/待关联/临时树并取消 idle/边界定时器；已接收的旁路队列仍可处理。10,201 条静止会话在后续 idle/边界周期不再复制全量历史或重绘，已知小计与 partial 保留。
+- `vitest run test/usage-*.test.ts test/tps-*.test.ts test/model-audit-status.test.ts`：24 文件 / 282 项通过；typecheck、diff check 通过。LSP 5 文件无 error，其中 3 个无法确认 clean，未冒充全量 LSP 通过。新 1.0.4 接线测试使用版本闸 mock，不是新的真实 SDK 认证。本次未运行本地全量测试/build、多版本安装/runtime 或发布门禁。
