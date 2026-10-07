@@ -439,6 +439,7 @@ export default function (pi: ExtensionAPI) {
 			[...revokedKeys].filter((sourceKey) => subagentIngestState.metaSnapshotKeys.has(sourceKey)),
 		);
 		if (metaSnapshotKeys.size > 0) {
+			usageCollector?.noteGap("indexless-identity-revoked");
 			usageCollector?.ledger.dropWhere(
 				(observation) =>
 					observation.kind === "snapshot" &&
@@ -505,7 +506,8 @@ export default function (pi: ExtensionAPI) {
 		usageCollector.ingestLegacyRecords(
 			// Source watermarks were checked above. Only the local acceptance clock
 			// orders replacement in the shared ledger, never mtime versus tool count.
-			fresh.map((record) => record.revision ? { ...record, revision: nextUsageRevision() } : record),
+			fresh.map((record) => record.revision || (record.trustedFinal && record.revisionSource === "completion")
+				? { ...record, revision: nextUsageRevision() } : record),
 			category,
 			runId,
 			Date.now(),
@@ -868,13 +870,18 @@ export default function (pi: ExtensionAPI) {
 								}
 							: null,
 					);
-					const runId = typeof (data as { runId?: unknown }).runId === "string"
-						? (data as { runId: string }).runId
-						: undefined;
+					const payload = data as { runId?: unknown; id?: unknown };
+					const runId = typeof payload.runId === "string" ? payload.runId : typeof payload.id === "string" ? payload.id : undefined;
 					if (runId && sessionRunIds.size < USAGE_LIMITS.maxMemoryObservations) sessionRunIds.add(runId);
 					const completionOrigin = usageCollector?.originForRun(runId) ?? "unassigned";
 					const targetStats = requestStartMs !== null ? turnStats : sessionStats;
-					const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity);
+					const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity).map((record) => ({
+						...record, trustedFinal: true, revisionSource: "completion" as const,
+					}));
+					for (const record of records) {
+						const childRun = parseMetaSourceKeyGranularity(record.sourceKey)?.runId;
+						if (childRun) usageCollector?.bindRun(childRun, completionOrigin);
+					}
 					if (records.length > 0) runUsageTask(() => applySubagentRecords(records, targetStats, "pi-subagents", completionOrigin), Buffer.byteLength(JSON.stringify(records)));
 				},
 				onRunObserved: (runId) => {
@@ -952,7 +959,7 @@ export default function (pi: ExtensionAPI) {
 		if (typeof event.toolName === "string" && event.toolName.trim().toLowerCase() === "bg_wait") {
 			const bgWaitRecords = extractBgWaitUsage(event.result, sessionIdentity, sessionRunIds);
 			if (bgWaitRecords.length > 0) {
-				ingestSubagentRecords(bgWaitRecords, "pi-subagents", "unassigned");
+				ingestSubagentRecords(bgWaitRecords.map((record) => ({ ...record, trustedFinal: true, revisionSource: "completion" as const })), "pi-subagents", "unassigned");
 			}
 		}
 		// Inlet D: any other tool that follows pi's `result.usage` convention. Its switch

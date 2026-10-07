@@ -99,6 +99,13 @@ git diff --check
 
 独立 CI 修复 PR #100 改善兼容 watcher 测试真实 I/O 等待而不放宽断言；25 项本地测试、typecheck 通过，GitHub Node 22 push/PR check 均通过。P0 #99 不改兼容生产代码。
 
+### 2026-10-07：#101 审查回归修复
+
+- 存档继续保持 v1 与原身份。`source.runner` 区分 indexed/indexless/completion；恢复时隔离推断 child 0 及旧版无来源证据的 child-0 snapshot，保留原文件记录和金额，不恢复它们的 counted 粒度。可证明的专用历史结果计自身用量，不把推断记录的旧金额认作该结果；未变化 meta 不冒充新 revision。
+- 已验证 completion（含受信 bg_wait child）即使无源 revision，也通过本地接收 revision 整组替换旧 snapshot；重复终态、随后 meta 与再次恢复维持 first-wins。UUID 查询/绑定同样归一；不同 child ID 沿用已证明的父 run origin，没有 launch 证据仍只计 All。
+- focused：`test/tps-recovery-regressions.test.ts test/usage-recovery-storage.test.ts test/usage-collector.test.ts test/tps-subagent.test.ts test/tps-runtime.test.ts test/tps-subagent-bridge.test.ts test/usage-ledger.test.ts test/usage-persist.test.ts test/usage-session-recovery.test.ts`，**9 文件 / 168 项通过**；`npm run typecheck`、`git diff --check` 通过。临时账本、合成事件，无真实模型调用。LSP 5 文件未报 error，其中 3 个无法确认 clean，以 tsc 补证。
+- 本次没有重跑全量测试/build、多版本 SDK 安装/runtime 或发布门禁；前述 runtime 记录是原 PR 的历史验证，不是本次修复后的重新认证。
+
 ### 保留限制/偏差
 
 - v1 checkpoint 上限 **256KiB**，不是 journal 的 8MiB；超限保留旧文件与 pending-durable，不通过调大限额绕过门禁。公开 getEntries 浅复制仍不可抢占。

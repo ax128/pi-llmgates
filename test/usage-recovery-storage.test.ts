@@ -6,10 +6,39 @@ import { observationFromLegacyRecord } from "../extensions/usage/legacy-adapter.
 import { FsUsagePersist } from "../extensions/usage/persist.js";
 import { resolveUsagePolicy, USAGE_LIMITS } from "../extensions/usage/policy.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
+import { restoreSubagentIngestState, selectFreshSubagentRecords } from "../extensions/tps-subagent.js";
 const identity = { rootSessionId: "root", sessionId: "root", originTurnId: "turn-1", executionId: "compact:e1", producerId: "compact:e1", sequence: 1, observedAt: 1, runner: "compaction" };
 const row = () => observationFromLegacyRecord({ sourceKey: "compact:e1", modelLabel: "fixture", input: 3, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 7, costQuality: "estimated", calls: 1 }, identity)!;
 
 describe("recovery archive safety gates", () => {
+	it.each(["legacy", "pi-subagents", "pi-subagents-meta-indexless"])("quarantines unproven child-zero provenance (%s) without rewriting archived evidence", async (runner) => {
+		const temp = withTempAgentDir();
+		const persist = new FsUsagePersist(temp.agentDir, "root");
+		const key = "meta:abcd:worker:0";
+		const uncertain = { ...row(), source: { ...row().source, runner }, kind: "snapshot" as const, executionId: key, producerId: key, snapshotEpoch: key, revision: 1 };
+		try {
+			await persist.writeCheckpoint([uncertain]); await persist.close();
+			for (let reload = 0; reload < 2; reload++) {
+				const collector = new UsageCollector("root", "root", resolveUsagePolicy(""), new FsUsagePersist(temp.agentDir, "root"));
+				collector.restorePersisted();
+				expect(collector.sessionTotals().costUsd).toBe(0);
+				expect(collector.gapReasons().join()).toContain("indexless-origin-unproven");
+				const state = restoreSubagentIngestState(collector.archivedObservations());
+				expect(state.countedKeys.has(key)).toBe(false);
+				const fresh = { sourceKey: key, modelLabel: "fixture", calls: 1, input: 3, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 2, costQuality: "reported" as const };
+				// Source watermarks still need a new baseline; unchanged data is not growth.
+				expect(selectFreshSubagentRecords(state, [{ ...fresh, revision: 100, revisionSource: "meta" }])).toEqual([]);
+				expect(selectFreshSubagentRecords(state, [{ ...fresh, revision: 100, revisionSource: "meta" }])).toEqual([]);
+				// A dedicated historical result proves its own usage, not the inferred old $7.
+				const proven = selectFreshSubagentRecords(state, [fresh]); expect(proven).toHaveLength(1);
+				collector.ingestLegacyRecords(proven, "sync-subagent", undefined, 2, "history", true);
+				expect(collector.sessionTotals().costUsd).toBe(2);
+				await collector.checkpointAndClose();
+				expect(JSON.parse(readFileSync(persist.checkpointPath, "utf8")).observations).toEqual([uncertain]);
+			}
+		} finally { await persist.close(); temp.cleanup(); }
+	});
+
 	it("V13: hidden categories survive checkpoint unchanged and return when enabled", async () => {
 		const temp = withTempAgentDir();
 		try {

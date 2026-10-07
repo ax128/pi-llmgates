@@ -180,6 +180,8 @@ tool.execute() → finalized.result                       (pi-agent-core/dist/ag
 
 **副作用记录：** `subagentIngestState.keys` 会额外累积 `toolusage:` / `compact:` / `branch:` / `ext:` 键（仅在记录带 usage 时增长）。该 Set 同时被 `collectPiSubagentsMetaUsage` 当候选过滤器用（`tps.ts:271`），前缀不同不会误伤 meta 扫描；会话结束即整体重建（`tps.ts:452`、`:620`）。
 
+**恢复来源证据（2026-10-07 审查修复）：** 保留上述费用 identity，不新增 v1 字段；既有 `source.runner` 的 `pi-subagents-meta-indexed` / `pi-subagents-meta-indexless` / `pi-subagents-completion` 分别保存明确 index、当次推断 index、受信终态来源。indexless 及旧 `legacy` / `pi-subagents` 的 child-0 snapshot 无法证明跨启动唯一性，存档保留、恢复投影隔离，不授予 counted 粒度；历史专用结果或新受信终态可按自己的证据计量。无 revision 的受信完成事件通过本地接收 revision 整组替换 snapshot，但不将该接收值当作源 watermark；首次完成后同 key 维持 first-wins，重启也恢复此状态。UUID 归属绑定与查找使用同一归一化函数，完成 child 的不同 runId 继承有证据的父 run origin，没有证据仍为 unassigned。
+
 ### 3.3 归属表：每个「花费出口」只允许一个入口认领
 
 这是**不重复计数的核心规则**。实现上体现为 §4.1 的常量表，任何新增来源必须先在这里落位：
