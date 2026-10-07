@@ -95,7 +95,7 @@ describe("TPS UI", () => {
 			await new Promise((resolve) => setImmediate(resolve));
 
 			expect(statuses.at(-1)).toMatch(
-				/^All (\d+s|\d+m|\d+h(\d+m)?|\d+d(\d+h)?(\d+m)?)\.\d+c, Turn (\d+s|\d+m|\d+h(\d+m)?|\d+d(\d+h)?(\d+m)?)\.\d+c\.~?\$0\.010$/,
+				/^All\(partial\) \d+c\.~?\$0\.010, Turn (\d+s|\d+m|\d+h(\d+m)?|\d+d(\d+h)?(\d+m)?)\.\d+c\.~?\$0\.010$/,
 			);
 			expect(notifications).toEqual([]);
 		} finally {
@@ -174,7 +174,7 @@ describe("TPS UI", () => {
 			currentNow += 100_000;
 			handlers.get("agent_settled")?.({} as never, ctx);
 			await new Promise((resolve) => setTimeout(resolve, 0));
-			expect(statuses.at(-1)).toBe("All 16m.1c, Turn 16m.1c.~$0.010");
+			expect(statuses.at(-1)).toBe("All(partial) 1c.~$0.010, Turn 16m.1c.~$0.010");
 
 			currentNow += 9_000_000;
 			handlers.get("before_agent_start")?.({} as never, ctx);
@@ -187,7 +187,7 @@ describe("TPS UI", () => {
 			currentNow += 100_000;
 			handlers.get("agent_settled")?.({} as never, ctx);
 			await new Promise((resolve) => setTimeout(resolve, 0));
-			expect(statuses.at(-1)).toBe("All 2h55m.2c, Turn 8m.1c.~$0.010");
+			expect(statuses.at(-1)).toBe("All(partial) 2c.~$0.020, Turn 8m.1c.~$0.010");
 		} finally {
 			now.mockRestore();
 			if (previous === undefined) delete process.env.LLMGATES_TPS_SUBAGENT;
@@ -247,7 +247,7 @@ describe("TPS UI", () => {
 
 			handlers.get("agent_settled")?.({} as never, ctx);
 			await new Promise((resolve) => setTimeout(resolve, 0));
-			expect(statuses.at(-1)).toMatch(/^All /);
+			expect(statuses.at(-1)).toMatch(/^All\(partial\) /);
 
 			const afterSettle = statuses.length;
 			vi.advanceTimersByTime(10_000);

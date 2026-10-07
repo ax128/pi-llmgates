@@ -33,6 +33,20 @@ function obs(overrides: Record<string, unknown> = {}) {
 }
 
 describe("UsageLedger", () => {
+	it("versions projection changes, not reads or duplicate observations", () => {
+		const ledger = new UsageLedger("root-1");
+		expect(ledger.version).toBe(0);
+		ledger.ingest(obs());
+		const version = ledger.version;
+		expect(version).toBeGreaterThan(0);
+		ledger.finalizedTotals();
+		ledger.finalizedModelStats();
+		ledger.ingest(obs());
+		expect(ledger.version).toBe(version);
+		ledger.dropWhere(() => true);
+		expect(ledger.version).toBeGreaterThan(version);
+	});
+
 	it("retains a reported zero cost in finalized totals", () => {
 		const ledger = new UsageLedger("root-1");
 		ledger.ingest(obs({

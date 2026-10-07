@@ -45,7 +45,8 @@ import {
 import { envFlag } from "./util.js";
 import { createUsageCollector, type UsageCollector } from "./usage/collector.js";
 import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, formatUsageScopeTitleFromLedger, replaceModelUsageStats } from "./usage/format.js";
-import { resolveUsagePolicy } from "./usage/policy.js";
+import { resolveUsagePolicy, USAGE_LIMITS } from "./usage/policy.js";
+import { formatPolicyExclusions, formatReconciliationLines, summarizeNativeCosts, type NativeCostSnapshot } from "./usage/reconciliation.js";
 import { isModelAuditEnabled } from "./model-audit/runtime.js";
 import {
 	MODEL_AUDIT_ROOT_ENV,
@@ -108,6 +109,7 @@ export default function (pi: ExtensionAPI) {
 	let sessionStats: ModelUsageStats = createEmptyStats();
 	let lastSettledTurnStats: ModelUsageStats = createEmptyStats();
 	let usageTaskChain: Promise<void> = Promise.resolve();
+	let usageQueueStatus = { pending: 0 };
 	let statusRefreshScheduled = false;
 	let sessionActive = false;
 	let sessionGeneration = 0;
@@ -165,7 +167,7 @@ export default function (pi: ExtensionAPI) {
 	function formatSettledSegments(args: SettledStatusArgs): { all: string; turn: string; idle: string } {
 		if (usageCollector) {
 			return {
-				all: formatTpsScopeWithQuality("all", args.sessionElapsed, usageCollector.sessionTotals()),
+				all: formatTpsScopeWithQuality("all", args.sessionElapsed, usageCollector.sessionTotals(), { historyPartial: true }),
 				turn: formatTpsScopeWithQuality("turn", args.turnElapsed, usageCollector.turnTotals()),
 				idle: formatIdleMarker(usageCollector.ledger.hasActiveProducers(), 2),
 			};
@@ -184,6 +186,8 @@ export default function (pi: ExtensionAPI) {
 
 	function runUsageTask(task: () => void | Promise<void>): void {
 		const expectedGeneration = sessionGeneration;
+		const queueStatus = usageQueueStatus;
+		queueStatus.pending += 1;
 		usageTaskChain = usageTaskChain
 			.then(async () => {
 				if (!sessionActive || sessionGeneration !== expectedGeneration) {
@@ -195,7 +199,8 @@ export default function (pi: ExtensionAPI) {
 				logTpsIssue(
 					`TPS background processing failed: ${error instanceof Error ? error.message : String(error)}`,
 				);
-			});
+			})
+			.finally(() => { queueStatus.pending -= 1; });
 	}
 
 	function safeUi(ctx: ExtensionContext | null | undefined, action: () => void): void {
@@ -647,62 +652,66 @@ export default function (pi: ExtensionAPI) {
 		ensureSubagentWatcher();
 	}
 
-	async function showUsageBreakdown(ctx: ExtensionContext, stats: ModelUsageStats, scope: "turn" | "session"): Promise<void> {
-		let options: string[];
-		let title: string;
-		try {
-			if (usageCollector) {
-				const models =
-					scope === "session" ? usageCollector.sessionModelStats() : usageCollector.turnModelStats();
-				options = formatUsageBreakdownFromLedger(models);
-			} else if (totalModelCalls(stats) === 0) {
-				options = [];
-			} else {
-				options = formatUsageBreakdownOptions(stats);
-			}
-			if (options.length === 0) {
-				safeUi(ctx, () => {
-					ctx.ui.notify(
-						scope === "session"
-							? "No model calls recorded in this session."
-							: "No model calls recorded in this turn.",
-						"info",
-					);
-				});
-				return;
-			}
-			title = usageCollector
-				? formatUsageScopeTitleFromLedger(scope, scope === "session" ? usageCollector.sessionTotals() : usageCollector.turnTotals())
-				: formatUsageScopeTitle(scope, stats);
-		} catch (error) {
-			logTpsIssue(`TPS breakdown formatting failed: ${error instanceof Error ? error.message : String(error)}`);
-			safeUi(ctx, () => {
-				ctx.ui.notify("Usage breakdown is temporarily unavailable.", "info");
-			});
-			return;
-		}
-
-		await ctx.ui.select(title, options);
-	}
-
 	async function showCallsMenu(ctx: ExtensionContext): Promise<void> {
-		const scope = await ctx.ui.select("Usage scope", ["This turn", "This session", "Coverage"]);
-		if (!scope) {
-			return;
+		// Capture every view before the first await. In particular, do not combine
+		// a new ledger projection with entries captured before a menu was opened.
+		const generation = sessionGeneration;
+		const sessionId = ctx.sessionManager.getSessionId();
+		const collector = usageCollector;
+		const captureBreakdown = (scope: "turn" | "session") => {
+			const stats = scope === "session" ? sessionStats : activeTurnStats();
+			return {
+				title: collector
+					? formatUsageScopeTitleFromLedger(scope, scope === "session" ? collector.sessionTotals() : collector.turnTotals())
+					: formatUsageScopeTitle(scope, stats),
+				options: collector
+					? formatUsageBreakdownFromLedger(scope === "session" ? collector.sessionModelStats() : collector.turnModelStats())
+					: totalModelCalls(stats) === 0 ? [] : formatUsageBreakdownOptions(stats),
+			};
+		};
+		const turn = captureBreakdown("turn");
+		const session = captureBreakdown("session");
+		const coverage = formatCoverageLines(collector?.coverageRows() ?? []);
+		let reconciliation = ["Usage collection disabled; no session history was enumerated."];
+		if (collector) {
+			const plugin = collector.sessionTotals();
+			const projectionVersion = collector.ledger.version;
+			const pending = usageQueueStatus.pending;
+			let native: NativeCostSnapshot | undefined;
+			// getEntries() itself is a synchronous O(N) shallow copy and cannot be
+			// preempted. Only parse one bounded slice; never retain message bodies.
+			const deadline = performance.now() + USAGE_LIMITS.perTickMs;
+			try {
+				native = summarizeNativeCosts(ctx.sessionManager.getEntries(), { deadline });
+			} catch {
+				// Missing/failed public API is unavailable, not a zero native total.
+			}
+			const exclusions = formatPolicyExclusions(collector.policy);
+			coverage.unshift(
+				"History: partial — current collection window / restored legacy ledger only; no history replay.",
+				`Collection started: ${new Date(collector.ledger.collectedSinceMs).toISOString()}; pending ${pending}`,
+				exclusions,
+			);
+			reconciliation = formatReconciliationLines({
+				plugin, native, collectedSinceMs: collector.ledger.collectedSinceMs,
+				generation, projectionVersion, pending,
+			});
+			reconciliation.push(exclusions);
 		}
-
+		const scope = await ctx.ui.select("Usage scope", ["This turn", "This session", "Coverage", "Reconciliation"]);
+		if (!scope || generation !== sessionGeneration || sessionId !== ctx.sessionManager.getSessionId()) return;
 		if (scope === "Coverage") {
-			const lines = formatCoverageLines(usageCollector?.coverageRows() ?? []);
-			await ctx.ui.select("Coverage (snapshot; live totals are in the status line)", lines);
-			return;
+			await ctx.ui.select("Coverage (snapshot; live totals are in the status line)", coverage);
+		} else if (scope === "Reconciliation") {
+			await ctx.ui.select("Reconciliation (read-only snapshot; not a gateway bill)", reconciliation);
+		} else {
+			const detail = scope === "This session" ? session : turn;
+			if (detail.options.length === 0) {
+				safeNotify(ctx, `No model calls recorded in this ${scope === "This session" ? "session" : "turn"}.`);
+			} else {
+				await ctx.ui.select(detail.title, detail.options);
+			}
 		}
-
-		if (scope === "This session") {
-			await showUsageBreakdown(ctx, sessionStats, "session");
-			return;
-		}
-
-		await showUsageBreakdown(ctx, activeTurnStats(), "turn");
 	}
 
 	function notifyUsageText(ctx: ExtensionContext): void {
@@ -729,7 +738,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("calls", {
-		description: "Show per-model calls, token usage, estimated cost, and a coverage snapshot",
+		description: "Show per-model usage, coverage, and read-only cost reconciliation snapshots",
 		handler: async (_args, ctx) => {
 			if (!isPrimaryUiSession(ctx)) {
 				notifyUsageText(ctx);
@@ -750,6 +759,7 @@ export default function (pi: ExtensionAPI) {
 		sessionGeneration += 1;
 		sessionActive = true;
 		usageTaskChain = Promise.resolve();
+		usageQueueStatus = { pending: 0 };
 		clearRefreshTimer();
 		clearStatus(statusCtx);
 		requestStartMs = null;

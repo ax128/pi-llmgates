@@ -100,7 +100,7 @@ pi -e npm:@llmgates_api/pi-llmgates-provider
 | `/balance [instance-id]` | 查询网关额度（不带参数则查询全部实例） |
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | 切换或清除**一个**模型的推理出口 |
 | `/endpoint-setting` | 交互式多选，批量切换任意实例模型的推理出口 |
-| `/calls` | 查看本轮、本会话的 per-model 用量与费用明细，以及覆盖快照 |
+| `/calls` | 查看本轮、本会话的 per-model 用量与费用明细、覆盖快照及只读对账 |
 | `/model-audit` | 查看当前工作目录里「上游响应模型与发出模型不是同一系列」的记录，以及本会话 All / Turn 计数 |
 | `/model-audit clear` | 确认后清空当前工作目录的审计记录，**连同该目录下所有会话的计数** |
 | `/input-history [status]` | 查看输入历史的开关、作用域、文件路径与已存条数 |
@@ -357,19 +357,21 @@ pi
 TUI 扩展状态行：
 
 - agent **运行中**：仅 `Turn 17m.19c.~$1.78`（本轮时长 · 调用数 · 费用）。父会话费用来自定价表估算时带 `~`；无法判断时显示 `?`，不会把未知标成免费 `$0`。
-- **跑完或取消 settle 后**：`All 1h1m.100c, Turn 30m.20c.~$10.10`（`All` 为 session 累计时长与调用数，**立即含本轮已确认用量**，不必等下一轮；`Turn` 为本轮）。父会话 settle 后 1s 刷新即停；后台子代理稍后入账时状态行按到达事件更新，不靠定时器。仅当账本里仍有 `running` / `provisional` producer 时刷新才继续并附 `↻ 2s`。调用数无法确认精确值时显示下界 `≥N`（例如子代理结果只带 token 不带次数）。下一轮开始时恢复为仅 `Turn`。
+- **跑完或取消 settle 后**：`All(partial) 100c.~$18.10, Turn 30m.20c.~$10.10`（`All` 为当前采集窗口 / 已恢复旧账本的调用数与费用，**立即含本轮已确认用量**；`Turn` 为本轮）。All 不再显示累计耗时；`partial` 表示尚未回放 Pi 会话历史，不承诺全历史完整，并非配置排除或指标质量的替代标记。父会话 settle 后 1s 刷新即停；后台子代理稍后入账时状态行按到达事件更新，不靠定时器。仅当账本里仍有 `running` / `provisional` producer 时刷新才继续并附 `↻ 2s`。调用数无法确认精确值时显示下界 `≥N`（例如子代理结果只带 token 不带次数）。下一轮开始时恢复为仅 `Turn`。
 
-状态行段末的红色 `.xN`（例如 `All 1h1m.100c.x3, Turn 30m.20c.~$10.10.x1`）是 [上游响应模型审计](#上游响应模型审计) 的不一致次数，与用量无关，0 时不显示。
+状态行段末的红色 `.xN`（例如 `All(partial) 100c.~$18.10.x3, Turn 30m.20c.~$10.10.x1`）是 [上游响应模型审计](#上游响应模型审计) 的不一致次数，与用量无关，0 时不显示。
 
-`/calls` 查看 per-model 明细。This session 在本轮尚未 settle 时也含本轮已确认数字。Coverage 是打开菜单那一瞬间的来源快照（pi 的 `ui.select` 不能在菜单打开后 live 刷新），live 总额仍看状态行。
+`/calls` 查看 per-model 明细。This session 在本轮尚未 settle 时也含本轮已确认数字。This turn / This session / Coverage / Reconciliation 都固定为打开菜单那一瞬间的快照，不随后台更新而改变；live 总额仍看状态行。Coverage 单列采集起点、待处理数与配置排除。
 
-状态行、`/calls` 标题与模型明细采用同一质量口径：缺失指标不会被其他记录的已知数字掩盖。金额可显示 `~$0.010 + ?`，token 可显示 `10 + ?`；完全未知显示 `?`。本地估算保留 `~`，协议自报数字费用为 reported，无法辨认来源的旧金额保持 unknown。多模型 `modelAttempts` 保留各模型分行；同一快照的新 revision 替换整组旧模型分区。
+Reconciliation 只读比较插件 All 与当前 Pi 会话 `getEntries()` 中 assistant、toolResult、压缩及分支摘要的原始 `cost.total` 小计（0.81.1 基线合同，包含其他树分支；不代表新的跨版本认证）。不按当前价格重估、不写账、不扫描其他会话、不新增 watcher。P0 每次最多解析 200 条 / 50ms；`getEntries()` 本身的同步浅复制不能抢占，长会话可能阻塞这一获取步骤。未读全、费用非法或遇到未适配的独立 usage 时，明确标为「Native checked subtotal」及 partial/unknown，不冒充 Pi 完整累计。有采集积压时不等待任务链或分解精确差额；其余差额仍叫 unexplained，不认定漏算或追平目标。两边范围、本地估价与原始费用可能不同；尚无逐笔证据分类。比较使用未舍入金额，容差为 `max(1e-9 USD, 1e-9 × max(|a|, |b|))`。`LLMGATES_TPS=0` 时不枚举历史，非 TUI 降级行为不变。
+
+状态行、`/calls` 标题与模型明细采用同一质量口径：缺失指标不会被其他记录的已知数字掩盖。金额可显示 `~$0.010 + ?`，token 可显示 `10 + ?`；完全未知显示 `?`。本地估算保留 `~`，协议自报数字费用为 reported，无法辨认来源的旧金额保持 unknown。All / Turn 金额采用相同精度；小于 $0.0001 的正费用显示三位有效数字（必要时科学记数），不舍入成免费。多模型 `modelAttempts` 保留各模型分行；同一快照的新 revision 替换整组旧模型分区。
 
 meta 与 tool 各自检查本入口的 revision，再按本会话接收顺序替换同 key 的账本记录，不比较 mtime 毫秒与工具计数器。无 revision 的完成事件仍保留既有去重边界。并行工具进度保留各 child 身份，每次有 usage 的进度快照替换该工具前一份进度；终态结果再统一替换进度。Coverage 的序号按 producer 独立递增，不把其他来源插入的观察误报为缺口。内存达 10,000 条且无法淘汰 provisional 时标 `partial · memory-exhausted`，与磁盘 `storage-exhausted` 分开；已知总量降为下界。账本未变化时，1s 状态刷新复用缓存投影。
 
 | 模式 | `/calls` |
 | --- | --- |
-| TUI | 交互菜单（This turn / This session / Coverage） |
+| TUI | 交互菜单（This turn / This session / Coverage / Reconciliation） |
 | rpc | 一段文本摘要；无记录时附一句 *Usage is tracked in the interactive session only.* 而非静默 |
 | `-p` / json | 没有 UI 通道（pi 不为其绑定 `uiContext`，`ctx.hasUI === false`），不输出，以免污染脚本 stdout |
 
@@ -422,7 +424,7 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与网关
 
 - **只检测与记录**：不拦截、不重试、不改请求或响应字节、不改计费，也**不进用量账本**（`/calls` 与费用不受影响）。
 - **默认开启**。`LLMGATES_MODEL_AUDIT=0` 完全关闭：不包装请求、不写历史、不显示后缀；与 `LLMGATES_TPS` 互不影响。每个会话开始时读取，进程内修改需 `/reload`。
-- **状态行**：在对应段末尾追加红色 `.xN`，例如 `All 28m.52c.x3, Turn 1m.2c.~$0.236.x1`。All 是本会话累计，Turn 是本轮；为 0 时不显示。只在 TUI 父会话显示，约 1–2 秒内跟上。
+- **状态行**：在对应段末尾追加红色 `.xN`，例如 `All(partial) 52c.~$6.20.x3, Turn 1m.2c.~$0.236.x1`。All 是本会话累计，Turn 是本轮；为 0 时不显示。只在 TUI 父会话显示，约 1–2 秒内跟上。
 - **`/model-audit`**：本会话的 All / Turn / 未归属（第一轮开始前，例如恢复会话时的压缩）数量；本进程的写入失败 / 已隔离 / 退出时未写完次数；按接口的观察计数；等价表状态；以及当前工作目录最近的不一致记录（最多 300 条，新的在前）。TUI 用列表显示，rpc 走通知，`-p` / json 不输出。
 - **`/model-audit clear`**：确认后清空当前工作目录的记录**以及该目录下所有会话的计数**（状态行后缀一并清零），文件本身保留。
 

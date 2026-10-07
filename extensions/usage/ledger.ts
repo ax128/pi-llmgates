@@ -155,6 +155,7 @@ export class UsageLedger {
 	private persistState: CoverageRow["persist"] = "memory";
 	private persistLoadGap: string | undefined;
 	private memoryExhausted = false;
+	private projectionVersion = 0;
 	private readonly snapshotGroups = new Map<string, { revision: number; keys: Set<string> }>();
 	private readonly totalsCache = new Map<string | undefined, LedgerTotals>();
 	private readonly modelsCache = new Map<string | undefined, Map<string, LedgerTotals>>();
@@ -165,6 +166,11 @@ export class UsageLedger {
 		options: { collectedSinceMs?: number } = {},
 	) {
 		this.collectedSinceMs = options.collectedSinceMs ?? Date.now();
+	}
+
+	/** Version of the in-memory projection, not a durable/source revision. */
+	get version(): number {
+		return this.projectionVersion;
 	}
 
 	setPersistState(state: CoverageRow["persist"]): void {
@@ -491,6 +497,7 @@ export class UsageLedger {
 	}
 
 	private invalidateProjections(): void {
+		this.projectionVersion += 1;
 		this.totalsCache.clear();
 		this.modelsCache.clear();
 	}
