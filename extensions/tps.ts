@@ -1000,8 +1000,7 @@ export default function (pi: ExtensionAPI) {
 		if (!isPrimaryUiSession(ctx)) return;
 		if (envFlag("LLMGATES_TPS_COMPACTION") === false) return;
 		if (entry && typeof (entry as { id?: unknown }).id === "string") {
-			recovery?.setModel(ctx.model);
-			recovery?.noteEntry((entry as { id: string }).id, requestStartMs !== null ? usageCollector?.currentOriginTurnId() ?? "unassigned" : "unassigned");
+			recovery?.noteEntry((entry as { id: string }).id, requestStartMs !== null ? usageCollector?.currentOriginTurnId() ?? "unassigned" : "unassigned", ctx.model);
 			recovery?.boundary();
 		}
 	}
@@ -1042,7 +1041,6 @@ export default function (pi: ExtensionAPI) {
 		// The audit owner just moved to a fresh turn id; its count starts at 0 and
 		// the next poll picks up anything recorded for it.
 		auditCounts = { all: auditCounts.all, turn: 0 };
-		recovery?.setModel(ctx.model);
 		usageCollector?.beginTurn();
 		resetTurnStats();
 		if (usageCollector) {

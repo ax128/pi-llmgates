@@ -284,7 +284,7 @@ describe("UsageLedger", () => {
 		expect(ledger.coverage().some((row) => row.reason === "sequence-gap")).toBe(true);
 	});
 
-	it("marks memory exhaustion separately from persistence and makes totals a lower bound", () => {
+	it.each(["single", "batch"])("marks %s memory exhaustion separately from persistence and makes totals a lower bound", (mode) => {
 		const ledger = new UsageLedger("root-1");
 		for (let i = 0; i < 10_000; i++) {
 			ledger.ingest(
@@ -296,15 +296,21 @@ describe("UsageLedger", () => {
 				}),
 			);
 		}
-		const result = ledger.ingest(
-			obs({ callId: "overflow", executionId: "exec-overflow", sequence: 10_000, usage: { input: 1, calls: 1 } }),
-		);
+		const before = ledger.observations();
+		expect(ledger.finalizedTotals().callsQuality).toBe("reported");
+		expect(ledger.finalizedModelStats().get("gpt-test")?.callsQuality).toBe("reported");
+		expect(ledger.finalizedTotals({ originTurnId: "turn-2" }).costQuality).toBe("reported");
+		const overflow = obs({ callId: "overflow", executionId: "exec-overflow", sequence: 10_000, usage: { input: 1, calls: 1 } });
+		const result = mode === "single" ? ledger.ingest(overflow) : ledger.ingestBatch([overflow]);
+		expect(ledger.observations()).toEqual(before);
 		expect(result.accepted).toBe(false);
 		expect(result.reason).toBe("memory-exhausted");
 		expect(ledger.coverage().some((row) => row.reason === "memory-exhausted" && row.persist === "memory" && row.status === "partial")).toBe(
 			true,
 		);
 		expect(ledger.finalizedTotals().callsQuality).toBe("unknown");
+		expect(ledger.finalizedModelStats().get("gpt-test")?.callsQuality).toBe("unknown");
+		expect(ledger.finalizedTotals({ originTurnId: "turn-2" })).toMatchObject({ costUsd: 0, costQuality: "unknown", callsQuality: "unknown" });
 	});
 
 	it("propagates missing metrics alongside known estimates, but accepts an explicit reported zero", () => {
