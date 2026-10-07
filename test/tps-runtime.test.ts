@@ -10,6 +10,12 @@ import { MAX_SUBAGENT_META_READS_PER_SCAN } from "../extensions/tps-subagent.js"
 type Handler = (event: any, ctx: ExtensionContext) => void | Promise<void>;
 type Command = { handler: (args: string, ctx: ExtensionContext) => void | Promise<void> };
 
+// Recovery intentionally yields between bounded slices; a zero-ms timer does
+// not promise that a setImmediate-based drain has finished. Keep assertions exact.
+async function drainUsage() {
+	for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+}
+
 function createRuntime(cwd: string, sessionFile?: string) {
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, Command>();
@@ -738,7 +744,7 @@ describe("tps runtime subagent ordering", () => {
 				],
 			});
 			runtime.emitNow("agent_settled");
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This turn");
@@ -793,7 +799,7 @@ describe("tps runtime subagent ordering", () => {
 					},
 				},
 			});
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			runtime.scopeChoices.push("This session");
 			await runtime.commands.get("calls")!.handler("", runtime.ctx);
 			const rows = runtime.selections[0] ?? [];
