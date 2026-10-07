@@ -15,6 +15,9 @@ export class SessionRecovery {
 	private readonly startupIds = new Set<string>();
 	private readonly historicalRuns = new Set<string>();
 	private readonly tools = new Map<string, string>();
+	// Running tools are not orphans. Keep only bounded identity/origin scalars;
+	// the result-to-entry association starts its TTL when execution ends.
+	private readonly activeTools = new Map<string, string>();
 	private readonly nested = new Map<string, { parentId: string; rootId: string; name: string; origin: string; conflicted?: boolean }>();
 	private idleTimer: ReturnType<typeof setInterval> | undefined;
 	private readonly pending: Pending[] = [];
@@ -45,7 +48,7 @@ export class SessionRecovery {
 		onRecords: (records: readonly SubagentUsageRecord[], category: UsageSwitchCategory, origin: string, historical: boolean, entryId?: string) => void;
 		onChange: () => void;
 	}) {}
-	get pendingCount(): number { return this.queue.length + this.pending.length + this.deferred.size; }
+	get pendingCount(): number { return this.queue.length + this.activeTools.size + this.pending.length + this.deferred.size; }
 	get hasPendingRecovery(): boolean { return !this.initialized || Boolean(this.entries) || this.deferred.size > 0 || this.boundaryDirty || this.leafDirty || this.draining; }
 	private owns(): boolean { return !this.cancelled && this.options.isOwner(); }
 	async start(): Promise<void> {
@@ -73,7 +76,7 @@ export class SessionRecovery {
 		this.schedule(); return true;
 	}
 	noteAssistant(message: unknown, origin: string): void { this.addPending({ message, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
-	originForTool(toolCallId: string): string { return this.pending.find((p) => p.toolCallId === toolCallId)?.origin ?? this.nested.get(toolCallId)?.origin ?? "unassigned"; }
+	originForTool(toolCallId: string): string { return this.activeTools.get(toolCallId) ?? this.pending.find((p) => p.toolCallId === toolCallId)?.origin ?? this.nested.get(toolCallId)?.origin ?? "unassigned"; }
 	noteNestedTool(id: string, parentId: string, name: string): void {
 		if (this.closing || this.entryDiscoveryStopped || !this.owns()) return;
 		if (!id || !parentId || id === parentId || id.length > 1024 || parentId.length > 1024 || name.length > 256 || this.nested.size >= USAGE_LIMITS.maxMemoryObservations) { this.collector.noteGap("nested-ownership-capacity"); return; }
@@ -83,19 +86,23 @@ export class SessionRecovery {
 		this.nested.set(id, old?.conflicted ? { ...record, conflicted: true } : record);
 	}
 	noteTool(toolCallId: string, origin: string): void {
-		if (this.tools.has(toolCallId)) return;
+		if (this.closing || this.entryDiscoveryStopped || !this.owns() || this.tools.has(toolCallId)) return;
 		if (!toolCallId || toolCallId.length > 1024) { this.collector.noteGap("invalid-tool-identity"); return; }
-		this.addPending({ toolCallId, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs });
+		if (this.activeTools.has(toolCallId) || this.pending.some((p) => p.toolCallId === toolCallId)) return;
+		if (this.activeTools.size >= USAGE_LIMITS.maxPendingOrphans) { this.collector.noteGap("active-tool-capacity"); return; }
+		this.activeTools.set(toolCallId, origin);
 	}
 	noteToolResult(toolCallId: string, origin: string, result: unknown): void {
-		if (this.closing || this.entryDiscoveryStopped || !this.owns()) return;
-		this.noteTool(toolCallId, origin);
+		if (this.closing || this.entryDiscoveryStopped || !this.owns() || this.tools.has(toolCallId)) return;
+		if (!toolCallId || toolCallId.length > 1024) { this.collector.noteGap("invalid-tool-identity"); return; }
+		const launchOrigin = this.activeTools.get(toolCallId) ?? origin;
+		this.activeTools.delete(toolCallId);
+		this.addPending({ toolCallId, origin: launchOrigin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs });
 		const pending = this.pending.find((p) => p.toolCallId === toolCallId);
 		if (!pending) return;
 		pending.toolMetadata = toolResultMetadata(result);
 		pending.expires = Date.now() + USAGE_LIMITS.orphanTtlMs;
-		// The start-event probe may already have run while the tool was awaiting IO.
-		// A duplicate pending association must not suppress the result-entry probe.
+		// A duplicate result must still re-arm entry discovery and its association TTL.
 		this.leafDirty = true; this.schedule();
 	}
 	noteEntry(entryId: string, origin: string): void { this.addPending({ entryId, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
@@ -164,7 +171,7 @@ export class SessionRecovery {
 		this.collector.noteGap("entry-index-capacity");
 		this.entries = undefined; this.leafDirty = this.boundaryDirty = false;
 		this.leafCursor = undefined; this.leafQueue.length = 0;
-		this.pending.length = 0; this.nested.clear(); this.deferred.clear();
+		this.pending.length = 0; this.activeTools.clear(); this.nested.clear(); this.deferred.clear();
 		if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = undefined; }
 		if (this.boundaryTimer) { clearTimeout(this.boundaryTimer); this.boundaryTimer = undefined; }
 		if (this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = undefined; }
@@ -194,11 +201,13 @@ export class SessionRecovery {
 		this.seen.add(entry.id);
 		const historical = retry?.historical ?? this.startupIds.has(entry.id);
 		const message = isPlainObject(entry.message) ? entry.message : undefined;
+		const activeOrigin = message?.role === "toolResult" && typeof message.toolCallId === "string" ? this.activeTools.get(message.toolCallId) : undefined;
+		if (message?.role === "toolResult" && typeof message.toolCallId === "string") this.activeTools.delete(message.toolCallId);
 		const pendingIndex = this.pending.findIndex((p) => p.message !== undefined ? p.message === message : p.entryId ? p.entryId === entry.id : message?.role === "toolResult" && p.toolCallId === message.toolCallId);
 		const pending = pendingIndex < 0 ? undefined : this.pending.splice(pendingIndex, 1)[0];
 		if (!this.pending.length && this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = undefined; }
-		const origin = retry?.origin ?? (historical ? "history" : pending?.origin ?? "unassigned");
-		const live = retry?.live ?? (!historical && pending !== undefined);
+		const origin = retry?.origin ?? (historical ? "history" : pending?.origin ?? activeOrigin ?? "unassigned");
+		const live = retry?.live ?? (!historical && (pending !== undefined || activeOrigin !== undefined));
 		const metadata = retry?.toolMetadata ?? pending?.toolMetadata;
 		const parsed = parseSessionEntry(entry, {
 			policy: this.collector.policy, historicalRuns: this.historicalRuns,
@@ -328,7 +337,7 @@ export class SessionRecovery {
 		// message_end preceded append immediately before shutdown/reload.
 		this.leafCursor = undefined; this.leafQueue.length = 0;
 		if (this.initialized && this.owns()) for (const entry of this.leafSlice()) this.process(entry);
-		this.entries = undefined; this.pending.length = 0; this.deferred.clear();
+		this.entries = undefined; this.pending.length = 0; this.activeTools.clear(); this.nested.clear(); this.deferred.clear();
 		if (this.pendingTimer) clearTimeout(this.pendingTimer);
 		if (this.boundaryTimer) clearTimeout(this.boundaryTimer);
 		if (this.scheduled) { clearImmediate(this.scheduled); this.scheduled = undefined; }

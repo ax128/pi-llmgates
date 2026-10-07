@@ -134,6 +134,71 @@ describe("bounded current-session recovery", () => {
 		} finally { await h.close(); vi.useRealTimers(); }
 	});
 
+	it("keeps active root and nested origins across turns without retaining result bodies", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		const h = harness();
+		try {
+			await h.recovery.start(); await settled(h);
+			const origin = h.collector.beginTurn();
+			h.recovery.noteTool("slow", origin);
+			await vi.advanceTimersByTimeAsync(USAGE_LIMITS.orphanTtlMs * 2);
+			h.collector.beginTurn();
+			h.recovery.noteTool("slow", h.collector.currentOriginTurnId()); // duplicate start cannot steal ownership
+			h.recovery.noteNestedTool("child", "slow", "custom_llm");
+			expect(h.recovery.originForTool("slow")).toBe(origin);
+			expect(h.recovery.originForTool("child")).toBe(origin);
+			h.recovery.noteToolResult("slow", h.recovery.originForTool("slow"), {});
+			h.manager.appendMessage(toolResultMessage({ toolName: "custom_llm", toolCallId: "slow", result: { usage: { input: 10, cost: 3 } } }));
+			await tick(); await tick();
+			expect(h.collector.turnTotals(origin).costUsd).toBe(3);
+			expect(h.collector.turnTotals().costUsd).toBe(0);
+			expect(h.recovery.pendingCount).toBe(0);
+			expect(h.recovery.originForTool("slow")).toBe("unassigned");
+			expect(h.recovery.originForTool("child")).toBe("unassigned");
+			expect(h.collector.gapReasons().join()).not.toContain("origin-association-expired");
+		} finally { await h.close(); vi.useRealTimers(); }
+	});
+
+	it("still expires a completed tool whose result entry never arrived", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		const h = harness();
+		try {
+			await h.recovery.start(); await settled(h);
+			h.recovery.noteTool("slow", h.collector.beginTurn());
+			await vi.advanceTimersByTimeAsync(USAGE_LIMITS.orphanTtlMs * 2);
+			h.recovery.noteToolResult("slow", h.recovery.originForTool("slow"), {});
+			expect(h.recovery.pendingCount).toBe(1);
+			await vi.advanceTimersByTimeAsync(USAGE_LIMITS.orphanTtlMs + 1);
+			expect(h.recovery.pendingCount).toBe(0);
+			expect(h.recovery.originForTool("slow")).toBe("unassigned");
+			expect(h.collector.gapReasons().join()).toContain("origin-association-expired:1");
+			h.manager.appendMessage(toolResultMessage({ toolName: "custom_llm", toolCallId: "slow", result: { usage: { input: 10, cost: 3 } } }));
+			h.recovery.boundary(); await tick(); await tick();
+			expect(h.collector.sessionTotals().costUsd).toBe(3);
+			expect(h.collector.turnTotals().costUsd).toBe(0);
+		} finally { await h.close(); vi.useRealTimers(); }
+	});
+
+	it("bounds active tool origins and releases them at completion and owner shutdown", async () => {
+		const h = harness();
+		try {
+			await h.recovery.start(); await settled(h);
+			for (let i = 0; i <= USAGE_LIMITS.maxPendingOrphans; i++) h.recovery.noteTool(`tool-${i}`, "turn-1");
+			expect(h.recovery.pendingCount).toBe(USAGE_LIMITS.maxPendingOrphans);
+			expect(h.collector.gapReasons().join()).toContain("active-tool-capacity");
+			expect(h.recovery.originForTool(`tool-${USAGE_LIMITS.maxPendingOrphans}`)).toBe("unassigned");
+			h.recovery.noteToolResult("tool-0", "turn-1", {});
+			h.manager.appendMessage(toolResultMessage({ toolName: "bash", toolCallId: "tool-0", result: {} }));
+			await tick(); await tick();
+			h.recovery.noteTool("replacement", "turn-2");
+			expect(h.recovery.originForTool("replacement")).toBe("turn-2");
+			expect(h.recovery.pendingCount).toBe(USAGE_LIMITS.maxPendingOrphans);
+			h.cancel(); await h.close();
+			expect(h.recovery.pendingCount).toBe(0);
+			expect(h.recovery.originForTool("replacement")).toBe("unassigned");
+		} finally { await h.close(); }
+	});
+
 	it.each(["untrusted", "foreign"])("deferred %s completions remain excluded after their one bounded retry", async (kind) => {
 		const h = harness();
 		if (kind === "foreign") h.manager.appendMessage({ role: "toolResult", toolName: "subagent", toolCallId: "launch", content: [], isError: false, timestamp: 0, details: { runId: "abcd", async: true } });
