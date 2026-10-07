@@ -72,24 +72,31 @@ export function parseSessionEntry(entry: unknown, options: {
 			if (!boundedUsageMetadata(message)) { out.gaps.push("metadata-budget-exceeded"); return out; }
 			out.candidates.push({ kind: "assistant", entryId: entry.id, message });
 		} else if (message.role === "toolResult") {
-			if (message.nestedCalls !== undefined && !options.modernUsage) { out.gaps.push("unsupported-nested-tool-usage"); return out; }
-			const nestedGap = options.modernUsage ? pooledToolGap(message, options.observedNested) : undefined;
-			if (nestedGap) { out.gaps.push(nestedGap); return out; }
-			if (!boundedUsageMetadata(message)) { out.gaps.push("metadata-budget-exceeded"); return out; }
 			const name = typeof message.toolName === "string" ? message.toolName.trim().toLowerCase() : "";
 			const id = typeof message.toolCallId === "string" ? message.toolCallId : "";
 			if (!id || !name) { out.gaps.push("invalid-tool-identity"); return out; }
 			out.toolCallId = id;
-			out.runIds = extractSubagentRunIdsFromToolExecution(name, message);
+			const nestedGap = message.nestedCalls !== undefined && !options.modernUsage ? "unsupported-nested-tool-usage"
+				: options.modernUsage ? pooledToolGap(message, options.observedNested) : undefined;
+			let dedicatedResult: unknown = message;
+			if (nestedGap) {
+				out.gaps.push(nestedGap);
+				if (name !== "subagent" && name !== "task" && name !== "bg_wait") return out;
+				// Reject only the pool. Dedicated details retain their own identity and
+				// policy gates; omit root usage so the subagent fallback cannot claim it.
+				dedicatedResult = { details: message.details, runId: message.runId, sessionId: message.sessionId, sessionFile: message.sessionFile };
+			}
+			if (!boundedUsageMetadata(dedicatedResult)) { out.gaps.push("metadata-budget-exceeded"); return out; }
+			out.runIds = extractSubagentRunIdsFromToolExecution(name, dedicatedResult);
 			let category: UsageSwitchCategory = "tool-nested";
 			let records: SubagentUsageRecord[] = [];
 			if (name === "subagent" || name === "task") {
 				category = "sync-subagent";
-				records = extractSubagentUsageFromToolExecution(name, message, id);
+				records = extractSubagentUsageFromToolExecution(name, dedicatedResult, id);
 				if (!records.length) out.gaps.push("side-channel-history-unavailable");
 			} else if (name === "bg_wait") {
 				category = "pi-subagents";
-				records = extractBgWaitUsage(message, options.sessionIdentity, options.historicalRuns);
+				records = extractBgWaitUsage(dedicatedResult, options.sessionIdentity, options.historicalRuns);
 				if (!records.length) out.gaps.push("completion-ownership-unresolved");
 			} else if (!TOOL_USAGE_CLAIMED_ELSEWHERE.has(name)) {
 				records = extractToolResultUsage(name, message, id, { storedOnly: !options.live });

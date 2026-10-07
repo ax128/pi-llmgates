@@ -44,6 +44,70 @@ describe("Pi 1.0.4 entry-only accounting", () => {
 		expect(parseSessionEntry(pooled(), { ...options(), policy: { ...options().policy, toolUsage: false } }).candidates).toEqual([]);
 	});
 
+	it.each(["subagent", "Task"])("keeps %s dedicated details when its nested pool is rejected", (toolName) => {
+		for (const failure of ["excluded", "truncated", "oversize", "unsupported", "conflict"]) {
+			const entry = { ...pooled(), message: { ...pooled().message, toolName, details: { runId: "abcd", results: [{ agent: "worker", model: "worker", usage: { turns: 1, input: 30, cost: 3 } }] } } };
+			if (failure === "excluded") entry.message.nestedCalls.calls[0]!.name = "bg_wait";
+			if (failure === "truncated") entry.message.nestedCalls.complete = false;
+			if (failure === "oversize") entry.message.nestedCalls.calls = Array.from({ length: 201 }, (_, index) => ({ id: `child-${index}`, name: "ordinary", status: "ok" }));
+			const observedNested = failure === "conflict" ? new Map([["child", { parentId: "parent", name: "subagent", origin: "turn-1" }]]) : undefined;
+			for (const live of [true, false]) {
+				const parsed = parseSessionEntry(entry, { ...options(), live, modernUsage: failure !== "unsupported", observedNested, policy: { ...options().policy, subagent: false, toolUsage: false } });
+				expect(parsed.gaps.length).toBeGreaterThan(0);
+				expect(parsed.candidates).toHaveLength(1);
+				const candidate = parsed.candidates[0]!;
+				expect(candidate.kind).toBe("legacy");
+				if (candidate.kind === "legacy") {
+					expect(candidate.category).toBe("sync-subagent");
+					expect(candidate.records.map((r) => r.costUsd)).toEqual([3]); // never the $7 pool
+				}
+			}
+		}
+	});
+
+	it("never falls back to rejected root usage, arbitrary details, or oversized dedicated metadata", () => {
+		const entry = pooled(); entry.message.toolName = "subagent"; entry.message.nestedCalls.complete = false;
+		for (const details of [undefined, {}, { results: [] }, { results: Array.from({ length: 201 }, () => ({ model: "worker", usage: { cost: 3 } })) }]) {
+			expect(parseSessionEntry({ ...entry, message: { ...entry.message, details } }, options()).candidates).toEqual([]);
+		}
+		const ordinary = { ...entry, message: { ...entry.message, toolName: "ordinary", details: { results: [{ agent: "worker", usage: { cost: 3 } }] } } };
+		expect(parseSessionEntry(ordinary, options()).candidates).toEqual([]);
+	});
+
+	it("retains bg_wait completion ownership and source gates when dropping its pool", () => {
+		const entry = { ...pooled(), message: { ...pooled().message, toolName: "bg_wait", sessionId: "root", details: { mode: "management", completions: [{ runId: "abcd", results: [{ agent: "worker", model: "worker", usage: { turns: 1, input: 30, cost: 3 } }] }] } } };
+		entry.message.nestedCalls.complete = false;
+		const trusted = { ...options(), sessionIdentity: { sessionId: "root" }, historicalRuns: new Set(["abcd"]) };
+		const candidate = parseSessionEntry(entry, trusted).candidates[0]!;
+		expect(candidate.kind).toBe("legacy");
+		if (candidate.kind === "legacy") expect(candidate.records.map((r) => r.costUsd)).toEqual([3]);
+		expect(parseSessionEntry(entry, { ...trusted, historicalRuns: new Set() }).candidates).toEqual([]);
+		expect(parseSessionEntry(entry, { ...trusted, policy: { ...trusted.policy, subagent: false } }).candidates).toEqual([]);
+		expect(parseSessionEntry({ ...entry, message: { ...entry.message, sessionId: "another-session" } }, trusted).candidates).toEqual([]);
+	});
+
+	it("recovers dedicated spend on every persistence-off restart without restoring the rejected pool", async () => {
+		const entry = { ...pooled(), message: { ...pooled().message, toolName: "subagent", details: { runId: "abcd", results: [{ agent: "worker", model: "worker", usage: { turns: 1, input: 30, cost: 3 } }] } } };
+		entry.message.nestedCalls.calls[0]!.name = "intercom";
+		const manager = { getSessionId: () => "root", getSessionFile: () => undefined, getEntries: () => [entry], getLeafEntry: () => entry, getEntry: () => undefined };
+		for (let reload = 0; reload < 2; reload++) {
+			const collector = new UsageCollector("root", "root", options().policy, createUsagePersist("", "root", false));
+			const recovery = new SessionRecovery(collector, manager as unknown as ExtensionContext["sessionManager"], {
+				modernUsage: true, isOwner: () => true, onRestored() {}, onChange() {},
+				onRecords: (records, category, origin, historical) => { collector.ingestLegacyRecords(records, category, undefined, Date.now(), origin, historical); },
+			});
+			try {
+				await recovery.start();
+				for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+				expect(collector.sessionTotals().costUsd).toBe(3);
+				expect(collector.turnTotals().costUsd).toBe(0);
+				expect(collector.gapReasons().join()).toContain("nested-source-excluded");
+				recovery.boundary(); await new Promise<void>((resolve) => setImmediate(resolve));
+				expect(collector.sessionTotals().costUsd).toBe(3);
+			} finally { await recovery.stopAndDrain(); await collector.checkpointAndClose(); }
+		}
+	});
+
 	it("V21: unknown valid kind, no invented call count, no reasoning/cache subset double count", () => {
 		const entry = standalone("u1", "future-valid-kind"); Object.freeze(entry.usage); Object.freeze(entry);
 		const candidate = parseSessionEntry(entry, options()).candidates[0]!;

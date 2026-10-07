@@ -128,3 +128,9 @@ git diff --check
 最终真实 runtime：Pi **0.81.0 / 0.81.1 / 0.86.0 / 1.0.4**，persist off/on 共 **8 组**。全部执行 new/resume/fork/reload，并退出 owner 后启动**独立 Node 子进程**，从临时 session 文件/可选存档冷恢复（无模型调用）。1.0.4 另验证：多层并行 child 3+2+3 与 parent 5 的最终池为 13，而父 end 事件只有 5；All 只增加 13；排除的管理子工具/超长参数导致 incomplete 的父池不计；idle cache_warm 0.25 与未知有效 kind 0.5 只加 All，不改变 Turn、不增加 calls、不调用 provider；reload 与独立进程均保留 22.75 的可确认小计。全部为合成数据，不触碰用户账本。
 
 仍未认证：实际窄 TUI、真实付费网关、1.0.4 provider/登录/其他扩展整包兼容、真实 ENOSPC/断电。v1 解析合同未变，保留旧数据与未知来源；没有执行旧版本插件的破坏性写入回退实验，也不承诺旧程序获得新策略保护。没有 `pi install`、npm gate、合并、发布或部署。
+
+## 2026-10-07：#102 审查回归修复
+
+继承 #101 的存档/终态/归属修复，依赖分支使用普通 merge，不重写历史、不合并 PR。父嵌套池的拒绝不再提前跳过专用 adapter：仅把原有 details 与必要身份交给 subagent/Task/bg_wait，剥离被拒绝的 root usage；仍保留源开关、ownership 和独立 metadata 预算。没有专用证据或元数据超限时继续 fail closed，不从 nestedCalls 生成费用。
+
+新增 fixture 覆盖 subagent/Task 的排除名、截断、超预算、未认证版本与 live/tree 冲突；验证实时/历史同口径、bg_wait 未授权/跨会话/关闭来源仍拒绝，以及 persist-off 连续恢复只计专用 $3、不计父池 $7。`usage-session-entries` / `usage-session-recovery` / `tps-recovery-regressions` / `tps-runtime` / `tps-usage-inlets` / `tps-subagent-bridge` / `usage-recovery-storage` / `usage-collector` / `tps-subagent` 共 **9 文件 / 175 项通过**；typecheck/diff check 通过。LSP 无 error，但部分 push-only 文件无法确认 clean，以 tsc 补证。本次未重跑全量 build、多版本 SDK runtime、安装或发布门禁；上节版本门禁是原 PR 的历史记录。
