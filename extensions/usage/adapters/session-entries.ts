@@ -120,8 +120,9 @@ export function parseSessionEntry(entry: unknown, options: {
 				if (!records.length) out.gaps.push("side-channel-history-unavailable");
 			} else if (name === "bg_wait") {
 				category = "pi-subagents";
-				records = extractBgWaitUsage(dedicatedResult, options.sessionIdentity, options.historicalRuns);
-				if (!records.length) out.gaps.push("completion-ownership-unresolved");
+				let unresolvedOwnership = false;
+				records = extractBgWaitUsage(dedicatedResult, options.sessionIdentity, options.historicalRuns, () => { unresolvedOwnership = true; });
+				if (!records.length || unresolvedOwnership) out.gaps.push("completion-ownership-unresolved");
 			} else if (!TOOL_USAGE_CLAIMED_ELSEWHERE.has(name)) {
 				records = extractToolResultUsage(name, result, id, { storedOnly: !options.live });
 			} else if (message.usage !== undefined) out.gaps.push("excluded-tool-source");

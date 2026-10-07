@@ -88,9 +88,15 @@ export class SessionRecovery {
 		this.addPending({ toolCallId, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs });
 	}
 	noteToolResult(toolCallId: string, origin: string, result: unknown): void {
+		if (this.closing || this.entryDiscoveryStopped || !this.owns()) return;
 		this.noteTool(toolCallId, origin);
 		const pending = this.pending.find((p) => p.toolCallId === toolCallId);
-		if (pending) pending.toolMetadata = toolResultMetadata(result);
+		if (!pending) return;
+		pending.toolMetadata = toolResultMetadata(result);
+		pending.expires = Date.now() + USAGE_LIMITS.orphanTtlMs;
+		// The start-event probe may already have run while the tool was awaiting IO.
+		// A duplicate pending association must not suppress the result-entry probe.
+		this.leafDirty = true; this.schedule();
 	}
 	noteEntry(entryId: string, origin: string): void { this.addPending({ entryId, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
 	setModel(model: { id?: string; provider?: string } | undefined): void { this.liveModel = model; }
@@ -230,7 +236,9 @@ export class SessionRecovery {
 				this.collector.ingestAssistantEntry(candidate.message, candidate.entryId, origin, !historical && pending !== undefined);
 				if (!historical && !pending) this.collector.noteGap("origin-unassigned");
 			} else if (candidate.kind === "session-usage") this.collector.ingestSessionUsage(candidate.entry, historical);
-			else if (!this.collector.restoreLinkedToolEntry(entry.id, candidate.category)) {
+			// bg_wait has stable per-child keys. One archived child must not mark
+			// the whole entry covered when a later retry proves another child's owner.
+			else if (candidate.category === "pi-subagents" || !this.collector.restoreLinkedToolEntry(entry.id, candidate.category)) {
 				this.options.onRecords(candidate.records, candidate.category, origin, !live, live ? entry.id : undefined);
 			}
 		}
