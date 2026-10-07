@@ -486,6 +486,7 @@ export default function (pi: ExtensionAPI) {
 		targetStats: ModelUsageStats,
 		category: "pi-subagents" | "sync-subagent" | "tool-nested" | "compaction" = "pi-subagents",
 		originAtEvent?: string,
+		entryId?: string,
 	): void {
 		if (!usageCollector) {
 			// Master switch off (`LLMGATES_TPS=0`) or no TUI collector: do not fall
@@ -500,6 +501,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		const fresh = selectFreshSubagentRecords(subagentIngestState, records, () => usageCollector?.noteGap("source-index-capacity"));
 		if (fresh.length === 0) {
+			if (entryId) usageRevisionClock = usageCollector.linkToolEntry(records.map((r) => r.sourceKey), entryId, usageRevisionClock);
 			return;
 		}
 		const runId = undefined; // ingestion is never evidence of a launch origin
@@ -512,7 +514,10 @@ export default function (pi: ExtensionAPI) {
 			runId,
 			Date.now(),
 			originAtEvent ?? (category === "pi-subagents" ? "unassigned" : usageCollector.currentOriginTurnId()),
+			false,
+			entryId,
 		);
+		if (entryId) usageRevisionClock = usageCollector.linkToolEntry(records.map((r) => r.sourceKey), entryId, usageRevisionClock);
 		syncStatsFromLedger();
 		if (requestStartMs !== null) {
 			scheduleStatusRefresh(targetStats);
@@ -818,9 +823,11 @@ export default function (pi: ExtensionAPI) {
 						subagentIngestState = restoreSubagentIngestState(owner.archivedObservations());
 						usageRevisionClock = owner.revisionClock;
 					},
-					onRecords: (records, category, origin, historical) => {
+					onRecords: (records, category, origin, historical, entryId) => {
 						if (!historical) {
-							applySubagentRecords(records, turnStats, category as "sync-subagent", origin);
+							const canonical = category === "sync-subagent"
+								? stampSnapshotRevision(records.map((r) => ({ ...r, trustedFinal: true })), nextUsageRevision()) : records;
+							applySubagentRecords(canonical, turnStats, category as "sync-subagent", origin, entryId);
 						} else {
 							const storedKeys = new Set(owner.archivedObservations().map((o) => o.executionId));
 							const proven = records.filter((r) => storedKeys.has(r.sourceKey) && subagentIngestState.countedKeys.has(r.sourceKey));
@@ -931,24 +938,20 @@ export default function (pi: ExtensionAPI) {
 		if (!isPrimaryUiSession(ctx) || !usageCollector) return;
 		if (!boundedUsageMetadata(event.result)) { usageCollector.noteGap("metadata-budget-exceeded"); return; }
 		const toolOrigin = recovery?.originForTool(event.toolCallId) ?? "unassigned";
-		if (!("parentToolCallId" in event)) recovery?.noteTool(event.toolCallId, toolOrigin);
+		if (!("parentToolCallId" in event)) recovery?.noteToolResult(event.toolCallId, toolOrigin, event.result);
 		ensureSubagentWatcher();
 		for (const runId of extractSubagentRunIdsFromToolExecution(event.toolName, event.result)) {
 			if (sessionRunIds.size < USAGE_LIMITS.maxMemoryObservations) sessionRunIds.add(runId);
 			else usageCollector.noteGap("ownership-capacity");
 			usageCollector.bindRun(runId, toolOrigin);
 		}
-		let dedicated = extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId);
-		if (MODERN_USAGE_VERIFIED) {
-			if ("parentToolCallId" in event && typeof event.parentToolCallId === "string") {
-				const identified = runIdentifiedRecords(dedicated);
-				if (identified.length !== dedicated.length) usageCollector.noteGap("nested-dedicated-identity-unresolved");
-				dedicated = identified;
-			} else {
-				// A root's end event lacks the final nestedCalls evidence. Let the
-				// canonical entry apply the same ownership gate as historical replay.
-				dedicated = [];
-			}
+		// Root results are counted only through their public entry, on every SDK.
+		// Nested results have no entry of their own and still require a stable run.
+		let dedicated: SubagentUsageRecord[] = [];
+		if (MODERN_USAGE_VERIFIED && "parentToolCallId" in event && typeof event.parentToolCallId === "string") {
+			const extracted = extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId);
+			dedicated = runIdentifiedRecords(extracted);
+			if (dedicated.length !== extracted.length) usageCollector.noteGap("nested-dedicated-identity-unresolved");
 		}
 		const records = stampSnapshotRevision(dedicated, nextUsageRevision());
 		const toolCallId = event.toolCallId;

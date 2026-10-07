@@ -184,8 +184,9 @@ describe("tps runtime subagent ordering", () => {
 	it("preserves model-attempt partitions through the ledger and removes superseded models", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "tps-model-partitions-"));
 		const runtime = createRuntime(cwd);
+		let resultSequence = 0;
 		const end = (modelAttempts: unknown[]) => runtime.emit("tool_execution_end", {
-			toolName: "subagent", toolCallId: "models", result: { details: { runId: "abcd", results: [{ agent: "worker", index: 0, modelAttempts }] } },
+			toolName: "subagent", toolCallId: `models-${++resultSequence}`, result: { details: { runId: "abcd", results: [{ agent: "worker", index: 0, modelAttempts }] } },
 		});
 		const show = async () => {
 			await drainUsage();
@@ -397,7 +398,7 @@ describe("tps runtime subagent ordering", () => {
 			const artifactTime = (Date.now() + 1000) / 1000;
 			utimesSync(meta, artifactTime, artifactTime);
 			await runtime.emit("agent_settled");
-			await new Promise((resolve) => setTimeout(resolve, 10));
+			await vi.waitFor(() => expect(runtime.statuses.at(-1)?.value).toMatch(/All(?:\(partial\))? (?:≥1|1c)\./));
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This turn");
@@ -494,7 +495,7 @@ describe("tps runtime subagent ordering", () => {
 			utimesSync(ownedMeta, artifactTime, artifactTime);
 			utimesSync(oldSessionMeta, artifactTime, artifactTime);
 			await runtime.emit("agent_settled");
-			await new Promise((resolve) => setTimeout(resolve, 10));
+			await vi.waitFor(() => expect(runtime.statuses.at(-1)?.value).toContain("2c"));
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This turn");

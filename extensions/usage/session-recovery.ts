@@ -4,10 +4,12 @@ type ReadonlySessionManager = ExtensionContext["sessionManager"];
 import { isPlainObject } from "../util.js";
 import { normalizeSubagentSessionIdentity, type SubagentUsageRecord } from "../tps-subagent.js";
 import { USAGE_LIMITS, type UsageSwitchCategory } from "./policy.js";
-import { parseSessionEntry, usageMetadataBytes } from "./adapters/session-entries.js";
+import { parseSessionEntry, toolResultMetadata, usageMetadataBytes } from "./adapters/session-entries.js";
 import type { UsageCollector } from "./collector.js";
 
-type Pending = { message?: unknown; toolCallId?: string; entryId?: string; origin: string; expires: number };
+type ToolMetadata = ReturnType<typeof toolResultMetadata>;
+type Pending = { message?: unknown; toolCallId?: string; entryId?: string; origin: string; expires: number; toolMetadata?: ToolMetadata };
+type DeferredEntry = { origin: string; historical: boolean; live: boolean; toolMetadata?: ToolMetadata };
 export class SessionRecovery {
 	private readonly seen = new Set<string>();
 	private readonly startupIds = new Set<string>();
@@ -16,6 +18,8 @@ export class SessionRecovery {
 	private readonly nested = new Map<string, { parentId: string; rootId: string; name: string; origin: string; conflicted?: boolean }>();
 	private idleTimer: ReturnType<typeof setInterval> | undefined;
 	private readonly pending: Pending[] = [];
+	// Public entry IDs only: no retained messages, and at most one retry after replay.
+	private readonly deferred = new Map<string, DeferredEntry>();
 	private readonly queue: Array<{ run: () => void | Promise<void>; bytes: number; background: boolean }> = [];
 	private entries: readonly unknown[] | undefined;
 	private cursor = 0;
@@ -23,6 +27,8 @@ export class SessionRecovery {
 	private lastSnapshot = -Infinity;
 	private boundaryDirty = false;
 	private leafDirty = false;
+	private leafCursor: string | undefined;
+	private readonly leafQueue: string[] = [];
 	private initialized = false;
 	private draining = false;
 	private closing = false;
@@ -36,11 +42,11 @@ export class SessionRecovery {
 		isOwner: () => boolean;
 		modernUsage?: boolean;
 		onRestored: () => void;
-		onRecords: (records: readonly SubagentUsageRecord[], category: UsageSwitchCategory, origin: string, historical: boolean) => void;
+		onRecords: (records: readonly SubagentUsageRecord[], category: UsageSwitchCategory, origin: string, historical: boolean, entryId?: string) => void;
 		onChange: () => void;
 	}) {}
-	get pendingCount(): number { return this.queue.length + this.pending.length; }
-	get hasPendingRecovery(): boolean { return !this.initialized || Boolean(this.entries) || this.boundaryDirty || this.leafDirty || this.draining; }
+	get pendingCount(): number { return this.queue.length + this.pending.length + this.deferred.size; }
+	get hasPendingRecovery(): boolean { return !this.initialized || Boolean(this.entries) || this.deferred.size > 0 || this.boundaryDirty || this.leafDirty || this.draining; }
 	private owns(): boolean { return !this.cancelled && this.options.isOwner(); }
 	async start(): Promise<void> {
 		this.collector.recoveryState = "recovering";
@@ -80,6 +86,11 @@ export class SessionRecovery {
 		if (this.tools.has(toolCallId)) return;
 		if (!toolCallId || toolCallId.length > 1024) { this.collector.noteGap("invalid-tool-identity"); return; }
 		this.addPending({ toolCallId, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs });
+	}
+	noteToolResult(toolCallId: string, origin: string, result: unknown): void {
+		this.noteTool(toolCallId, origin);
+		const pending = this.pending.find((p) => p.toolCallId === toolCallId);
+		if (pending) pending.toolMetadata = toolResultMetadata(result);
 	}
 	noteEntry(entryId: string, origin: string): void { this.addPending({ entryId, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
 	setModel(model: { id?: string; provider?: string } | undefined): void { this.liveModel = model; }
@@ -146,7 +157,8 @@ export class SessionRecovery {
 		this.entryDiscoveryStopped = true;
 		this.collector.noteGap("entry-index-capacity");
 		this.entries = undefined; this.leafDirty = this.boundaryDirty = false;
-		this.pending.length = 0; this.nested.clear();
+		this.leafCursor = undefined; this.leafQueue.length = 0;
+		this.pending.length = 0; this.nested.clear(); this.deferred.clear();
 		if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = undefined; }
 		if (this.boundaryTimer) { clearTimeout(this.boundaryTimer); this.boundaryTimer = undefined; }
 		if (this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = undefined; }
@@ -155,34 +167,49 @@ export class SessionRecovery {
 		const entries: unknown[] = [];
 		if (this.entryDiscoveryStopped) return entries;
 		try {
-			let entry = this.manager.getLeafEntry();
+			let entry = this.leafCursor ? this.manager.getEntry(this.leafCursor) : this.manager.getLeafEntry();
 			const walked = new Set<string>();
 			while (entry && !this.seen.has(entry.id) && !walked.has(entry.id) && entries.length < USAGE_LIMITS.perTickEvents) {
 				walked.add(entry.id); entries.push(entry);
 				entry = entry.parentId ? this.manager.getEntry(entry.parentId) : undefined;
 			}
-			if (entry && !this.seen.has(entry.id)) this.boundaryDirty = true;
+			this.leafCursor = entry && !this.seen.has(entry.id) && !walked.has(entry.id) ? entry.id : undefined;
 		} catch { this.collector.noteGap("leaf-discovery-unavailable"); this.boundaryDirty = true; }
 		return entries.reverse();
 	}
-	private process(entry: unknown): void {
+	private readEntry(id: string): ReturnType<ReadonlySessionManager["getEntry"]> {
+		try { return this.manager.getEntry(id); }
+		catch { this.collector.noteGap("session-entry-unavailable"); return undefined; }
+	}
+	private process(entry: unknown, retry?: DeferredEntry): void {
 		if (this.entryDiscoveryStopped || !this.owns() || !isPlainObject(entry) || typeof entry.id !== "string") return;
-		if (this.seen.has(entry.id)) return;
-		if (this.seen.size >= USAGE_LIMITS.maxMemoryObservations) { this.stopEntryDiscovery(); return; }
+		if (this.seen.has(entry.id) && !retry) return;
+		if (!this.seen.has(entry.id) && this.seen.size >= USAGE_LIMITS.maxMemoryObservations) { this.stopEntryDiscovery(); return; }
 		this.seen.add(entry.id);
-		const historical = this.startupIds.has(entry.id);
+		const historical = retry?.historical ?? this.startupIds.has(entry.id);
 		const message = isPlainObject(entry.message) ? entry.message : undefined;
 		const pendingIndex = this.pending.findIndex((p) => p.message !== undefined ? p.message === message : p.entryId ? p.entryId === entry.id : message?.role === "toolResult" && p.toolCallId === message.toolCallId);
 		const pending = pendingIndex < 0 ? undefined : this.pending.splice(pendingIndex, 1)[0];
 		if (!this.pending.length && this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = undefined; }
-		const origin = historical ? "history" : pending?.origin ?? "unassigned";
+		const origin = retry?.origin ?? (historical ? "history" : pending?.origin ?? "unassigned");
+		const live = retry?.live ?? (!historical && pending !== undefined);
+		const metadata = retry?.toolMetadata ?? pending?.toolMetadata;
 		const parsed = parseSessionEntry(entry, {
 			policy: this.collector.policy, historicalRuns: this.historicalRuns,
 			sessionIdentity: normalizeSubagentSessionIdentity({ sessionId: this.manager.getSessionId(), sessionFile: this.manager.getSessionFile() }),
-			live: !historical && pending !== undefined, model: this.liveModel,
+			live, model: this.liveModel, toolMetadata: metadata,
 			modernUsage: this.options.modernUsage, observedNested: this.nested,
 		});
-		for (const gap of parsed.gaps) this.collector.noteGap(gap);
+		for (const gap of parsed.gaps) {
+			if (gap === "completion-ownership-unresolved" && !retry && this.entries && !this.closing && this.collector.enabled("pi-subagents")) {
+				if (this.deferred.size < USAGE_LIMITS.maxPendingOrphans) {
+					this.deferred.set(entry.id, { origin, historical, live, toolMetadata: metadata });
+					continue;
+				}
+				this.collector.noteGap("completion-retry-capacity");
+			}
+			this.collector.noteGap(gap);
+		}
 		if (message?.role === "toolResult") for (const [id, record] of this.nested) if (record.rootId === message.toolCallId) this.nested.delete(id);
 		for (const id of parsed.runIds) {
 			if (this.historicalRuns.size < USAGE_LIMITS.maxMemoryObservations) this.historicalRuns.add(id);
@@ -203,7 +230,9 @@ export class SessionRecovery {
 				this.collector.ingestAssistantEntry(candidate.message, candidate.entryId, origin, !historical && pending !== undefined);
 				if (!historical && !pending) this.collector.noteGap("origin-unassigned");
 			} else if (candidate.kind === "session-usage") this.collector.ingestSessionUsage(candidate.entry, historical);
-			else this.options.onRecords(candidate.records, candidate.category, origin, historical || !pending);
+			else if (!this.collector.restoreLinkedToolEntry(entry.id, candidate.category)) {
+				this.options.onRecords(candidate.records, candidate.category, origin, !live, live ? entry.id : undefined);
+			}
 		}
 	}
 	private async drain(): Promise<void> {
@@ -214,7 +243,7 @@ export class SessionRecovery {
 		let count = 0, bytes = 0;
 		try {
 			this.expirePending();
-			while (this.queue.length && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {
+			while (this.queue.length && (!this.queue[0]!.background || this.closing) && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {
 				const item = this.queue[0]!;
 				if (bytes + item.bytes > USAGE_LIMITS.perTickReadBytes) break;
 				this.queue.shift(); bytes += item.bytes; count++;
@@ -223,14 +252,20 @@ export class SessionRecovery {
 			}
 			if (!this.closing && this.leafDirty) {
 				this.leafDirty = false;
-				const leaf = this.leafSlice();
-				for (const entry of leaf) {
-					if (count >= USAGE_LIMITS.perTickEvents || performance.now() >= deadline) { this.boundaryDirty = true; break; }
+				const continuing = this.leafQueue.length > 0 || this.leafCursor !== undefined;
+				if (!this.leafQueue.length) for (const entry of this.leafSlice()) {
+					if (isPlainObject(entry) && typeof entry.id === "string") this.leafQueue.push(entry.id);
+				}
+				let processed = false;
+				while (this.leafQueue.length && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {
+					const entry = this.readEntry(this.leafQueue[0]!);
 					const size = usageMetadataBytes(isPlainObject(entry) ? entry.message ?? entry : entry) ?? USAGE_LIMITS.perTickReadBytes;
-					if (bytes + size > USAGE_LIMITS.perTickReadBytes) { this.leafDirty = true; break; }
-					bytes += size; this.process(entry); count++;
+					if (bytes + size > USAGE_LIMITS.perTickReadBytes) break;
+					this.leafQueue.shift(); bytes += size; this.process(entry); count++; processed = true;
 					if (this.entryDiscoveryStopped) break;
 				}
+				// Probe the current leaf once more after backfill, in case it advanced.
+				this.leafDirty = !this.entryDiscoveryStopped && ((processed && continuing) || this.leafQueue.length > 0 || this.leafCursor !== undefined);
 			}
 			while (!this.closing && this.entries && this.cursor < this.entries.length && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {
 				const entry = this.entries[this.cursor];
@@ -239,6 +274,15 @@ export class SessionRecovery {
 				bytes += size; this.process(entry); this.cursor++; count++;
 			}
 			if (this.entries && this.cursor >= this.entries.length) this.entries = undefined;
+			if (!this.entries && !this.closing) for (const [id, retry] of this.deferred) {
+				if (count >= USAGE_LIMITS.perTickEvents || performance.now() >= deadline) break;
+				const entry = this.readEntry(id);
+				const size = usageMetadataBytes(isPlainObject(entry) ? entry.message ?? entry : entry) ?? USAGE_LIMITS.perTickReadBytes;
+				if (bytes + size > USAGE_LIMITS.perTickReadBytes) break;
+				bytes += size; count++; this.deferred.delete(id);
+				if (entry) this.process(entry, retry);
+				else this.collector.noteGap("completion-entry-unavailable");
+			}
 			if (!this.entries && !this.closing && this.boundaryDirty) {
 				const wait = this.lastSnapshot + USAGE_LIMITS.reconcileIntervalMs - Date.now();
 				if (wait <= 0) this.capture();
@@ -251,12 +295,22 @@ export class SessionRecovery {
 					this.boundaryTimer.unref?.();
 				}
 			}
-			if (!this.entries && !this.queue.length && !this.leafDirty) this.collector.finishRecovery();
+			// Canonical results claim executions before background meta, including
+			// when their public parent chain spans more than one bounded leaf slice.
+			while (!this.entries && !this.leafDirty && this.queue.length && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {
+				const item = this.queue[0]!;
+				if (bytes + item.bytes > USAGE_LIMITS.perTickReadBytes) break;
+				this.queue.shift(); bytes += item.bytes; count++;
+				await item.run();
+				if (!this.owns()) return;
+			}
+			if (!this.entries && !this.queue.length && !this.leafDirty && !this.deferred.size) this.collector.finishRecovery();
 			if (this.owns() && !this.closing && (count > 0 || previousState !== this.collector.recoveryState)) this.options.onChange();
 		} catch { this.collector.noteGap("recovery-task-failed"); }
 		finally {
 			this.draining = false;
-			if (this.queue.length || (!this.closing && (this.entries || this.leafDirty))) this.schedule();
+			const runnableQueue = this.queue.length && (!this.queue[0]!.background || this.closing || (!this.entries && !this.leafDirty));
+			if (runnableQueue || (!this.closing && (this.entries || this.leafDirty || this.deferred.size))) this.schedule();
 		}
 	}
 	async stopAndDrain(): Promise<void> {
@@ -264,8 +318,9 @@ export class SessionRecovery {
 		if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = undefined; }
 		// Final public leaf check before dropping history also commits entries whose
 		// message_end preceded append immediately before shutdown/reload.
+		this.leafCursor = undefined; this.leafQueue.length = 0;
 		if (this.initialized && this.owns()) for (const entry of this.leafSlice()) this.process(entry);
-		this.entries = undefined; this.pending.length = 0;
+		this.entries = undefined; this.pending.length = 0; this.deferred.clear();
 		if (this.pendingTimer) clearTimeout(this.pendingTimer);
 		if (this.boundaryTimer) clearTimeout(this.boundaryTimer);
 		if (this.scheduled) { clearImmediate(this.scheduled); this.scheduled = undefined; }
