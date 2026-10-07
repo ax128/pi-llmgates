@@ -9,7 +9,7 @@
 import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import {
 	isSubagentBridgeEnabled,
 	isSubagentToolAvailable,
@@ -45,7 +45,7 @@ import {
 import { envFlag } from "./util.js";
 import { createUsageCollector, type UsageCollector } from "./usage/collector.js";
 import { SessionRecovery } from "./usage/session-recovery.js";
-import { boundedUsageMetadata } from "./usage/adapters/session-entries.js";
+import { boundedUsageMetadata, runIdentifiedRecords } from "./usage/adapters/session-entries.js";
 import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, formatUsageScopeTitleFromLedger, replaceModelUsageStats } from "./usage/format.js";
 import { resolveUsagePolicy, USAGE_LIMITS } from "./usage/policy.js";
 import { classifyCostDifferences, formatPolicyExclusions, formatReconciliationLines, summarizeNativeCosts, type NativeCostSnapshot } from "./usage/reconciliation.js";
@@ -58,6 +58,8 @@ import {
 	type ModelAuditFile,
 } from "./model-audit/store.js";
 
+// Usage-only R3 gate, not a package peer compatibility claim.
+const MODERN_USAGE_VERIFIED = VERSION === "1.0.4";
 const STATUS_KEY = "tps";
 const REFRESH_INTERVAL_MS = 1000;
 const SUBAGENT_META_SCAN_DEBOUNCE_MS = 250;
@@ -184,14 +186,14 @@ export default function (pi: ExtensionAPI) {
 		return count > 0 ? ctx.ui.theme.fg("error", `.x${count}`) : "";
 	}
 
-	function runUsageTask(task: () => void | Promise<void>, bytes = 128): void {
+	function runUsageTask(task: () => void | Promise<void>, bytes = 128, background = false): void {
 		const expectedGeneration = sessionGeneration;
 		const owner = usageCollector;
 		recovery?.enqueue(async () => {
 			if (!sessionActive || sessionGeneration !== expectedGeneration || usageCollector !== owner) return;
 			try { await task(); }
 			catch { owner?.noteGap("live-task-failed"); }
-		}, bytes);
+		}, bytes, background);
 	}
 
 	function safeUi(ctx: ExtensionContext | null | undefined, action: () => void): void {
@@ -496,7 +498,7 @@ export default function (pi: ExtensionAPI) {
 		if (records.length > USAGE_LIMITS.perTickEvents || records.some((r) => (r.modelBreakdown?.length ?? 1) > USAGE_LIMITS.perTickEvents)) {
 			usageCollector.noteGap("metadata-budget-exceeded"); return;
 		}
-		const fresh = selectFreshSubagentRecords(subagentIngestState, records);
+		const fresh = selectFreshSubagentRecords(subagentIngestState, records, () => usageCollector?.noteGap("source-index-capacity"));
 		if (fresh.length === 0) {
 			return;
 		}
@@ -551,6 +553,7 @@ export default function (pi: ExtensionAPI) {
 			const blockedIndexlessSourceKeys = findAmbiguousIndexlessMetaSourceKeys(artifactDirs);
 			revokeAmbiguousIndexlessMeta(blockedIndexlessSourceKeys);
 			let truncated = false;
+			const readBudget = { bytes: 0, reads: 0, deadline: performance.now() + USAGE_LIMITS.perTickMs };
 			const ingestedBefore = subagentIngestState.keys.size;
 			for (const artifactsDir of artifactDirs) {
 				applySubagentRecords(
@@ -565,6 +568,8 @@ export default function (pi: ExtensionAPI) {
 						subagentIngestState.pendingNullMeta,
 						subagentIngestState.metaMtimeMs,
 						blockedIndexlessSourceKeys,
+						readBudget,
+						() => usageCollector?.noteGap("metadata-budget-exceeded"),
 					),
 					targetStats,
 				);
@@ -580,8 +585,8 @@ export default function (pi: ExtensionAPI) {
 			// file being newly accounted for. Bounded by the file count: terminates.
 			if (truncated && subagentIngestState.keys.size > ingestedBefore) {
 				scheduleSubagentMetaScan();
-			}
-		});
+			} else if (truncated) usageCollector?.noteGap("side-channel-budget-exceeded");
+		}, artifactDirs.some((dir) => existsSync(dir)) ? USAGE_LIMITS.perTickReadBytes : 128, true);
 	}
 
 	function scheduleSubagentMetaScan(): void {
@@ -674,7 +679,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const entries = ctx.sessionManager.getEntries();
 				recovery?.reconcileSnapshot(entries);
-				native = summarizeNativeCosts(entries, { deadline });
+				native = summarizeNativeCosts(entries, { deadline, modernUsage: MODERN_USAGE_VERIFIED });
 				if (native.complete && performance.now() < deadline) classified = classifyCostDifferences(entries, collector.ledger.observations(), sessionId, collector.policy);
 			} catch {
 				// Missing/failed public API is unavailable, not a zero native total.
@@ -808,6 +813,7 @@ export default function (pi: ExtensionAPI) {
 				statusCtx = ctx;
 				recovery = new SessionRecovery(owner, ctx.sessionManager, {
 					isOwner: () => sessionActive && sessionGeneration === generation && usageCollector === owner,
+					modernUsage: MODERN_USAGE_VERIFIED,
 					onRestored: () => {
 						subagentIngestState = restoreSubagentIngestState(owner.archivedObservations());
 						usageRevisionClock = owner.revisionClock;
@@ -818,7 +824,7 @@ export default function (pi: ExtensionAPI) {
 						} else {
 							const storedKeys = new Set(owner.archivedObservations().map((o) => o.executionId));
 							const proven = records.filter((r) => storedKeys.has(r.sourceKey) && subagentIngestState.countedKeys.has(r.sourceKey));
-							const fresh = selectFreshSubagentRecords(subagentIngestState, records);
+							const fresh = selectFreshSubagentRecords(subagentIngestState, records, () => owner.noteGap("source-index-capacity"));
 							owner.ingestLegacyRecords([...proven, ...fresh], category, undefined, Date.now(), origin, true);
 						}
 					},
@@ -896,7 +902,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_execution_start", (event, ctx) => {
-		if (isPrimaryUiSession(ctx) && usageCollector) recovery?.noteTool(event.toolCallId, usageCollector.currentOriginTurnId());
+		if (!isPrimaryUiSession(ctx) || !usageCollector) return;
+		if ("parentToolCallId" in event && typeof event.parentToolCallId === "string") recovery?.noteNestedTool(event.toolCallId, event.parentToolCallId, event.toolName);
+		else recovery?.noteTool(event.toolCallId, usageCollector.currentOriginTurnId());
 	});
 
 	pi.on("tool_execution_update", (event, ctx) => {
@@ -923,17 +931,26 @@ export default function (pi: ExtensionAPI) {
 		if (!isPrimaryUiSession(ctx) || !usageCollector) return;
 		if (!boundedUsageMetadata(event.result)) { usageCollector.noteGap("metadata-budget-exceeded"); return; }
 		const toolOrigin = recovery?.originForTool(event.toolCallId) ?? "unassigned";
-		recovery?.noteTool(event.toolCallId, toolOrigin);
+		if (!("parentToolCallId" in event)) recovery?.noteTool(event.toolCallId, toolOrigin);
 		ensureSubagentWatcher();
 		for (const runId of extractSubagentRunIdsFromToolExecution(event.toolName, event.result)) {
 			if (sessionRunIds.size < USAGE_LIMITS.maxMemoryObservations) sessionRunIds.add(runId);
 			else usageCollector.noteGap("ownership-capacity");
 			usageCollector.bindRun(runId, toolOrigin);
 		}
-		const records = stampSnapshotRevision(
-			extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId),
-			nextUsageRevision(),
-		);
+		let dedicated = extractSubagentUsageFromToolExecution(event.toolName, event.result, event.toolCallId);
+		if (MODERN_USAGE_VERIFIED) {
+			if ("parentToolCallId" in event && typeof event.parentToolCallId === "string") {
+				const identified = runIdentifiedRecords(dedicated);
+				if (identified.length !== dedicated.length) usageCollector.noteGap("nested-dedicated-identity-unresolved");
+				dedicated = identified;
+			} else {
+				// A root's end event lacks the final nestedCalls evidence. Let the
+				// canonical entry apply the same ownership gate as historical replay.
+				dedicated = [];
+			}
+		}
+		const records = stampSnapshotRevision(dedicated, nextUsageRevision());
 		const toolCallId = event.toolCallId;
 		runUsageTask(() => {
 			usageCollector?.dropProgressForToolCall(toolCallId);
@@ -1069,6 +1086,7 @@ export default function (pi: ExtensionAPI) {
 		runUsageTask(() => {
 			const blockedIndexlessSourceKeys = findAmbiguousIndexlessMetaSourceKeys(artifactsDirs);
 			revokeAmbiguousIndexlessMeta(blockedIndexlessSourceKeys);
+			const readBudget = { bytes: 0, reads: 0, deadline: performance.now() + USAGE_LIMITS.perTickMs };
 			for (const artifactsDir of artifactsDirs) {
 				applySubagentRecords(
 					collectPiSubagentsMetaUsage(
@@ -1076,10 +1094,12 @@ export default function (pi: ExtensionAPI) {
 						startedAtMs,
 						subagentIngestState.keys,
 						sessionRunIds,
-						undefined,
+						() => usageCollector?.noteGap("side-channel-budget-exceeded"),
 						subagentIngestState.pendingNullMeta,
 						subagentIngestState.metaMtimeMs,
 						blockedIndexlessSourceKeys,
+						readBudget,
+						() => usageCollector?.noteGap("metadata-budget-exceeded"),
 					),
 					settledTurnStats,
 				);
@@ -1102,7 +1122,7 @@ export default function (pi: ExtensionAPI) {
 				);
 				statusCtx = ctx;
 			}
-		});
+		}, artifactsDirs.some((dir) => existsSync(dir)) ? USAGE_LIMITS.perTickReadBytes : 128, true);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {

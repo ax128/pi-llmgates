@@ -104,7 +104,7 @@ describe("tps runtime subagent ordering", () => {
 		const metaPath = join(artifactsDir, "abcd_worker_0_meta.json");
 		const child = (input: number) => ({ agent: "worker", index: 0, model: "worker", usage: { input, turns: 2 } });
 		const show = async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			runtime.scopeChoices.push("This session");
 			await runtime.commands.get("calls")!.handler("", runtime.ctx);
 			return runtime.selections.at(-1)!;
@@ -143,7 +143,7 @@ describe("tps runtime subagent ordering", () => {
 			await runtime.emit("message_end", { message: { role: "assistant", model: "m", usage: { input: 10, output: 5, cost: { total: 0.01 } } } });
 			await runtime.emit("message_end", { message: { role: "assistant", model: "m", usage: { input: 0, output: 0, cost: { total: 0 } } } });
 			await runtime.emit("agent_settled");
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			expect(runtime.statuses.at(-1)?.value).toContain("2c.~$0.010 + ?");
 			runtime.scopeChoices.push("This session");
 			await runtime.commands.get("calls")!.handler("", runtime.ctx);
@@ -159,7 +159,7 @@ describe("tps runtime subagent ordering", () => {
 		const runtime = createRuntime(cwd);
 		const child = (model: string, index: number, input: number) => ({ agent: "worker", index, model, usage: { input, output: 1, turns: 1 } });
 		const show = async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			runtime.scopeChoices.push("This session");
 			await runtime.commands.get("calls")!.handler("", runtime.ctx);
 			return runtime.selections.at(-1)!;
@@ -188,7 +188,7 @@ describe("tps runtime subagent ordering", () => {
 			toolName: "subagent", toolCallId: "models", result: { details: { runId: "abcd", results: [{ agent: "worker", index: 0, modelAttempts }] } },
 		});
 		const show = async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			runtime.scopeChoices.push("This session");
 			await runtime.commands.get("calls")!.handler("", runtime.ctx);
 			return runtime.selections.at(-1)!;
@@ -237,7 +237,7 @@ describe("tps runtime subagent ordering", () => {
 			});
 			now.mockReturnValue(1_002);
 			runtime.emitNow("agent_settled");
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This turn");
@@ -277,7 +277,7 @@ describe("tps runtime subagent ordering", () => {
 				now.mockReturnValue(5_001);
 				runtime.emitNow("agent_settled");
 			});
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			now.mockReturnValue(6_000);
 			runtime.emitNow("before_agent_start");
@@ -290,7 +290,7 @@ describe("tps runtime subagent ordering", () => {
 					usage: { input: 2, output: 2, totalTokens: 4 },
 				},
 			});
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const refreshed = runtime.statuses.slice(statusCount).some(
 				(status) => typeof status.value === "string" && /\b1c\b/.test(status.value),
@@ -323,7 +323,7 @@ describe("tps runtime subagent ordering", () => {
 			const statusCount = runtime.statuses.length;
 			runtime.emitNow("session_start", {}, nextCtx);
 			runtime.emitNow("before_agent_start", {}, nextCtx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			expect(runtime.statuses.slice(statusCount).every((status) => status.context === "next")).toBe(true);
 			expect(runtime.statuses.at(-1)?.value).toBeDefined();
@@ -357,7 +357,7 @@ describe("tps runtime subagent ordering", () => {
 			});
 			await new Promise((resolve) => setTimeout(resolve, 400));
 			await runtime.emit("agent_settled");
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This turn");
@@ -432,7 +432,7 @@ describe("tps runtime subagent ordering", () => {
 			runtime.emitNow("session_shutdown");
 			runtime.emitNow("session_start");
 			runtime.emitNow("before_agent_start");
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This turn");
@@ -466,14 +466,14 @@ describe("tps runtime subagent ordering", () => {
 		const runtime = createRuntime(cwd);
 		try {
 			await runtime.emit("session_start");
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			await runtime.emit("tool_execution_end", {
 				toolName: "subagent",
 				toolCallId: "call-old-session",
 				result: { details: { runId: "BBBB-2222", async: true, results: [] } },
 			});
 			await runtime.emit("session_start");
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			await runtime.emit("tool_execution_end", {
 				toolName: "subagent",
 				toolCallId: "call-owned",
@@ -535,7 +535,7 @@ describe("tps runtime subagent ordering", () => {
 					model: "live-model",
 				},
 			});
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This turn");
@@ -565,7 +565,7 @@ describe("tps runtime subagent ordering", () => {
 				toolCallId: "call-generic-progress",
 				result: { content: [{ type: "text", text: "done" }] },
 			});
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			runtime.scopeChoices.push("This session");
 			await runtime.commands.get("calls")!.handler("", runtime.ctx);
 			expect(runtime.notifications.some((n) => n.message.includes("No model calls recorded"))).toBe(true);
@@ -607,7 +607,7 @@ describe("tps runtime subagent ordering", () => {
 					},
 				},
 			});
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This turn");
@@ -650,7 +650,7 @@ describe("tps runtime subagent ordering", () => {
 		// Nothing here is timer-driven — the usage work is a promise chain — so drain
 		// it with real macrotasks rather than by advancing the fake clock.
 		const drainUsageTasks = async () => {
-			for (let i = 0; i < 5; i++) {
+			for (let i = 0; i < 20; i++) {
 				await new Promise((resolve) => setImmediate(resolve));
 			}
 		};
@@ -710,7 +710,7 @@ describe("tps runtime subagent ordering", () => {
 			runtime.scopeChoices.push("This session");
 			await calls.handler("", runtime.ctx);
 			expect(runtime.selections).toHaveLength(1);
-			expect(runtime.selections[0].some((line) => line.includes(`${total} calls`))).toBe(true);
+			expect(runtime.selections[0].join("\n")).toContain(`${total} calls`);
 			expect(runtime.selections[0].some((line) => line.includes("duplicate-child-model"))).toBe(false);
 		} finally {
 			vi.useRealTimers();
@@ -831,7 +831,7 @@ describe("tps runtime subagent ordering", () => {
 			utimesSync(path, when, when);
 		};
 		const showSession = async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			runtime.scopeChoices.push("This session");
 			await runtime.commands.get("calls")!.handler("", runtime.ctx);
 			return runtime.selections.at(-1) ?? [];
@@ -880,7 +880,7 @@ describe("tps runtime subagent ordering", () => {
 			utimesSync(path, when, when);
 		};
 		const showSession = async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			runtime.scopeChoices.push("This session");
 			await runtime.commands.get("calls")!.handler("", runtime.ctx);
 			return runtime.selections.at(-1) ?? [];
@@ -936,7 +936,7 @@ describe("tps runtime subagent ordering", () => {
 			utimesSync(path, when, when);
 		};
 		const showSession = async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			runtime.scopeChoices.push("This session");
 			await runtime.commands.get("calls")!.handler("", runtime.ctx);
 			return runtime.selections.at(-1) ?? [];
@@ -966,7 +966,7 @@ describe("tps runtime subagent ordering", () => {
 				totalCost: { costUsd: 0.5 },
 				turnCount: 3,
 			});
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			await runtime.emit("before_agent_start");
 			writeMeta("bcde_helper_1_meta.json", "helper", 2, 2);
@@ -1025,7 +1025,7 @@ describe("tps runtime compaction inlet", () => {
 			// No summary produced by this navigation — nothing to count, and no throw.
 			runtime.emitNow("session_tree", {}, ctx);
 			runtime.emitNow("agent_settled", {}, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This session");
@@ -1059,7 +1059,7 @@ describe("tps runtime compaction inlet", () => {
 			} as Partial<ExtensionContext>);
 			await runtime.emit("session_start", {}, ctx);
 			runtime.emitNow("session_compact", { compactionEntry: COMPACT_ENTRY }, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const before = runtime.notifications.length;
 			await runtime.commands.get("calls")!.handler("", ctx);
@@ -1109,7 +1109,7 @@ describe("tps runtime compaction inlet", () => {
 					},
 				}, ctx);
 				runtime.emitNow("agent_settled", {}, ctx);
-				await new Promise((resolve) => setTimeout(resolve, 0));
+				await drainUsage();
 
 				const calls = runtime.commands.get("calls")!;
 				runtime.scopeChoices.push("This session");
@@ -1179,7 +1179,7 @@ describe("tps runtime master switch", () => {
 						},
 					}, ctx);
 					runtime.emitNow("agent_settled", {}, ctx);
-					await new Promise((resolve) => setTimeout(resolve, 0));
+					await drainUsage();
 
 					const calls = runtime.commands.get("calls")!;
 					runtime.scopeChoices.push("This session");
@@ -1234,7 +1234,7 @@ describe("tps runtime tool-usage inlet", () => {
 			// A redelivery of the same call must not add a second row.
 			runtime.emitNow("tool_execution_end", TOOL_RESULT);
 			runtime.emitNow("agent_settled");
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This session");
@@ -1271,7 +1271,7 @@ describe("tps runtime tool-usage inlet", () => {
 					},
 				});
 				runtime.emitNow("agent_settled");
-				await new Promise((resolve) => setTimeout(resolve, 0));
+				await drainUsage();
 
 				const calls = runtime.commands.get("calls")!;
 				runtime.scopeChoices.push("This session");
@@ -1310,7 +1310,7 @@ describe("tps runtime tool-usage inlet", () => {
 				},
 			});
 			runtime.emitNow("agent_settled");
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This session");
@@ -1379,7 +1379,7 @@ describe("tps runtime tool-usage inlet", () => {
 
 			await new Promise((resolve) => setTimeout(resolve, 400));
 			await runtime.emit("agent_settled", {}, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			const calls = runtime.commands.get("calls")!;
 			runtime.scopeChoices.push("This session");

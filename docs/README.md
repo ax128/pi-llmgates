@@ -25,8 +25,8 @@
 
 | 文档 | 说明 | 状态 |
 | --- | --- | --- |
-| [2026-10-06-usage-accounting-reconciliation-design.md](./superpowers/specs/2026-10-06-usage-accounting-reconciliation-design.md) | 用量统计优化：All / Turn 费用与对账视图、当前会话历史恢复、实时 / 回放 / 旧账本统一去重、新版 Pi 独立 usage 入口与有界核对 | 冻结设计原文；仅 P0 展示与只读对账已实施，P1/P2 尚未实施，不默认开启持久化或扩大 peer 范围 |
-| [2026-10-06-usage-accounting-execution.md](./superpowers/plans/2026-10-06-usage-accounting-execution.md) | 隔离基线、模块依赖、P0 调整、实际 focused 验证与后续门禁阻塞 | 80 项 focused 测试及 typecheck 通过；未构建、安装或认证 R1/R2/R3 |
+| [2026-10-06-usage-accounting-reconciliation-design.md](./superpowers/specs/2026-10-06-usage-accounting-reconciliation-design.md) | 用量统计优化：All / Turn 费用与对账视图、当前会话历史恢复、实时 / 回放 / 旧账本统一去重、新版 Pi 独立 usage 入口与有界核对 | 冻结设计原文保留；P0/P1/P2 实现与实际验证见执行记录，不默认开启持久化或扩大 peer 范围 |
+| [2026-10-06-usage-accounting-execution.md](./superpowers/plans/2026-10-06-usage-accounting-execution.md) | 隔离基线、分阶段依赖、方案偏差、R1/R2/R3 与剩余风险 | 259 项 focused 测试、typecheck/build、四版 SDK 共八组 persist 开关生命周期/独立进程恢复通过；不等于安装/发布或整包兼容认证 |
 
 ### 本次实施记录
 

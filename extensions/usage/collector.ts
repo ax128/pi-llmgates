@@ -72,6 +72,20 @@ export class UsageCollector {
 		if (!live && obs.metricQuality?.costUsd !== "estimated") this.noteGap("estimate-not-recoverable");
 		return this.acceptBatch([obs], live);
 	}
+	ingestSessionUsage(entry: Record<string, unknown>, historical: boolean): boolean {
+		if (!this.enabled("session-usage") || typeof entry.id !== "string") return false;
+		const id = entryUsageId(this.sessionId, entry.id);
+		if (this.hasExecution(id)) return true;
+		const observation = observationFromAssistantMessage({ role: "assistant", model: entry.model, provider: entry.provider, usage: entry.usage }, {
+			...this.identity("session-usage", Date.now(), historical ? "history" : "unassigned"), callId: id, executionId: id,
+		}, { costMode: "stored-only" });
+		if (!observation) { this.noteGap("invalid-session-usage"); return false; }
+		observation.source.runner = "session-usage";
+		// An appended usage notice is not evidence of one LLM response.
+		if (observation.usage) delete observation.usage.calls;
+		if (observation.metricQuality) delete observation.metricQuality.calls;
+		return this.acceptBatch([observation], !historical);
+	}
 	hasExecution(executionId: string): boolean {
 		return this.ledger.observations().some((o) => o.executionId === executionId && o.phase !== "provisional");
 	}
@@ -191,7 +205,7 @@ export class UsageCollector {
 	private archivedAllowed(obs: UsageObservationV1): boolean {
 		const runner = obs.source.runner;
 		if (["pi-subagents-meta-indexed", "pi-subagents-completion"].includes(runner)) return this.enabled("pi-subagents");
-		if (["parent-assistant", "sync-subagent", "pi-subagents", "compaction", "tool-nested"].includes(runner)) return this.enabled(runner as UsageSwitchCategory);
+		if (["parent-assistant", "session-usage", "sync-subagent", "pi-subagents", "compaction", "tool-nested"].includes(runner)) return this.enabled(runner as UsageSwitchCategory);
 		if (runner !== "legacy") { this.noteGap("legacy-source-unresolved"); return false; }
 		if (/^(compact:|branch:)/.test(obs.executionId)) return this.enabled("compaction");
 		if (obs.executionId.startsWith("toolusage:")) return this.enabled("tool-nested");

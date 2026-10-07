@@ -115,6 +115,22 @@ describe("recovery archive safety gates", () => {
 		expect(ledger.observations().map((o) => o.model)).toEqual(["c"]);
 	});
 
+	it("V24: checkpoint rename before journal truncate cannot resurrect an old model partition", async () => {
+		const temp = withTempAgentDir();
+		const persist = new FsUsagePersist(temp.agentDir, "root"); mkdirSync(persist.rootDir, { recursive: true });
+		const old = { ...row(), kind: "snapshot", snapshotEpoch: "group", revision: 1 };
+		const current = { ...old, sequence: 3, revision: 2, model: "kept" };
+		writeFileSync(persist.checkpointPath, JSON.stringify({ version: 1, rootSessionId: "root", observations: [current] }));
+		writeFileSync(persist.journalPath, ["removed", "kept"].map((model) => JSON.stringify({ ...old, model })).join("\n") + "\n");
+		const collector = new UsageCollector("root", "root", resolveUsagePolicy(""), persist);
+		try {
+			await collector.restorePersistedBatches(() => true);
+			expect(collector.archivedObservations().map((o) => o.model)).toEqual(["kept"]);
+			expect(collector.sessionTotals().costUsd).toBe(7);
+			expect(persist.isReadOnly()).toBe(false);
+		} finally { await collector.checkpointAndClose(); temp.cleanup(); }
+	});
+
 	it("V05/V14: failed atomic checkpoint never marks a multi-model batch durable", async () => {
 		const temp = withTempAgentDir();
 		const persist = new FsUsagePersist(temp.agentDir, "root", { ...USAGE_LIMITS, checkpointTmpBudgetBytes: 1 });

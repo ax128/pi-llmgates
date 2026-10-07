@@ -14,6 +14,8 @@
 
 稳定 entry 身份、有界当前会话恢复、完整存档/策略投影、批次原子提交和只读损坏保护已接线；旁路及隐藏 child factory 仍 partial。详情与命令见[执行记录](../plans/2026-10-06-usage-accounting-execution.md)。
 
+**P2 实测补充：** Pi 1.0.4 的编译 TPS 模块通过合成 SDK 多层/并行嵌套工具池、排除/截断拒绝、空闲公开 leaf 发现、未知有效独立 usage 与独立进程重启门禁（persist 开/关）。只启用该精确 SDK 版本的新入口；不扩大 peer，不认证整个插件。snapshot 不完整、源别名关联不明仍 partial；隐藏 child-factory 仍 blocked。
+
 ## 证据等级
 
 | 等级 | 含义 |

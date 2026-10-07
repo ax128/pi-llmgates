@@ -87,6 +87,7 @@ export type UsageExtSourceId = (typeof USAGE_EXT_SOURCE_IDS)[number];
 
 export type UsageSwitchCategory =
 	| "parent-assistant"
+	| "session-usage"
 	| "sync-subagent"
 	| "pi-subagents"
 	| "compaction"
@@ -163,6 +164,7 @@ export function isUsageCategoryEnabled(
 	if (!policy.collect) return false;
 	switch (category) {
 		case "parent-assistant":
+		case "session-usage":
 			return true;
 		case "sync-subagent":
 			return true;
