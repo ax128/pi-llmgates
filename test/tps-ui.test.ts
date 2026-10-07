@@ -5,6 +5,12 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import tpsExtension from "../extensions/tps.js";
+import { withSessionEntries } from "./helpers/tps-session-entries.js";
+
+// Finish association work before a synthetic wall-clock jump can expire its TTL.
+async function drainUsage() {
+	for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+}
 
 const USAGE_MESSAGE = {
 	message: {
@@ -63,7 +69,7 @@ describe("TPS UI", () => {
 		const previous = process.env.LLMGATES_TPS_SUBAGENT;
 		process.env.LLMGATES_TPS_SUBAGENT = "0";
 		try {
-			tpsExtension(pi);
+			tpsExtension(withSessionEntries(pi));
 			handlers.get("session_start")?.({} as never, ctx);
 			handlers.get("before_agent_start")?.({} as never, ctx);
 			await new Promise((resolve) => setTimeout(resolve, 5));
@@ -95,7 +101,7 @@ describe("TPS UI", () => {
 			await new Promise((resolve) => setImmediate(resolve));
 
 			expect(statuses.at(-1)).toMatch(
-				/^All\(partial\) \d+c\.~?\$0\.010, Turn (\d+s|\d+m|\d+h(\d+m)?|\d+d(\d+h)?(\d+m)?)\.\d+c\.~?\$0\.010$/,
+				/^All \d+c\.~?\$0\.010, Turn (\d+s|\d+m|\d+h(\d+m)?|\d+d(\d+h)?(\d+m)?)\.\d+c\.~?\$0\.010$/,
 			);
 			expect(notifications).toEqual([]);
 		} finally {
@@ -161,7 +167,7 @@ describe("TPS UI", () => {
 		let currentNow = 1_700_000_000_000;
 		const now = vi.spyOn(Date, "now").mockImplementation(() => currentNow);
 		try {
-			tpsExtension(pi);
+			tpsExtension(withSessionEntries(pi));
 			handlers.get("session_start")?.({} as never, ctx);
 
 			handlers.get("before_agent_start")?.({} as never, ctx);
@@ -169,12 +175,12 @@ describe("TPS UI", () => {
 
 			currentNow += 900_000;
 			handlers.get("message_end")?.(assistantMessage as never, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			currentNow += 100_000;
 			handlers.get("agent_settled")?.({} as never, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
-			expect(statuses.at(-1)).toBe("All(partial) 1c.~$0.010, Turn 16m.1c.~$0.010");
+			await drainUsage();
+			expect(statuses.at(-1)).toBe("All 1c.~$0.010, Turn 16m.1c.~$0.010");
 
 			currentNow += 9_000_000;
 			handlers.get("before_agent_start")?.({} as never, ctx);
@@ -182,12 +188,12 @@ describe("TPS UI", () => {
 
 			currentNow += 400_000;
 			handlers.get("message_end")?.(assistantMessage as never, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			currentNow += 100_000;
 			handlers.get("agent_settled")?.({} as never, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
-			expect(statuses.at(-1)).toBe("All(partial) 2c.~$0.020, Turn 8m.1c.~$0.010");
+			await drainUsage();
+			expect(statuses.at(-1)).toBe("All 2c.~$0.020, Turn 8m.1c.~$0.010");
 		} finally {
 			now.mockRestore();
 			if (previous === undefined) delete process.env.LLMGATES_TPS_SUBAGENT;
@@ -233,7 +239,7 @@ describe("TPS UI", () => {
 		const previous = process.env.LLMGATES_TPS_SUBAGENT;
 		process.env.LLMGATES_TPS_SUBAGENT = "0";
 		try {
-			tpsExtension(pi);
+			tpsExtension(withSessionEntries(pi));
 			handlers.get("session_start")?.({} as never, ctx);
 			handlers.get("before_agent_start")?.({} as never, ctx);
 			handlers.get("message_end")?.(USAGE_MESSAGE as never, ctx);
@@ -247,7 +253,7 @@ describe("TPS UI", () => {
 
 			handlers.get("agent_settled")?.({} as never, ctx);
 			await new Promise((resolve) => setTimeout(resolve, 0));
-			expect(statuses.at(-1)).toMatch(/^All\(partial\) /);
+			expect(statuses.at(-1)).toMatch(/^All /);
 
 			const afterSettle = statuses.length;
 			vi.advanceTimersByTime(10_000);
@@ -321,7 +327,7 @@ describe("/calls outside the primary TUI", () => {
 		const previous = process.env.LLMGATES_TPS_SUBAGENT;
 		process.env.LLMGATES_TPS_SUBAGENT = "0";
 		try {
-			tpsExtension(pi);
+			tpsExtension(withSessionEntries(pi));
 			handlers.get("session_start")?.({} as never, ctx);
 			handlers.get("before_agent_start")?.({} as never, ctx);
 			await new Promise((resolve) => setTimeout(resolve, 5));
@@ -357,7 +363,7 @@ describe("/calls outside the primary TUI", () => {
 		const previous = process.env.LLMGATES_TPS_SUBAGENT;
 		process.env.LLMGATES_TPS_SUBAGENT = "0";
 		try {
-			tpsExtension(pi);
+			tpsExtension(withSessionEntries(pi));
 			handlers.get("session_start")?.({} as never, ctx);
 
 			await commands.get("calls")?.handler("", ctx);
@@ -381,7 +387,7 @@ describe("/calls outside the primary TUI", () => {
 		const previous = process.env.LLMGATES_TPS_SUBAGENT;
 		process.env.LLMGATES_TPS_SUBAGENT = "0";
 		try {
-			tpsExtension(pi);
+			tpsExtension(withSessionEntries(pi));
 			handlers.get("session_start")?.({} as never, ctx);
 
 			await expect(commands.get("calls")?.handler("", ctx)).resolves.toBeUndefined();

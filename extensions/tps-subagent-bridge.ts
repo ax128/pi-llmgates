@@ -9,6 +9,7 @@ import {
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
 import { envFlag, isPlainObject } from "./util.js";
+import { boundedUsageMetadata } from "./usage/adapters/session-entries.js";
 
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete";
@@ -62,7 +63,7 @@ export function registerSubagentUsageBridge(
 	);
 
 	const matchingSession = (data: unknown): data is Record<string, unknown> =>
-		isPlainObject(data) && subagentEventMatchesSession(data.sessionId, sessionIdentity);
+		isPlainObject(data) && boundedUsageMetadata(data) && subagentEventMatchesSession(data.sessionId, sessionIdentity);
 
 	const normalizeCandidate = (candidate: unknown): string | null => {
 		if (typeof candidate !== "string" || !subagentRunAggregateSourceKey(candidate)) {

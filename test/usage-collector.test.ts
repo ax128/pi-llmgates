@@ -21,7 +21,7 @@ function collector() {
 }
 
 describe("UsageCollector origin-turn binding", () => {
-	it("drops canonical and legacy progress snapshots before a terminal tool record", () => {
+	it("drops only proven progress, not legacy final identities", () => {
 		const { session, cleanup } = collector();
 		try {
 			session.beginTurn();
@@ -41,7 +41,8 @@ describe("UsageCollector origin-turn binding", () => {
 				record("toolusage:call:with/%"),
 			], "tool-nested");
 			session.dropProgressForToolCall("call:with/%");
-			expect(session.sessionTotals().input).toBe(0);
+			expect(session.sessionTotals().input).toBe(20);
+			expect(session.ledger.provisionalTotals().input).toBe(0);
 		} finally {
 			cleanup();
 		}
@@ -234,7 +235,7 @@ describe("UsageCollector persistence restore", () => {
 			const second = new UsageCollector("root-1", "sess-1", policy, createUsagePersist(agentDir, "root-1", true));
 			second.restorePersisted();
 			expect(second.turnTotals("turn-1").input).toBe(12);
-			expect(second.currentOriginTurnId()).toBe("turn-1");
+			expect(second.currentOriginTurnId()).toBe("turn-0");
 			expect(second.beginTurn()).toBe("turn-2");
 			second.ingestAssistant(
 				{
@@ -299,7 +300,7 @@ describe("UsageCollector persistence restore", () => {
 					observations: [
 						{
 							schemaVersion: USAGE_SCHEMA_VERSION,
-							source: { package: "test-runner", version: "1.0.0", runner: "fixture" },
+							source: { package: "test-runner", version: "1.0.0", runner: "parent-assistant" },
 							rootSessionId: "root-1",
 							sessionId: "sess-1",
 							originTurnId: "turn-1",

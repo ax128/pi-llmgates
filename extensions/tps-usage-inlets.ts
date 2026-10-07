@@ -89,6 +89,7 @@ export function extractToolResultUsage(
 	toolName: string,
 	result: unknown,
 	toolCallId: string,
+	options: { storedOnly?: boolean } = {},
 ): SubagentUsageRecord[] {
 	try {
 		if (typeof toolName !== "string" || TOOL_USAGE_CLAIMED_ELSEWHERE.has(toolName.trim().toLowerCase())) {
@@ -116,7 +117,7 @@ export function extractToolResultUsage(
 		// This is the Pi-compatible top-level tool-result contract.  A complete
 		// numeric/object cost is a producer self-report (including zero); only a
 		// missing cost may use a known local pricing rule.
-		const cost = resolveUsageCostWithQuality(usage, model, "pi-tool-result");
+		const cost = resolveUsageCostWithQuality(usage, options.storedOnly ? undefined : model, "pi-tool-result");
 
 		const record = usageCountersToRecord(
 			`toolusage:${id}`,

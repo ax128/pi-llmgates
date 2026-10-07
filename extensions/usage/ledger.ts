@@ -137,6 +137,16 @@ function identityFor(obs: UsageObservationV1): string {
 	return responseIdentity(obs);
 }
 
+export function usageSnapshotGroup(obs: UsageObservationV1): string | undefined {
+	return obs.kind === "snapshot" ? snapshotIdentity(obs) : undefined;
+}
+
+export function usageIdentity(obs: UsageObservationV1): string {
+	return obs.kind === "snapshot"
+		? `${snapshotIdentity(obs)}\0${obs.provider ?? ""}\0${obs.model ?? ""}`
+		: identityFor(obs);
+}
+
 function revisionOf(obs: UsageObservationV1): number {
 	return obs.revision ?? obs.sequence;
 }
@@ -150,13 +160,14 @@ function isFinalizedPhase(obs: UsageObservationV1): boolean {
 }
 
 export class UsageLedger {
-	private readonly records = new Map<string, StoredRecord>();
+	private records = new Map<string, StoredRecord>();
 	private readonly producerSeq = new Map<string, { seen: Set<number>; min: number; max: number }>();
 	private persistState: CoverageRow["persist"] = "memory";
 	private persistLoadGap: string | undefined;
 	private memoryExhausted = false;
 	private projectionVersion = 0;
-	private readonly snapshotGroups = new Map<string, { revision: number; keys: Set<string> }>();
+	private sequenceEntries = 0;
+	private snapshotGroups = new Map<string, { revision: number; keys: Set<string> }>();
 	private readonly totalsCache = new Map<string | undefined, LedgerTotals>();
 	private readonly modelsCache = new Map<string | undefined, Map<string, LedgerTotals>>();
 	readonly collectedSinceMs: number;
@@ -233,6 +244,48 @@ export class UsageLedger {
 			this.dropMatchingProvisional(obs);
 		}
 		return { accepted: true };
+	}
+
+	/** Validate and commit a complete revision/progress transition, or change nothing. */
+	ingestBatch(inputs: readonly unknown[], remove?: (obs: UsageObservationV1) => boolean): IngestResult {
+		if (inputs.length > USAGE_LIMITS.perTickEvents) return { accepted: false, reason: "batch-capacity" };
+		const trial = new UsageLedger(this.rootSessionId);
+		trial.records = new Map(this.records);
+		trial.snapshotGroups = new Map([...this.snapshotGroups].map(([key, group]) => [key, { revision: group.revision, keys: new Set(group.keys) }]));
+		if (remove) trial.dropWhere(remove);
+		let changed = trial.records.size !== this.records.size;
+		const seen = new Set<string>();
+		const revisions = new Map<string, number>();
+		for (const input of inputs) {
+			const parsed = parseUsageObservationV1(input);
+			if (!parsed.ok) return { accepted: false, reason: parsed.reason };
+			const group = usageSnapshotGroup(parsed.value);
+			if (group) {
+				const revision = parsed.value.revision ?? parsed.value.sequence;
+				if (revisions.has(group) && revisions.get(group) !== revision) return { accepted: false, reason: "mixed batch revisions" };
+				revisions.set(group, revision);
+			}
+			const key = usageIdentity(parsed.value);
+			if (seen.has(key)) return { accepted: false, reason: "duplicate batch identity" };
+			seen.add(key);
+			const result = trial.ingest(parsed.value);
+			if (!result.accepted) return result;
+			if (result.reason !== "idempotent") changed = true;
+		}
+		if (!changed) return { accepted: true, reason: "idempotent" };
+		this.records = trial.records;
+		this.snapshotGroups = trial.snapshotGroups;
+		for (const key of seen) {
+			const row = this.records.get(key);
+			if (row) this.trackSequence(row.observation);
+		}
+		this.invalidateProjections();
+		return { accepted: true };
+	}
+
+	/** Internal read-only references for the collector's archive (never expose to UI). */
+	observations(): readonly UsageObservationV1[] {
+		return [...this.records.values()].map((row) => row.observation);
 	}
 
 	finalizedTotals(filter: { originTurnId?: string } = {}): LedgerTotals {
@@ -460,7 +513,14 @@ export class UsageLedger {
 			min: obs.sequence,
 			max: obs.sequence,
 		};
-		current.seen.add(obs.sequence);
+		if (!current.seen.has(obs.sequence)) {
+			if (this.sequenceEntries >= USAGE_LIMITS.maxMemoryObservations) {
+				for (const seq of this.producerSeq.values()) if (seq.seen.size) {
+					seq.seen.delete(seq.seen.values().next().value!); this.sequenceEntries--; break;
+				}
+			}
+			current.seen.add(obs.sequence); this.sequenceEntries++;
+		}
 		current.min = Math.min(current.min, obs.sequence);
 		current.max = Math.max(current.max, obs.sequence);
 		this.producerSeq.set(obs.producerId, current);
