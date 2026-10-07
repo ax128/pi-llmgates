@@ -7,6 +7,11 @@ import { describe, expect, it, vi } from "vitest";
 import tpsExtension from "../extensions/tps.js";
 import { withSessionEntries } from "./helpers/tps-session-entries.js";
 
+// Finish association work before a synthetic wall-clock jump can expire its TTL.
+async function drainUsage() {
+	for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+}
+
 const USAGE_MESSAGE = {
 	message: {
 		role: "assistant",
@@ -170,11 +175,11 @@ describe("TPS UI", () => {
 
 			currentNow += 900_000;
 			handlers.get("message_end")?.(assistantMessage as never, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			currentNow += 100_000;
 			handlers.get("agent_settled")?.({} as never, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			expect(statuses.at(-1)).toBe("All 1c.~$0.010, Turn 16m.1c.~$0.010");
 
 			currentNow += 9_000_000;
@@ -183,11 +188,11 @@ describe("TPS UI", () => {
 
 			currentNow += 400_000;
 			handlers.get("message_end")?.(assistantMessage as never, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 
 			currentNow += 100_000;
 			handlers.get("agent_settled")?.({} as never, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await drainUsage();
 			expect(statuses.at(-1)).toBe("All 2c.~$0.020, Turn 8m.1c.~$0.010");
 		} finally {
 			now.mockRestore();
