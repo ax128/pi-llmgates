@@ -1,5 +1,15 @@
 /** Model Pi's public append ordering in extension UI/event fixtures. */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ToolResultMessage } from "@earendil-works/pi-ai";
+
+/** Pi 0.81.1 createToolResultMessage: arbitrary result fields do not survive. */
+export function toolResultMessage(event: { toolName: string; toolCallId: string; result: any; isError?: boolean }): ToolResultMessage {
+	return {
+		role: "toolResult", toolName: event.toolName, toolCallId: event.toolCallId,
+		content: event.result.content ?? [], details: event.result.details, usage: event.result.usage,
+		isError: event.isError ?? false, timestamp: Date.now(),
+	};
+}
 
 type Handler = (event: any, ctx: ExtensionContext) => any;
 export function withSessionEntries(pi: ExtensionAPI): ExtensionAPI {
@@ -27,7 +37,7 @@ export function withSessionEntries(pi: ExtensionAPI): ExtensionAPI {
 				if (name === "tool_execution_end") await toolStart?.(event, ctx);
 				await handler(event, ctx);
 				if (name === "message_end") append({ type: "message", message: event.message });
-				if (name === "tool_execution_end" && !entries.some((e) => e.message?.toolCallId === event.toolCallId)) append({ type: "message", message: { ...event.result, role: "toolResult", toolName: event.toolName, toolCallId: event.toolCallId } });
+				if (name === "tool_execution_end" && !entries.some((e) => e.message?.toolCallId === event.toolCallId)) append({ type: "message", message: toolResultMessage(event) });
 			});
 		},
 	} as ExtensionAPI;

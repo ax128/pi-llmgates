@@ -182,6 +182,8 @@ tool.execute() → finalized.result                       (pi-agent-core/dist/ag
 
 **恢复来源证据（2026-10-07 审查修复）：** 保留上述费用 identity，不新增 v1 字段；既有 `source.runner` 的 `pi-subagents-meta-indexed` / `pi-subagents-meta-indexless` / `pi-subagents-completion` 分别保存明确 index、当次推断 index、受信终态来源。indexless 及旧 `legacy` / `pi-subagents` 的 child-0 snapshot 无法证明跨启动唯一性，存档保留、恢复投影隔离，不授予 counted 粒度；历史专用结果或新受信终态可按自己的证据计量。无 revision 的受信完成事件通过本地接收 revision 整组替换 snapshot，但不将该接收值当作源 watermark；首次完成后同 key 维持 first-wins，重启也恢复此状态。UUID 归属绑定与查找使用同一归一化函数，完成 child 的不同 runId 继承有证据的父 run origin，没有证据仍为 unassigned。
 
+**工具条目关联（2026-10-07 合并后修复）：** 根工具结束事件不再单独 finalized；用 toolCallId 暂存 Pi 不落盘的 run/agent/model/provider 等身份标量，最终条目提供 usage/details/nestedCalls。保留原 `meta:` / `tool:` / `toolusage:` 费用 identity，在既有 v1 `coveredCallIds` 内登记 `entry:<encoded-session>:<encoded-entry>` 关联（每执行最多 256 条）；模型分区与受信终态替换继承这些关联，first-wins 或跨粒度输家只补关联、不改赢家费用。历史回放沿关联恢复存档原金额，不另造 tool-local 别名；旧无关联存档无法排除重叠时保留原账并标 `tool-entry-overlap-unresolved`。不改变 schema/peer，不写 Pi 会话，不保存内容/参数。
+
 ### 3.3 归属表：每个「花费出口」只允许一个入口认领
 
 这是**不重复计数的核心规则**。实现上体现为 §4.1 的常量表，任何新增来源必须先在这里落位：

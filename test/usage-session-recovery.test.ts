@@ -6,6 +6,7 @@ import { createUsagePersist } from "../extensions/usage/persist.js";
 import { resolveUsagePolicy, USAGE_LIMITS } from "../extensions/usage/policy.js";
 import { SessionRecovery } from "../extensions/usage/session-recovery.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
+import { toolResultMessage } from "./helpers/tps-session-entries.js";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const message = (cost: number): AssistantMessage => ({
@@ -47,6 +48,137 @@ describe("bounded current-session recovery", () => {
 			expect(h.collector.sessionTotals().costUsd).toBe(10);
 			expect(h.collector.turnTotals().costUsd).toBe(0);
 		} finally { await h.close(); temp.cleanup(); }
+	});
+
+	it.each([false, true])("retries out-of-order historical completions after launch evidence is recovered (new message=%s)", async (newMessage) => {
+		const h = harness();
+		const appendTool = (toolName: string, toolCallId: string, details: unknown) => h.manager.appendMessage({
+			role: "toolResult", toolName, toolCallId, details, content: [], isError: false, timestamp: 0,
+		});
+		appendTool("subagent", "launch", { runId: "abcd", async: true });
+		for (let i = 0; i < 300; i++) h.manager.appendCustomEntry("padding");
+		appendTool("bg_wait", "wait", { mode: "management", completions: [{ runId: "abcd", results: [{ agent: "worker", model: "worker", usage: { turns: 1, input: 10, cost: 3 } }] }] });
+		try {
+			await h.recovery.start();
+			if (newMessage) {
+				const reply = message(1);
+				h.recovery.noteAssistant(reply, h.collector.beginTurn()); h.manager.appendMessage(reply);
+			}
+			await settled(h);
+			expect(h.collector.sessionTotals().costUsd).toBe(newMessage ? 4 : 3);
+			expect(h.collector.turnTotals().costUsd).toBe(newMessage ? 1 : 0);
+			expect(h.collector.gapReasons().join()).not.toContain("completion-ownership-unresolved");
+			h.recovery.boundary(); await tick(); await tick();
+			expect(h.collector.sessionTotals().costUsd).toBe(newMessage ? 4 : 3);
+		} finally { await h.close(); }
+	});
+
+	it.each([false, true])("retries partially owned multi-completion entries without recounting accepted children (new message=%s)", async (newMessage) => {
+		const h = harness();
+		const append = (toolName: string, toolCallId: string, details: unknown) => h.manager.appendMessage({ role: "toolResult", toolName, toolCallId, details, content: [], isError: false, timestamp: 0 });
+		append("subagent", "old-launch", { runId: "abcd", async: true });
+		for (let i = 0; i < 300; i++) h.manager.appendCustomEntry("padding");
+		append("subagent", "new-launch", { runId: "bcde", async: true });
+		append("bg_wait", "wait", { mode: "management", completions: [
+			{ runId: "abcd", results: [{ agent: "worker", model: "older", usage: { cost: 3 } }] },
+			{ runId: "bcde", results: [{ agent: "worker", model: "newer", usage: { cost: 5 } }] },
+		] });
+		try {
+			await h.recovery.start();
+			if (newMessage) { const reply = message(1); h.recovery.noteAssistant(reply, h.collector.beginTurn()); h.manager.appendMessage(reply); }
+			await settled(h);
+			expect(h.collector.sessionTotals().costUsd).toBe(newMessage ? 9 : 8);
+			expect(h.collector.turnTotals().costUsd).toBe(newMessage ? 1 : 0);
+			expect(h.collector.gapReasons().join()).not.toContain("completion-ownership-unresolved");
+			expect(h.recovery.pendingCount).toBe(0);
+			h.recovery.boundary(); await tick(); await tick();
+			expect(h.collector.sessionTotals().costUsd).toBe(newMessage ? 9 : 8);
+		} finally { await h.close(); }
+	});
+
+	it("reports still-unowned children in a partially accepted entry after only one retry", async () => {
+		const h = harness();
+		h.manager.appendMessage({ role: "toolResult", toolName: "subagent", toolCallId: "launch", details: { runId: "bcde", async: true }, content: [], isError: false, timestamp: 0 });
+		const entryId = h.manager.appendMessage({ role: "toolResult", toolName: "bg_wait", toolCallId: "wait", content: [], isError: false, timestamp: 0, details: { mode: "management", completions: [
+			{ runId: "abcd", results: [{ agent: "worker", usage: { cost: 3 } }] },
+			{ runId: "bcde", results: [{ agent: "worker", usage: { cost: 5 } }] },
+		] } });
+		const getEntry = vi.spyOn(h.manager, "getEntry");
+		try {
+			await h.recovery.start(); await settled(h);
+			expect(h.collector.sessionTotals().costUsd).toBe(5);
+			expect(h.collector.gapReasons().join()).toContain("completion-ownership-unresolved:1");
+			expect(h.recovery.pendingCount).toBe(0);
+			for (let i = 0; i < 10; i++) await tick();
+			expect(getEntry.mock.calls.filter(([id]) => id === entryId)).toHaveLength(1);
+		} finally { getEntry.mockRestore(); await h.close(); }
+	});
+
+	it("refreshes a completed tool's bounded metadata TTL and schedules its public entry", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		const h = harness();
+		try {
+			await h.recovery.start(); await settled(h);
+			const origin = h.collector.beginTurn();
+			h.recovery.noteTool("call", origin); await tick(); await tick();
+			await vi.advanceTimersByTimeAsync(USAGE_LIMITS.orphanTtlMs - 1);
+			h.recovery.noteToolResult("call", origin, { runId: "abcd", agent: "worker", model: "worker-model" });
+			h.manager.appendMessage(toolResultMessage({ toolName: "subagent", toolCallId: "call", result: { usage: { input: 10, output: 1, cost: 3 } } }));
+			vi.setSystemTime(Date.now() + 2); // past the start association's deadline, before the result's deadline
+			await tick(); await tick();
+			expect(h.collector.sessionTotals().costUsd).toBe(3);
+			expect(h.collector.turnTotals().costUsd).toBe(3);
+			expect([...h.collector.sessionModelStats().keys()]).toEqual(["worker-model"]);
+			expect(h.recovery.pendingCount).toBe(0);
+			expect(h.collector.gapReasons().join()).not.toContain("origin-association-expired");
+		} finally { await h.close(); vi.useRealTimers(); }
+	});
+
+	it.each(["untrusted", "foreign"])("deferred %s completions remain excluded after their one bounded retry", async (kind) => {
+		const h = harness();
+		if (kind === "foreign") h.manager.appendMessage({ role: "toolResult", toolName: "subagent", toolCallId: "launch", content: [], isError: false, timestamp: 0, details: { runId: "abcd", async: true } });
+		const entryId = h.manager.appendMessage({ role: "toolResult", toolName: "bg_wait", toolCallId: "wait", content: [], isError: false, timestamp: 0,
+			details: { mode: "management", ...(kind === "foreign" ? { sessionId: "another-session" } : {}), completions: [{ runId: "abcd", results: [{ agent: "worker", model: "worker", usage: { cost: 3 } }] }] } });
+		const getEntry = vi.spyOn(h.manager, "getEntry");
+		try {
+			await h.recovery.start(); await settled(h);
+			expect(h.collector.sessionTotals().costUsd).toBe(0);
+			expect(h.collector.gapReasons().join()).toContain("completion-ownership-unresolved:1");
+			expect(getEntry.mock.calls.filter(([id]) => id === entryId)).toHaveLength(1);
+			expect(h.recovery.pendingCount).toBe(0);
+			for (let i = 0; i < 10; i++) await tick();
+			expect(getEntry.mock.calls.filter(([id]) => id === entryId)).toHaveLength(1);
+		} finally { getEntry.mockRestore(); await h.close(); }
+	});
+
+	it("bounds deferred completions and releases them after replay", async () => {
+		const h = harness();
+		for (let i = 0; i <= USAGE_LIMITS.maxPendingOrphans; i++) h.manager.appendMessage({
+			role: "toolResult", toolName: "bg_wait", toolCallId: `wait-${i}`, content: [], isError: false, timestamp: 0,
+			details: { mode: "management", completions: [{ runId: "abcd", usage: { cost: 3 } }] },
+		});
+		try {
+			await h.recovery.start(); await settled(h);
+			expect(h.collector.gapReasons().join()).toContain("completion-retry-capacity:1");
+			expect(h.recovery.pendingCount).toBe(0);
+			expect(h.collector.sessionTotals().costUsd).toBe(0);
+		} finally { await h.close(); }
+	});
+
+	it("releases pending completion retries when the session owner is cancelled", async () => {
+		const h = harness();
+		for (let i = 0; i < 400; i++) h.manager.appendMessage({
+			role: "toolResult", toolName: "bg_wait", toolCallId: `wait-${i}`, content: [], isError: false, timestamp: 0,
+			details: { mode: "management", completions: [{ runId: "abcd", usage: { cost: 3 } }] },
+		});
+		try {
+			await h.recovery.start(); await tick();
+			expect(h.recovery.pendingCount).toBeGreaterThan(0);
+			expect(h.recovery.pendingCount).toBeLessThanOrEqual(USAGE_LIMITS.maxPendingOrphans);
+			h.cancel(); await h.close();
+			expect(h.recovery.pendingCount).toBe(0);
+			expect(h.collector.sessionTotals().costUsd).toBe(0);
+		} finally { await h.close(); }
 	});
 
 	it("V04: duplicate events and replaced message objects never produce two fees", async () => {

@@ -160,8 +160,8 @@ describe("Pi 1.0.4 entry-only accounting", () => {
 
 	it("V21/V14: idle leaf discovery never polls full snapshots and stops with its generation", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-		const entries: unknown[] = [];
-		const manager = { getSessionId: () => "root", getSessionFile: () => undefined, getEntries: vi.fn(() => [...entries]), getLeafEntry: vi.fn(() => entries.at(-1)), getEntry: () => undefined };
+		const entries: ReturnType<typeof standalone>[] = [];
+		const manager = { getSessionId: () => "root", getSessionFile: () => undefined, getEntries: vi.fn(() => [...entries]), getLeafEntry: vi.fn(() => entries.at(-1)), getEntry: (id: string) => entries.find((entry) => entry.id === id) };
 		const collector = new UsageCollector("root", "root", options().policy, createUsagePersist("", "root", false));
 		const onChange = vi.fn();
 		const recovery = new SessionRecovery(collector, manager as unknown as ExtensionContext["sessionManager"], { modernUsage: true, isOwner: () => true, onRestored() {}, onRecords() {}, onChange });

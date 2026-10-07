@@ -90,12 +90,50 @@ export class UsageCollector {
 		return this.ledger.observations().some((o) => o.executionId === executionId && o.phase !== "provisional");
 	}
 
+	/** A proven entry/execution association survives model-partition replacement. */
+	restoreLinkedToolEntry(entryId: string, category: UsageSwitchCategory): boolean {
+		const id = entryUsageId(this.sessionId, entryId);
+		const groups = new Map<string, UsageObservationV1[]>();
+		for (const obs of this.archive.values()) {
+			if (!obs.coveredCallIds?.includes(id) || isUnprovenMetaObservation(obs)) continue;
+			const group = groups.get(obs.executionId) ?? [];
+			group.push(obs); groups.set(obs.executionId, group);
+		}
+		if (!groups.size) return false;
+		if (this.enabled(category)) {
+			for (const group of groups.values()) if (!this.ledger.ingestBatch(group).accepted) this.noteGap("tool-entry-restore-rejected");
+		}
+		return true;
+	}
+
+	/** Associate even a first-wins completion that arrived before its public tool entry. */
+	linkToolEntry(sourceKeys: readonly string[], entryId: string, revision: number): number {
+		const id = entryUsageId(this.sessionId, entryId), keys = new Set(sourceKeys);
+		const claims = sourceKeys.map(parseMetaSourceKeyGranularity);
+		// Only the opposite granularity can cover a loser, never sibling children.
+		const rows = this.ledger.observations().filter((obs) => {
+			if (obs.phase !== "final") return false;
+			if (keys.has(obs.executionId)) return true;
+			const target = parseMetaSourceKeyGranularity(obs.executionId);
+			return target && claims.some((claim) => claim && claim.runId === target.runId && claim.kind !== target.kind);
+		});
+		for (const key of new Set(rows.map((obs) => obs.executionId))) {
+			const group = rows.filter((obs) => obs.executionId === key);
+			if (!group.length || group.every((obs) => obs.coveredCallIds?.includes(id))) continue;
+			const covered = new Set(group.flatMap((obs) => obs.coveredCallIds ?? [])); covered.add(id);
+			if (covered.size > USAGE_LIMITS.maxPendingOrphans) { this.noteGap("tool-entry-link-capacity"); continue; }
+			revision = Math.max(revision, ...group.map((obs) => obs.revision ?? obs.sequence)) + 1;
+			this.acceptBatch(group.map((obs) => ({ ...obs, revision, coveredCallIds: [...covered] })), true);
+		}
+		return revision;
+	}
+
 	dropProgressForToolCall(toolCallId: string): void {
 		const prefix = `toolprogress:${encodeURIComponent(toolCallId.trim())}`;
 		this.ledger.dropWhere((o) => o.executionId === prefix || o.executionId.startsWith(`${prefix}:`));
 	}
 
-	ingestLegacyRecords(records: readonly SubagentUsageRecord[], category: UsageSwitchCategory, runId?: string, observedAt = Date.now(), fallbackOriginTurnId = this.originTurnId, historical = false): number {
+	ingestLegacyRecords(records: readonly SubagentUsageRecord[], category: UsageSwitchCategory, runId?: string, observedAt = Date.now(), fallbackOriginTurnId = this.originTurnId, historical = false, entryId?: string): number {
 		if (!this.enabled(category) || this.closed) return 0;
 		if (records.length > USAGE_LIMITS.perTickEvents) { this.noteGap("batch-capacity"); return 0; }
 		let accepted = 0;
@@ -107,6 +145,14 @@ export class UsageCollector {
 				continue;
 			}
 			if (historical && this.hasExecution(record.sourceKey)) continue;
+			if (historical && record.sourceKey.startsWith("tool:") && [...this.archive.values()].some((obs) =>
+				!isUnprovenMetaObservation(obs) && this.archivedAllowed(obs) &&
+				!obs.coveredCallIds?.length && obs.phase === "final" &&
+				(parseMetaSourceKeyGranularity(obs.executionId) || obs.executionId.startsWith("tool:")))) {
+				// Older archives may have retained event-only identity that Pi dropped.
+				// Without an entry link, keep the archive subtotal rather than add an alias.
+				this.noteGap("tool-entry-overlap-unresolved"); continue;
+			}
 			const partitions = record.modelBreakdown ?? [record];
 			if (partitions.length > USAGE_LIMITS.perTickEvents) { this.noteGap("batch-capacity"); continue; }
 			const parsedRun = parseMetaSourceKeyGranularity(record.sourceKey)?.runId;
@@ -114,6 +160,10 @@ export class UsageCollector {
 			const runner = category !== "pi-subagents" ? category
 				: record.revisionSource === "meta" ? (record.metaIndexless ? "pi-subagents-meta-indexless" : "pi-subagents-meta-indexed")
 				: record.trustedFinal && record.revisionSource === "completion" ? "pi-subagents-completion" : category;
+			const prior = this.ledger.observations().filter((obs) => obs.executionId === record.sourceKey);
+			const covered = new Set([...stored, ...prior].flatMap((obs) => obs.coveredCallIds ?? []));
+			if (entryId) covered.add(entryUsageId(this.sessionId, entryId));
+			if (covered.size > USAGE_LIMITS.maxPendingOrphans) { this.noteGap("tool-entry-link-capacity"); continue; }
 			const observations: UsageObservationV1[] = [];
 			for (const partition of partitions) {
 				const obs = observationFromLegacyRecord({ ...partition, sourceKey: record.sourceKey }, {
@@ -121,6 +171,7 @@ export class UsageCollector {
 					runId: parsedRun ?? runId ?? record.sourceKey, childId: record.sourceKey, runner,
 				}, record.revision ? { kind: "snapshot", snapshotEpoch: record.sourceKey, revision: record.revision } : undefined);
 				if (!obs) break;
+				if (covered.size) obs.coveredCallIds = [...covered];
 				if (record.modelBreakdown && obs.kind === "response") obs.callId = `${record.sourceKey}:model:${partition.modelLabel}`;
 				if (record.sourceKey.startsWith("toolprogress:")) obs.phase = "provisional";
 				observations.push(obs);

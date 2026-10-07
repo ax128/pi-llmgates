@@ -27,6 +27,17 @@ export function usageMetadataBytes(value: unknown): number | undefined {
 }
 export function boundedUsageMetadata(value: unknown): boolean { return usageMetadataBytes(value) !== undefined; }
 
+/** Only event fields that Pi omits from ToolResultMessage. Never retain result bodies. */
+export function toolResultMetadata(result: unknown): Record<string, string | number> {
+	const metadata: Record<string, string | number> = {};
+	if (!isPlainObject(result)) return metadata;
+	for (const key of ["runId", "agent", "model", "provider", "sessionId", "sessionFile"] as const) {
+		if (typeof result[key] === "string" && result[key].length <= 4096) metadata[key] = result[key];
+	}
+	if (typeof result.childIndex === "number" && Number.isSafeInteger(result.childIndex) && result.childIndex >= 0) metadata.childIndex = result.childIndex;
+	return metadata;
+}
+
 export type NestedOwnership = ReadonlyMap<string, { parentId: string; rootId?: string; name: string; origin: string; conflicted?: boolean }>;
 
 /** Tool-local fallback IDs cannot prove independence from a nested parent/child. */
@@ -66,6 +77,7 @@ export function parseSessionEntry(entry: unknown, options: {
 	live?: boolean;
 	modernUsage?: boolean;
 	observedNested?: NestedOwnership;
+	toolMetadata?: Readonly<Record<string, string | number>>;
 	model?: { id?: string; provider?: string };
 }): EntryParseResult {
 	const out: EntryParseResult = { candidates: [], gaps: [], runIds: [] };
@@ -83,13 +95,15 @@ export function parseSessionEntry(entry: unknown, options: {
 			out.toolCallId = id;
 			const nestedGap = message.nestedCalls !== undefined && !options.modernUsage ? "unsupported-nested-tool-usage"
 				: options.modernUsage ? pooledToolGap(message, options.observedNested) : undefined;
-			let dedicatedResult: unknown = message;
+			// Usage/details/nestedCalls always come from the finalized public entry.
+			const result = { ...options.toolMetadata, ...message };
+			let dedicatedResult: unknown = result;
 			if (nestedGap) {
 				out.gaps.push(nestedGap);
 				if (name !== "subagent" && name !== "task" && name !== "bg_wait") return out;
 				// Reject only the pool. Dedicated details retain their own identity and
 				// policy gates; omit root usage so the subagent fallback cannot claim it.
-				dedicatedResult = { details: message.details, runId: message.runId, sessionId: message.sessionId, sessionFile: message.sessionFile };
+				dedicatedResult = { details: message.details, runId: result.runId, sessionId: result.sessionId, sessionFile: result.sessionFile };
 			}
 			if (!boundedUsageMetadata(dedicatedResult)) { out.gaps.push("metadata-budget-exceeded"); return out; }
 			out.runIds = extractSubagentRunIdsFromToolExecution(name, dedicatedResult);
@@ -106,10 +120,11 @@ export function parseSessionEntry(entry: unknown, options: {
 				if (!records.length) out.gaps.push("side-channel-history-unavailable");
 			} else if (name === "bg_wait") {
 				category = "pi-subagents";
-				records = extractBgWaitUsage(dedicatedResult, options.sessionIdentity, options.historicalRuns);
-				if (!records.length) out.gaps.push("completion-ownership-unresolved");
+				let unresolvedOwnership = false;
+				records = extractBgWaitUsage(dedicatedResult, options.sessionIdentity, options.historicalRuns, () => { unresolvedOwnership = true; });
+				if (!records.length || unresolvedOwnership) out.gaps.push("completion-ownership-unresolved");
 			} else if (!TOOL_USAGE_CLAIMED_ELSEWHERE.has(name)) {
-				records = extractToolResultUsage(name, message, id, { storedOnly: !options.live });
+				records = extractToolResultUsage(name, result, id, { storedOnly: !options.live });
 			} else if (message.usage !== undefined) out.gaps.push("excluded-tool-source");
 			if (isUsageCategoryEnabled(category, options.policy) && records.length) out.candidates.push({ kind: "legacy", records, category });
 		}

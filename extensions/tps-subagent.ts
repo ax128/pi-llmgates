@@ -732,11 +732,13 @@ export function extractSubagentUsageFromToolExecution(
  * the async/meta ownership path and binding a run from this payload alone would
  * allow an old session's wait result to claim the current session.  The caller
  * supplies run ids already observed through a trusted launch/completion path.
+ * The callback reports skipped owners even when other children were accepted.
  */
 export function extractBgWaitUsage(
 	result: unknown,
 	currentSession: string | SubagentSessionIdentity | null | undefined,
 	trustedRunIds: ReadonlySet<string>,
+	onUnresolvedOwnership?: () => void,
 ): SubagentUsageRecord[] {
 	if (!isPlainObject(result) || !isPlainObject(result.details)) return [];
 	if (!normalizeSubagentSessionIdentity(currentSession)) return [];
@@ -781,7 +783,12 @@ export function extractBgWaitUsage(
 			// parent; that would turn a cross-run projection into current ownership.
 			if (hasChildIdentity && !child) continue;
 			const owner = child ?? parent;
-			if (!owner || !trusted.has(owner)) continue;
+			if (!owner) continue;
+			if (!trusted.has(owner)) {
+				// Report partial ownership too; other children may already be accepted.
+				onUnresolvedOwnership?.();
+				continue;
+			}
 			const agent = item.agent ?? completion.agent;
 			const sourceKey = subagentRunSourceKey(owner, agent, index);
 			if (!sourceKey) continue;

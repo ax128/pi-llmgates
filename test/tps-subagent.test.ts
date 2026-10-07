@@ -63,6 +63,20 @@ describe("tps subagent usage", () => {
 		expect(extractBgWaitUsage(payload, "sess-1", new Set([UUID_NORM]))).toEqual([]);
 	});
 
+	it("reports unresolved child ownership even when another completion is accepted", () => {
+		const unresolved = vi.fn();
+		const payload = { details: { mode: "management", completions: [{ runId: "bcde", results: [
+			{ runId: "abcd", agent: "worker", usage: { cost: 3 } },
+			{ agent: "worker", usage: { cost: 5 } },
+		] }] } };
+		const records = extractBgWaitUsage(payload, "sess-1", new Set(["bcde"]), unresolved);
+		expect(records).toMatchObject([{ sourceKey: "meta:bcde:worker:1", costUsd: 5 }]);
+		expect(unresolved).toHaveBeenCalledTimes(1);
+		const retried = extractBgWaitUsage(payload, "sess-1", new Set(["abcd", "bcde"]));
+		expect(retried.map((r) => r.costUsd)).toEqual([3, 5]);
+		expect(extractBgWaitUsage({ ...payload, sessionId: "foreign" }, "sess-1", new Set(["abcd", "bcde"]))).toEqual([]);
+	});
+
 	it("keeps the 0.69 async parent-run and flat-index fixture on the existing source key", () => {
 		const [record] = extractSubagentUsageFromAsyncComplete(asyncCompleteFixture, "sess-0.69");
 		expect(record).toMatchObject({
