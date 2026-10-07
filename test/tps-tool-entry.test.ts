@@ -26,9 +26,10 @@ function runtime() {
 	let scope = "This session";
 	const menus: { title: string; options: string[] }[] = [];
 	const statuses: string[] = [];
+	const notifications: string[] = [];
 	const ctx = {
 		cwd: temp.agentDir, mode: "tui", hasUI: true, sessionManager: manager,
-		ui: { theme: { fg: (_color: string, text: string) => text }, setStatus(_key: string, value: string | undefined) { if (value) statuses.push(value); }, notify() {},
+		ui: { theme: { fg: (_color: string, text: string) => text }, setStatus(_key: string, value: string | undefined) { if (value) statuses.push(value); }, notify(message: string) { notifications.push(message); },
 			select: async (title: string, options: string[]) => { menus.push({ title, options }); return title === "Usage scope" ? scope : undefined; } },
 	} as unknown as ExtensionContext;
 	registerTps({
@@ -38,7 +39,7 @@ function runtime() {
 		events: { on: (name: string, handler: (data: unknown) => void) => { events.set(name, handler); return () => events.delete(name); } },
 	} as unknown as ExtensionAPI);
 	const emit = async (name: string, event = {}) => { await handlers.get(name)?.(event, ctx); };
-	return { manager, emit, statuses,
+	return { manager, emit, statuses, notifications,
 		tool: async (toolName: string, toolCallId: string, result: unknown) => {
 			await emit("tool_execution_start", { toolName, toolCallId });
 			await drain(); // Real tool execution yields before the end event.
@@ -60,7 +61,7 @@ describe("real Pi tool-result projection", () => {
 		expect(message.usage).toEqual(direct().usage);
 	});
 
-	it.each([false, true])("counts direct subagent spend once across duplicate events, completion and reload (persist=%s)", async (persist) => {
+	it.each([false, true])("deduplicates live direct spend and restores only provable identities (persist=%s)", async (persist) => {
 		vi.stubEnv("LLMGATES_TPS_PERSIST", persist ? "1" : "0");
 		const r = runtime();
 		try {
@@ -75,10 +76,88 @@ describe("real Pi tool-result projection", () => {
 			expect((await r.show()).title).toContain("cost $3.00");
 			for (let reload = 0; reload < 2; reload++) {
 				await r.emit("session_shutdown"); await r.emit("session_start");
-				expect((await r.show()).title).toContain("cost $3.00");
-				expect((await r.show()).options).toHaveLength(1);
+				if (persist) {
+					expect((await r.show()).title).toContain("cost $3.00");
+					expect((await r.show()).options).toHaveLength(1);
+				} else {
+					await r.show();
+					expect(r.notifications.at(-1)).toContain("No model calls recorded in this session");
+					expect(r.statuses.at(-1)).toContain("All(partial) 0c.$0.000");
+					expect((await r.show("Coverage")).options.join()).toContain("tool-entry-overlap-unresolved");
+				}
 			}
 		} finally { await r.emit("session_shutdown"); }
+	});
+
+	it.each([false, true])("does not recount an unlinked historical alias when completion arrives after reload (persist=%s)", async (persist) => {
+		vi.stubEnv("LLMGATES_TPS_PERSIST", persist ? "1" : "0");
+		const r = runtime();
+		try {
+			await r.emit("session_start"); await drain(); await r.emit("before_agent_start");
+			await r.tool("custom_llm", "independent", { usage: { input: 10, turns: 1, cost: 2 } });
+			await r.tool("subagent", "call", direct());
+			expect((await r.show()).title).toContain("cost $5.00");
+			for (let reload = 0; reload < 2; reload++) {
+				await r.emit("session_shutdown"); await r.emit("session_start");
+				expect((await r.show()).title).toContain(persist ? "cost $5.00" : "cost $2.00");
+				if (!persist) expect((await r.show("Coverage")).options.join()).toContain("tool-entry-overlap-unresolved");
+				r.complete("abcd", 3);
+				expect((await r.show()).title).toContain("cost $5.00");
+				expect((await r.show()).options).toHaveLength(2);
+				r.complete("abcd", 99);
+				expect((await r.show()).title).toContain("cost $5.00");
+			}
+		} finally { await r.emit("session_shutdown"); }
+	});
+
+	it("restores public run identities without persistence and deduplicates late completion", async () => {
+		vi.stubEnv("LLMGATES_TPS_PERSIST", "0");
+		const r = runtime();
+		try {
+			await r.emit("session_start"); await drain();
+			await r.tool("subagent", "call", { details: { runId: "abcd", results: [{ agent: "worker", model: "worker-model", usage: direct().usage }] } });
+			expect((await r.show()).title).toContain("cost $3.00");
+			await r.emit("session_shutdown"); await r.emit("session_start");
+			expect((await r.show()).title).toContain("cost $3.00");
+			r.complete("abcd", 3);
+			expect((await r.show()).title).toContain("cost $3.00");
+			expect((await r.show()).options).toHaveLength(1);
+			expect((await r.show("Coverage")).options.join()).not.toContain("tool-entry-overlap-unresolved");
+		} finally { await r.emit("session_shutdown"); }
+	});
+
+	it("isolates anonymous replay even when completion arrives before the first replay slice", async () => {
+		vi.stubEnv("LLMGATES_TPS_PERSIST", "0");
+		const r = runtime();
+		r.manager.appendMessage(toolResultMessage({ toolName: "subagent", toolCallId: "old", result: direct() }));
+		try {
+			await r.emit("session_start");
+			r.complete("abcd", 3);
+			expect((await r.show()).title).toContain("cost $3.00");
+			expect((await r.show()).options).toHaveLength(1);
+			expect((await r.show("Coverage")).options.join()).toContain("tool-entry-overlap-unresolved");
+			// Equal amounts are not evidence of equal executions.
+			r.complete("bcde", 3);
+			expect((await r.show()).title).toContain("cost $6.00");
+		} finally { await r.emit("session_shutdown"); }
+	});
+
+	it.each([false, true])("keeps the launching turn after a tool runs longer than the association TTL (persist=%s)", async (persist) => {
+		vi.stubEnv("LLMGATES_TPS_PERSIST", persist ? "1" : "0");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		const r = runtime();
+		try {
+			await r.emit("session_start"); await drain(); await r.emit("before_agent_start");
+			await r.emit("tool_execution_start", { toolName: "subagent", toolCallId: "slow" });
+			await vi.advanceTimersByTimeAsync(USAGE_LIMITS.orphanTtlMs * 2);
+			await r.emit("tool_execution_end", { toolName: "subagent", toolCallId: "slow", result: direct() });
+			r.manager.appendMessage(toolResultMessage({ toolName: "subagent", toolCallId: "slow", result: direct() }));
+			expect((await r.show("This turn")).title).toContain("cost $3.00");
+			r.complete("abcd", 3);
+			expect((await r.show("This turn")).title).toContain("cost $3.00");
+			expect((await r.show()).title).toContain("cost $3.00");
+			expect((await r.show("Coverage")).options.join()).not.toContain("origin-association-expired");
+		} finally { await r.emit("session_shutdown"); vi.useRealTimers(); }
 	});
 
 	it.each([false, true])("scans async tool results before a slow follow-up answer expires their metadata (persist=%s)", async (persist) => {

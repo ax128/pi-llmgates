@@ -145,12 +145,11 @@ export class UsageCollector {
 				continue;
 			}
 			if (historical && this.hasExecution(record.sourceKey)) continue;
-			if (historical && record.sourceKey.startsWith("tool:") && [...this.archive.values()].some((obs) =>
-				!isUnprovenMetaObservation(obs) && this.archivedAllowed(obs) &&
-				!obs.coveredCallIds?.length && obs.phase === "final" &&
-				(parseMetaSourceKeyGranularity(obs.executionId) || obs.executionId.startsWith("tool:")))) {
-				// Older archives may have retained event-only identity that Pi dropped.
-				// Without an entry link, keep the archive subtotal rather than add an alias.
+			if (historical && record.sourceKey.startsWith("tool:")) {
+				// Pi drops event-only run/model scalars. A tool-local replay key may
+				// alias a later completion/meta key even when persistence is OFF and
+				// the archive is empty. Only a proven stored identity/link (above) can
+				// restore it; never infer independence from arrival order or amounts.
 				this.noteGap("tool-entry-overlap-unresolved"); continue;
 			}
 			const partitions = record.modelBreakdown ?? [record];
