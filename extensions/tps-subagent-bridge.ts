@@ -28,6 +28,8 @@ export interface SubagentUsageBridgeOptions {
 	 */
 	onAsyncCompleteData?: (data: unknown) => void;
 	onRunObserved?: (normalizedRunId: string) => void;
+	/** Session-checked identity evidence, independent of whether the child reports usage. */
+	onRunParentObserved?: (childRunId: string, parentRunId: string) => void;
 	onForegroundComplete?: (normalizedRunId: string) => void;
 	onGap?: (reason: "metadata-budget-exceeded") => void;
 	enabled?: boolean;
@@ -134,7 +136,9 @@ export function registerSubagentUsageBridge(
 			options.onGap?.("metadata-budget-exceeded");
 			return;
 		}
+		const parentRunId = matchingRunId(data);
 		for (const runId of observedRunIds(data)) {
+			if (parentRunId && runId !== parentRunId) options.onRunParentObserved?.(runId, parentRunId);
 			options.onRunObserved?.(runId);
 		}
 		if (options.onAsyncCompleteData) {

@@ -196,6 +196,40 @@ describe("tps-subagent-bridge", () => {
 		unregister();
 	});
 
+	it("links validated child identities without requiring usage or reading result bodies", () => {
+		const bus = createMemoryEventBus(), onRunParentObserved = vi.fn(), onRecords = vi.fn();
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1", onRecords, onRunParentObserved,
+		});
+		try {
+			bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+				sessionId: "sess-1", id: UUID_RUN.toUpperCase(), results: [
+					{ runId: "ABCD", get content() { throw new Error("result body read"); } },
+					{ id: "bcde" }, { runId: "ABCD" }, { runId: UUID_RUN }, { runId: "invalid" },
+				],
+			});
+			expect(onRunParentObserved.mock.calls).toEqual([
+				["abcd", "1d706627aada48289207bbab8fad3864"], ["bcde", "1d706627aada48289207bbab8fad3864"],
+			]);
+			expect(onRecords).not.toHaveBeenCalled();
+		} finally { unregister(); }
+	});
+
+	it.each(["foreign", "budget", "invalid-parent", "missing-parent", "disabled"])("never links children of a %s completion", (reason) => {
+		const bus = createMemoryEventBus(), onRunParentObserved = vi.fn();
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1", enabled: reason !== "disabled", onRecords() {}, onRunParentObserved,
+		});
+		try {
+			bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+				sessionId: reason === "foreign" ? "other" : "sess-1",
+				runId: reason === "invalid-parent" ? "invalid" : reason === "missing-parent" ? undefined : UUID_RUN,
+				results: Array(reason === "budget" ? USAGE_LIMITS.perTickEvents + 1 : 1).fill({ runId: "abcd" }),
+			});
+			expect(onRunParentObserved).not.toHaveBeenCalled();
+		} finally { unregister(); }
+	});
+
 	it("does not repeat a per-child run id that equals the run-level one", () => {
 		const bus = createMemoryEventBus();
 		const observed: string[] = [];

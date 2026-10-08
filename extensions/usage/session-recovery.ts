@@ -11,6 +11,8 @@ type ToolMetadata = ReturnType<typeof toolResultMetadata>;
 type SummaryModel = { id?: string; provider?: string };
 type Pending = { message?: unknown; toolCallId?: string; entryId?: string; origin: string; expires: number; toolMetadata?: ToolMetadata; summaryModel?: SummaryModel };
 type DeferredEntry = { origin: string; historical: boolean; live: boolean; toolMetadata?: ToolMetadata };
+/** One atomic execution; model partitions count against the shared slice budget. */
+export interface RecoveryTask { run: () => void | Promise<void>; bytes: number; events: number; }
 export class SessionRecovery {
 	private readonly seen = new Set<string>();
 	private readonly startupIds = new Set<string>();
@@ -24,7 +26,7 @@ export class SessionRecovery {
 	private readonly pending: Pending[] = [];
 	// Public entry IDs only: no retained messages, and at most one retry after replay.
 	private readonly deferred = new Map<string, DeferredEntry>();
-	private readonly queue: Array<{ run: () => void | Promise<void>; bytes: number; background: boolean }> = [];
+	private readonly queue: Array<RecoveryTask & { background: boolean }> = [];
 	private entries: readonly unknown[] | undefined;
 	private cursor = 0;
 	private entryDiscoveryStopped = false;
@@ -49,7 +51,7 @@ export class SessionRecovery {
 		onChange: () => void;
 	}) { collector.setOriginBackfillScheduler(() => this.schedule()); }
 	get pendingCount(): number { return this.queue.length + this.activeTools.size + this.pending.length + this.deferred.size + Number(this.collector.hasPendingOriginBackfill); }
-	get hasPendingRecovery(): boolean { return !this.initialized || Boolean(this.entries) || this.deferred.size > 0 || this.boundaryDirty || this.leafDirty || this.draining || this.collector.hasPendingOriginBackfill; }
+	get hasPendingRecovery(): boolean { return !this.initialized || Boolean(this.entries) || this.queue.length > 0 || this.deferred.size > 0 || this.boundaryDirty || this.leafDirty || this.draining || this.collector.hasPendingOriginBackfill; }
 	private owns(): boolean { return !this.cancelled && this.options.isOwner(); }
 	async start(): Promise<void> {
 		this.collector.recoveryState = "recovering";
@@ -68,11 +70,22 @@ export class SessionRecovery {
 		this.schedule();
 	}
 	enqueue(run: () => void | Promise<void>, bytes = 128, background = false): boolean {
+		return this.enqueueBatch([{ run, bytes, events: 1 }], background);
+	}
+	/** Admit the whole batch before mutating queue/dedup state; retain FIFO across slices. */
+	enqueueBatch(tasks: readonly RecoveryTask[], background = false): boolean {
 		if (this.closing || !this.owns()) return false;
-		if (this.queue.length >= USAGE_LIMITS.queueSoftLimit || bytes > USAGE_LIMITS.perTickReadBytes) { this.collector.noteGap("live-queue-overflow"); return false; }
+		if (tasks.length === 0) return true;
+		if (this.queue.length + tasks.length > USAGE_LIMITS.queueSoftLimit ||
+			tasks.some((task) => !Number.isFinite(task.bytes) || task.bytes < 0 || !Number.isInteger(task.events) || task.events < 1 || task.events > USAGE_LIMITS.perTickEvents) ||
+			tasks.reduce((sum, task) => sum + task.bytes, 0) > USAGE_LIMITS.perTickReadBytes) {
+			this.collector.noteGap("live-queue-overflow"); return false;
+		}
 		const firstBackground = background ? -1 : this.queue.findIndex((item) => item.background);
-		if (firstBackground < 0) this.queue.push({ run, bytes, background });
-		else this.queue.splice(firstBackground, 0, { run, bytes, background });
+		const items = tasks.map((task) => ({ ...task, background }));
+		if (firstBackground < 0) this.queue.push(...items);
+		else this.queue.splice(firstBackground, 0, ...items);
+		if (this.collector.recoveryState === "ready") this.collector.recoveryState = "recovering";
 		this.schedule(); return true;
 	}
 	noteAssistant(message: unknown, origin: string): void { this.addPending({ message, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
@@ -266,11 +279,14 @@ export class SessionRecovery {
 			this.expirePending();
 			while (this.queue.length && (!this.queue[0]!.background || this.closing) && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {
 				const item = this.queue[0]!;
-				if (bytes + item.bytes > USAGE_LIMITS.perTickReadBytes) break;
-				this.queue.shift(); bytes += item.bytes; count++;
+				if (bytes + item.bytes > USAGE_LIMITS.perTickReadBytes || count + item.events > USAGE_LIMITS.perTickEvents) break;
+				this.queue.shift(); bytes += item.bytes; count += item.events;
 				await item.run();
 				if (!this.owns()) return;
 			}
+			// A group that does not fit the remaining budget keeps its place. Do not
+			// let later public entries claim its identity before the next queue slice.
+			if (this.queue.length && !this.queue[0]!.background) count = USAGE_LIMITS.perTickEvents;
 			if (!this.closing && this.leafDirty) {
 				this.leafDirty = false;
 				const continuing = this.leafQueue.length > 0 || this.leafCursor !== undefined;
@@ -320,8 +336,8 @@ export class SessionRecovery {
 			// when their public parent chain spans more than one bounded leaf slice.
 			while (!this.entries && !this.leafDirty && this.queue.length && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {
 				const item = this.queue[0]!;
-				if (bytes + item.bytes > USAGE_LIMITS.perTickReadBytes) break;
-				this.queue.shift(); bytes += item.bytes; count++;
+				if (bytes + item.bytes > USAGE_LIMITS.perTickReadBytes || count + item.events > USAGE_LIMITS.perTickEvents) break;
+				this.queue.shift(); bytes += item.bytes; count += item.events;
 				await item.run();
 				if (!this.owns()) return;
 			}

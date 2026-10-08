@@ -115,6 +115,93 @@ describe("review regressions: recovered subagent accounting", () => {
 		},
 	);
 
+	it.each([false, true].flatMap((persist) => [false, true].map((early) => ({ persist, early }))))(
+		"keeps meta-only child usage on its proven launch turn ($persist/$early)", async ({ persist, early }) => {
+			vi.stubEnv("LLMGATES_TPS_PERSIST", persist ? "1" : "0");
+			const r = runtime(), parent = "0B82240E-F5FE-4ADE-9458-8D08018D02E5";
+			const launch = async () => {
+				const result = { details: { runId: parent, async: true } };
+				await r.emit("tool_execution_end", { toolName: "subagent", toolCallId: "launch", result });
+				r.manager.appendMessage(toolResultMessage({ toolName: "subagent", toolCallId: "launch", result }));
+			};
+			const completion = { id: parent, results: [{ id: "ABCD", agent: "worker" }] };
+			try {
+				await r.emit("session_start"); await drain(); await r.emit("before_agent_start");
+				await r.emit("tool_execution_start", { toolName: "subagent", toolCallId: "launch" });
+				if (!early) await launch();
+				r.complete(completion); // No usage: only parent/child identity is available.
+				const artifacts = join(temp.agentDir, ".pi-subagents", "artifacts"); mkdirSync(artifacts, { recursive: true });
+				const file = join(artifacts, "abcd_worker_0_meta.json");
+				writeFileSync(file, JSON.stringify({ agent: "worker", model: "worker", usage: usage(3) }));
+				const now = Date.now() / 1000 + 1; utimesSync(file, now, now);
+				await r.emit("agent_settled");
+				expect((await r.show()).title).toContain("$3.00");
+				if (early) {
+					await r.show("This turn"); expect(r.notifications.at(-1)).toContain("No model calls recorded in this turn");
+					await launch();
+				}
+				expect((await r.show("This turn")).title).toContain("$3.00");
+				await r.emit("before_agent_start"); r.complete(completion);
+				expect((await r.show()).title).toContain("$3.00");
+				await r.show("This turn"); expect(r.notifications.at(-1)).toContain("No model calls recorded in this turn");
+				await r.emit("session_shutdown");
+				if (persist) {
+					const stored = new FsUsagePersist(temp.agentDir, r.manager.getSessionId()).load();
+					expect(stored.filter((row) => row.executionId === "meta:abcd:worker:0").map((row) => row.originTurnId)).toEqual(["turn-1"]);
+				}
+			} finally { await r.emit("session_shutdown"); }
+		},
+	);
+
+	it.each([false, true])("slices completion batches between atomic executions and drains shutdown (persist=%s)", async (persist) => {
+		vi.stubEnv("LLMGATES_TPS_PERSIST", persist ? "1" : "0");
+		const r = runtime(); let now = 0;
+		const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+		const original = UsageCollector.prototype.ingestLegacyRecords;
+		const batches: number[] = [];
+		const ingest = vi.spyOn(UsageCollector.prototype, "ingestLegacyRecords").mockImplementation(function (this: UsageCollector, ...args) {
+			batches.push(args[0].length);
+			const accepted = original.apply(this, args);
+			now += USAGE_LIMITS.perTickMs;
+			return accepted;
+		});
+		try {
+			await r.emit("session_start"); await drain();
+			r.complete({ runId: "abcd", results: Array.from({ length: 3 }, () => ({ agent: "worker", modelAttempts: [
+				{ model: "a", usage: usage(1) }, { model: "b", usage: usage(2) },
+			] })) });
+			expect(batches).toEqual([]); // No accounting on the event stack.
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(batches).toEqual([1]);
+			expect(r.statuses.at(-1)).toContain("$3.00"); // Both model partitions committed together.
+			// A later duplicate cannot overtake the original batch's remaining children.
+			r.complete({ runId: "abcd", results: Array.from({ length: 3 }, () => ({ agent: "worker", model: "wrong", usage: usage(99) })) });
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(batches).toEqual([1, 1]);
+			expect(r.statuses.at(-1)).toContain("$6.00");
+			await r.emit("session_shutdown"); // Drain the last execution before checkpointing.
+			expect(batches).toEqual([1, 1, 1]);
+			if (persist) {
+				const stored = new FsUsagePersist(temp.agentDir, r.manager.getSessionId()).load();
+				expect(stored).toHaveLength(6);
+				expect(stored.reduce((sum, row) => sum + (row.usage?.costUsd ?? 0), 0)).toBe(9);
+			}
+		} finally { ingest.mockRestore(); clock.mockRestore(); await r.emit("session_shutdown"); }
+	});
+
+	it("projects and redraws a multi-child completion only once per accounting slice", async () => {
+		vi.stubEnv("LLMGATES_TPS_PERSIST", "0");
+		const r = runtime(), clock = vi.spyOn(performance, "now").mockReturnValue(0);
+		try {
+			await r.emit("session_start"); await drain();
+			const updates = r.statuses.length;
+			r.complete({ runId: "abcd", results: Array.from({ length: 8 }, () => ({ agent: "worker", model: "worker", usage: usage(3) })) });
+			await drain();
+			expect(r.statuses).toHaveLength(updates + 1);
+			expect(r.statuses.at(-1)).toContain("$24.00");
+		} finally { clock.mockRestore(); await r.emit("session_shutdown"); }
+	});
+
 	it("replaces a restored indexed snapshot with one atomic completion, even without source revision", async () => {
 		const r = runtime(); await seed(r.manager);
 		const completion = { runId: "abcd", results: [{ agent: "worker", modelAttempts: [{ model: "a", usage: usage(2) }, { model: "b", usage: usage(3) }] }] };
