@@ -20,6 +20,9 @@ export class UsageCollector {
 	// Generation-local proof only: replay/archives must never grant a new turn.
 	private readonly pendingRunParents = new Map<string, string>();
 	private readonly liveUnassignedExecutions = new Set<string>();
+	private originBackfillRequested = false;
+	private originBackfillQueue: string[] = [];
+	private scheduleOriginBackfill: (() => void) | undefined;
 	private maxRevision = 0;
 	private readonly archive = new Map<string, UsageObservationV1>();
 	private readonly archiveGroups = new Map<string, { revision: number; keys: Set<string> }>();
@@ -69,7 +72,11 @@ export class UsageCollector {
 			this.pendingRunParents.delete(next);
 			queue.push(...(children.get(next) ?? []));
 		}
-		this.backfillRunOrigins();
+		if (this.liveUnassignedExecutions.size) {
+			this.originBackfillRequested = true;
+			if (this.recoveryState === "ready") this.recoveryState = "recovering";
+			this.scheduleOriginBackfill?.();
+		}
 	}
 
 	/** Called only with the parent/child identities of a session-verified completion. */
@@ -84,19 +91,39 @@ export class UsageCollector {
 		this.pendingRunParents.set(child, parent);
 	}
 
-	private backfillRunOrigins(): void {
-		if (!this.liveUnassignedExecutions.size) return;
+	/** SessionRecovery owns wakeups, cancellation and the shared per-tick budget. */
+	setOriginBackfillScheduler(schedule: (() => void) | undefined): void { this.scheduleOriginBackfill = schedule; }
+	get hasPendingOriginBackfill(): boolean { return this.originBackfillRequested || this.originBackfillQueue.length > 0; }
+
+	/** Retain only execution IDs between slices; never replay an old snapshot after yielding. */
+	drainOriginBackfill(maxEvents: number = USAGE_LIMITS.perTickEvents, deadline = performance.now() + USAGE_LIMITS.perTickMs): number {
+		if (this.closed || !this.hasPendingOriginBackfill || maxEvents <= 0 || performance.now() >= deadline) return 0;
+		maxEvents = Math.min(maxEvents, USAGE_LIMITS.perTickEvents);
+		if (!this.originBackfillQueue.length) {
+			this.originBackfillRequested = false;
+			this.originBackfillQueue = [...this.liveUnassignedExecutions].reverse();
+		}
 		const groups = new Map<string, UsageObservationV1[]>();
 		for (const obs of this.ledger.observations()) {
 			if (!this.liveUnassignedExecutions.has(obs.executionId)) continue;
 			const group = groups.get(obs.executionId) ?? [];
 			group.push(obs); groups.set(obs.executionId, group);
 		}
-		for (const execution of this.liveUnassignedExecutions) if (!groups.has(execution)) this.liveUnassignedExecutions.delete(execution);
-		for (const [execution, group] of groups) {
-			const run = parseMetaSourceKeyGranularity(execution)?.runId;
-			const origin = this.originForRun(run);
-			if (origin === "unassigned") continue;
+		let count = 0;
+		while (this.originBackfillQueue.length && count < maxEvents && performance.now() < deadline) {
+			const execution = this.originBackfillQueue[this.originBackfillQueue.length - 1]!;
+			const group = groups.get(execution);
+			const origin = this.originForRun(parseMetaSourceKeyGranularity(execution)?.runId);
+			if (!group || origin === "unassigned") {
+				if (!group) this.liveUnassignedExecutions.delete(execution);
+				this.originBackfillQueue.pop(); count++; continue;
+			}
+			if (group.length > USAGE_LIMITS.perTickEvents) {
+				this.noteGap("batch-capacity"); this.originBackfillQueue.pop(); count++; continue;
+			}
+			// Count model partitions, not just executions; a group is never split.
+			if (count + group.length > maxEvents) break;
+			this.originBackfillQueue.pop(); count += group.length;
 			// Retain every model partition and every non-origin field. A fresh local
 			// revision makes checkpoint + old journal recovery unambiguous as well.
 			const revision = Math.max(this.maxRevision, ...group.map((obs) => obs.revision ?? obs.sequence)) + 1;
@@ -105,6 +132,7 @@ export class UsageCollector {
 			}));
 			if (this.acceptBatch(rows, true)) this.liveUnassignedExecutions.delete(execution);
 		}
+		return count;
 	}
 	originForRun(runId: string | undefined): string { return runId ? this.runOrigin.get(normalizeRunIdForSourceKey(runId)) ?? "unassigned" : "unassigned"; }
 	enabled(category: UsageSwitchCategory, sourceId?: Parameters<typeof isUsageCategoryEnabled>[2]): boolean { return isUsageCategoryEnabled(category, this.policy, sourceId); }
@@ -341,6 +369,8 @@ export class UsageCollector {
 	async checkpointAndClose(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
+		this.scheduleOriginBackfill = undefined;
+		this.originBackfillRequested = false; this.originBackfillQueue.length = 0;
 		if (this.persist.enabled && !this.restored) this.persist.protect("load-budget-exceeded");
 		await this.writes;
 		await this.checkpoint();

@@ -38,6 +38,8 @@ describe("UsageCollector origin-turn binding", () => {
 			expect(session.turnModelStats(turn).size).toBe(0);
 			session.beginTurn();
 			session.bindRun("AB-CD", turn);
+			expect(session.turnTotals(turn).costUsd).toBe(0); // Binding never rewrites the ledger on the event stack.
+			session.drainOriginBackfill(USAGE_LIMITS.perTickEvents, Infinity);
 			expect(session.turnTotals(turn).costUsd).toBe(3);
 			expect(session.turnTotals().costUsd).toBe(0);
 			expect(session.turnModelStats(turn).get("worker")?.costUsd).toBe(3);
@@ -67,6 +69,7 @@ describe("UsageCollector origin-turn binding", () => {
 			session.linkRunParent("abcd", "cdef"); // A cycle terminates once the root is proven.
 			session.bindRun("abcd", "turn-1");
 			expect(session.originForRun("cdef")).toBe("turn-1");
+			session.drainOriginBackfill(USAGE_LIMITS.perTickEvents, Infinity);
 			expect(session.turnTotals().costUsd).toBe(3);
 		} finally { await session.checkpointAndClose(); cleanup(); }
 	});
