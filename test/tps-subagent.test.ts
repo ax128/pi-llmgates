@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	SUBAGENT_TOOL_NAMES,
 	asyncRunSourceKey,
@@ -27,6 +27,7 @@ import {
 	subagentRunSourceKey,
 } from "../extensions/tps-subagent.js";
 import { totalCostUsd, totalModelCalls } from "../extensions/tps-stats.js";
+import { USAGE_LIMITS } from "../extensions/usage/policy.js";
 import asyncCompleteFixture from "./fixtures/pi-subagents-0.69/async-complete-parent-child.json" with { type: "json" };
 import bgWaitFixture from "./fixtures/pi-subagents-0.69/bg-wait-management.json" with { type: "json" };
 
@@ -1135,6 +1136,13 @@ describe("tps subagent async child runId keys", () => {
 });
 
 describe("tps subagent meta scan bounds", () => {
+	beforeEach(() => {
+		// Count/size bounds must not depend on CI I/O speed. Deadline cases below
+		// advance this clock explicitly without changing the production budget.
+		const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+		return () => clock.mockRestore();
+	});
+
 	function writeMeta(artifactsDir: string, runId: string, input: number, padBytes = 0): void {
 		writeFileSync(
 			join(artifactsDir, `${runId}_worker_0_meta.json`),
@@ -1188,9 +1196,48 @@ describe("tps subagent meta scan bounds", () => {
 		expect(ingested.size).toBe(total);
 		expect(collectPiSubagentsMetaUsage(artifactsDir, sessionStartedAtMs, ingested)).toHaveLength(0);
 	});
+
+	it.each([0, 1])("resumes without loss when the deadline stops a scan after %i records", (completed) => {
+		const root = mkdtempSync(join(tmpdir(), "pi-subagents-deadline-"));
+		try {
+			const artifactsDir = join(root, ".pi-subagents", "artifacts");
+			mkdirSync(artifactsDir, { recursive: true });
+			const total = 5;
+			for (let i = 0; i < total; i++) writeMeta(artifactsDir, `aaaa${i.toString(16).padStart(4, "0")}`, i + 1);
+			const startedAtMs = Date.now() - 60_000;
+			const ingested = new Set<string>();
+			const onTruncated = vi.fn();
+			// The deadline starts at 0 + perTickMs. Allow the selected reads just
+			// before it, then stop exactly at the deadline (including zero progress).
+			const clock = vi.mocked(performance.now).mockReturnValue(USAGE_LIMITS.perTickMs).mockReturnValueOnce(0);
+			for (let i = 0; i < completed; i++) clock.mockReturnValueOnce(USAGE_LIMITS.perTickMs - 1);
+			const first = collectPiSubagentsMetaUsage(artifactsDir, startedAtMs, ingested, undefined, onTruncated);
+			expect(first).toHaveLength(completed);
+			expect(onTruncated).toHaveBeenCalledOnce();
+			expect(ingested.size).toBe(0); // Reading must not claim the unread tail.
+			for (const record of first) ingested.add(record.sourceKey);
+
+			// A new slice gets a fresh deadline, even if the previous one read nothing.
+			onTruncated.mockClear();
+			const second = collectPiSubagentsMetaUsage(artifactsDir, startedAtMs, ingested, undefined, onTruncated);
+			expect(second).toHaveLength(total - completed);
+			expect(onTruncated).not.toHaveBeenCalled();
+			for (const record of second) ingested.add(record.sourceKey);
+			expect(ingested.size).toBe(total);
+			expect(collectPiSubagentsMetaUsage(artifactsDir, startedAtMs, ingested)).toHaveLength(0);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("tps subagent meta scan rescheduling", () => {
+	beforeEach(() => {
+		// These assertions isolate read/size limits and rescheduling, not elapsed time.
+		const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+		return () => clock.mockRestore();
+	});
+
 	function seedMetaFiles(count: number, startAt = 0): string {
 		const root = mkdtempSync(join(tmpdir(), "pi-subagents-resched-"));
 		const artifactsDir = join(root, ".pi-subagents", "artifacts");
