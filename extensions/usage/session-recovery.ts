@@ -8,7 +8,8 @@ import { parseSessionEntry, toolResultMetadata, usageMetadataBytes } from "./ada
 import type { UsageCollector } from "./collector.js";
 
 type ToolMetadata = ReturnType<typeof toolResultMetadata>;
-type Pending = { message?: unknown; toolCallId?: string; entryId?: string; origin: string; expires: number; toolMetadata?: ToolMetadata };
+type SummaryModel = { id?: string; provider?: string };
+type Pending = { message?: unknown; toolCallId?: string; entryId?: string; origin: string; expires: number; toolMetadata?: ToolMetadata; summaryModel?: SummaryModel };
 type DeferredEntry = { origin: string; historical: boolean; live: boolean; toolMetadata?: ToolMetadata };
 export class SessionRecovery {
 	private readonly seen = new Set<string>();
@@ -39,7 +40,6 @@ export class SessionRecovery {
 	private scheduled: ReturnType<typeof setImmediate> | undefined;
 	private boundaryTimer: ReturnType<typeof setTimeout> | undefined;
 	private pendingTimer: ReturnType<typeof setTimeout> | undefined;
-	private liveModel: { id?: string; provider?: string } | undefined;
 
 	constructor(readonly collector: UsageCollector, private readonly manager: ReadonlySessionManager, private readonly options: {
 		isOwner: () => boolean;
@@ -105,8 +105,12 @@ export class SessionRecovery {
 		// A duplicate result must still re-arm entry discovery and its association TTL.
 		this.leafDirty = true; this.schedule();
 	}
-	noteEntry(entryId: string, origin: string): void { this.addPending({ entryId, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
-	setModel(model: { id?: string; provider?: string } | undefined): void { this.liveModel = model; }
+	noteEntry(entryId: string, origin: string, model?: SummaryModel): void {
+		// Capture only pricing identity at the event boundary, never a mutable
+		// session model or a later turn's selection. Duplicate entries keep the first snapshot.
+		const summaryModel = model ? { id: model.id, provider: model.provider } : undefined;
+		this.addPending({ entryId, origin, summaryModel, expires: Date.now() + USAGE_LIMITS.orphanTtlMs });
+	}
 	private addPending(item: Pending): void {
 		if (this.closing || this.entryDiscoveryStopped || !this.owns()) return;
 		this.expirePending();
@@ -212,7 +216,7 @@ export class SessionRecovery {
 		const parsed = parseSessionEntry(entry, {
 			policy: this.collector.policy, historicalRuns: this.historicalRuns,
 			sessionIdentity: normalizeSubagentSessionIdentity({ sessionId: this.manager.getSessionId(), sessionFile: this.manager.getSessionFile() }),
-			live, model: this.liveModel, toolMetadata: metadata,
+			live, model: pending?.summaryModel, toolMetadata: metadata,
 			modernUsage: this.options.modernUsage, observedNested: this.nested,
 		});
 		for (const gap of parsed.gaps) {

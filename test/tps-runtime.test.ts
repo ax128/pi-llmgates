@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import registerTps from "../extensions/tps.js";
 import { withSessionEntries } from "./helpers/tps-session-entries.js";
+import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
 import { MAX_SUBAGENT_META_READS_PER_SCAN } from "../extensions/tps-subagent.js";
 
 type Handler = (event: any, ctx: ExtensionContext) => void | Promise<void>;
@@ -1002,6 +1003,52 @@ describe("tps runtime compaction inlet", () => {
 			else process.env[name] = previous;
 		}
 	}
+
+	it.each(["session_compact", "session_tree"])("snapshots the %s model before a later model change or duplicate event", async (event) => {
+		const temp = withTempAgentDir();
+		const runtime = createRuntime(temp.agentDir);
+		const model = { id: "claude-sonnet-4-5", provider: "anthropic" };
+		const ctx = runtime.createContext("summary-snapshot", { model } as Partial<ExtensionContext>);
+		const entry = { ...COMPACT_ENTRY, type: event === "session_compact" ? "compaction" : "branch_summary", usage: { input: 1_000_000, output: 1_000, cacheRead: 0, cacheWrite: 0, totalTokens: 1_001_000 } };
+		const payload = event === "session_compact" ? { compactionEntry: entry } : { summaryEntry: entry };
+		try {
+			await runtime.emit("session_start", {}, ctx); await drainUsage();
+			await runtime.emit(event, payload, ctx);
+			// Keep this on the same event-loop turn, before recovery's setImmediate.
+			// Mutating the original object must not change the captured pricing scalars.
+			Object.assign(model, { id: "gpt-5", provider: "openai" });
+			await runtime.emit(event, payload, ctx);
+			await runtime.emit("before_agent_start", {}, ctx);
+			await drainUsage();
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", ctx);
+			const rows = runtime.selections.at(-1)!;
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toContain("compact/claude-sonnet-4-5");
+			expect(rows[0]).toContain("cost ~$3.02");
+			expect(rows[0]).not.toContain("$1.26");
+		} finally { await runtime.emit("session_shutdown", {}, ctx); temp.cleanup(); }
+	});
+
+	it("keeps separate model snapshots for summaries queued in the same slice", async () => {
+		const temp = withTempAgentDir();
+		const runtime = createRuntime(temp.agentDir);
+		const ctx = runtime.createContext("summary-models", { model: { id: "claude-sonnet-4-5", provider: "anthropic" } } as Partial<ExtensionContext>);
+		const usage = { input: 1_000_000, output: 1_000, cacheRead: 0, cacheWrite: 0, totalTokens: 1_001_000 };
+		try {
+			await runtime.emit("session_start", {}, ctx); await drainUsage();
+			await runtime.emit("session_compact", { compactionEntry: { ...COMPACT_ENTRY, usage } }, ctx);
+			Object.assign(ctx, { model: { id: "gpt-5", provider: "openai" } });
+			await runtime.emit("session_tree", { summaryEntry: { id: "branch-new-model", type: "branch_summary", usage } }, ctx);
+			await drainUsage();
+			runtime.scopeChoices.push("This session");
+			await runtime.commands.get("calls")!.handler("", ctx);
+			const rows = runtime.selections.at(-1)!;
+			expect(rows).toHaveLength(2);
+			expect(rows.find((row) => row.startsWith("compact/claude-sonnet-4-5"))).toContain("cost ~$3.02");
+			expect(rows.find((row) => row.startsWith("compact/gpt-5"))).toContain("cost ~$1.26");
+		} finally { await runtime.emit("session_shutdown", {}, ctx); temp.cleanup(); }
+	});
 
 	it("counts a compaction once and labels it with the session model", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "tps-runtime-compaction-"));

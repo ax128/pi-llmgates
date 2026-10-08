@@ -50,6 +50,51 @@ describe("bounded current-session recovery", () => {
 		} finally { await h.close(); temp.cleanup(); }
 	});
 
+	it.each([false, true])("preserves event-priced summaries on reload only with a durable archive (persist=%s)", async (persist) => {
+		const temp = withTempAgentDir();
+		const manager = SessionManager.inMemory();
+		const kept = manager.appendMessage({ role: "user", content: "synthetic", timestamp: 0 });
+		const usage = { ...message(0).usage, input: 1_000_000, output: 1_000, totalTokens: 1_001_000 };
+		let h = harness(manager, temp.agentDir, persist);
+		try {
+			await h.recovery.start(); await settled(h);
+			const entryId = manager.appendCompaction("synthetic", kept, 1_001_000, undefined, false, usage);
+			h.recovery.noteEntry(entryId, h.collector.beginTurn(), { id: "claude-sonnet-4-5", provider: "anthropic" });
+			await tick(); await tick();
+			expect(h.collector.sessionTotals().costUsd).toBeCloseTo(3.015);
+			expect([...h.collector.sessionModelStats().keys()]).toEqual(["compact/claude-sonnet-4-5"]);
+			expect(usage.cost.total).toBe(0); // Local pricing never rewrites the public entry.
+			await h.close(); h = harness(manager, temp.agentDir, persist);
+			await h.recovery.start(); await settled(h);
+			expect(h.collector.sessionTotals().costUsd).toBeCloseTo(persist ? 3.015 : 0);
+			expect(h.collector.sessionTotals().costQuality).toBe(persist ? "estimated" : "unknown");
+			expect([...h.collector.sessionModelStats().keys()]).toEqual([persist ? "compact/claude-sonnet-4-5" : "compact/unknown"]);
+			expect(h.collector.turnTotals().costUsd).toBe(0);
+		} finally { await h.close(); temp.cleanup(); }
+	});
+
+	it.each(["missing-model", "from-hook", "expired"])("never borrows a later summary's model when evidence is %s", async (kind) => {
+		const h = harness();
+		const kept = h.manager.appendMessage({ role: "user", content: "synthetic", timestamp: 0 });
+		const usage = { ...message(0).usage, input: 1_000_000, output: 1_000, totalTokens: 1_001_000 };
+		const model = { id: "claude-sonnet-4-5", provider: "anthropic" };
+		const clock = vi.spyOn(Date, "now");
+		try {
+			await h.recovery.start(); await settled(h);
+			const origin = h.collector.beginTurn();
+			const entryId = h.manager.appendCompaction("synthetic", kept, 1_001_000, undefined, kind === "from-hook", usage);
+			h.recovery.noteEntry(entryId, origin, kind === "missing-model" ? undefined : model);
+			if (kind === "expired") clock.mockReturnValue(Date.now() + USAGE_LIMITS.orphanTtlMs + 1);
+			const later = h.manager.branchWithSummary(entryId, "synthetic later", undefined, false, usage);
+			h.recovery.noteEntry(later, origin, { id: "gpt-5", provider: "openai" });
+			await tick(); await tick();
+			const rows = h.collector.sessionModelStats();
+			expect(rows.get("compact/unknown")).toMatchObject({ input: 1_000_000, costUsd: 0, costQuality: "unknown" });
+			expect(rows.get("compact/gpt-5")?.costUsd).toBeCloseTo(1.26);
+			expect(h.collector.sessionTotals()).toMatchObject({ costQuality: "unknown", hasEstimatedCost: true });
+		} finally { clock.mockRestore(); await h.close(); }
+	});
+
 	it.each([false, true])("retries out-of-order historical completions after launch evidence is recovered (new message=%s)", async (newMessage) => {
 		const h = harness();
 		const appendTool = (toolName: string, toolCallId: string, details: unknown) => h.manager.appendMessage({

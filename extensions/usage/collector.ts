@@ -38,6 +38,7 @@ export class UsageCollector {
 	get historyPartial(): boolean { return this.recoveryState !== "ready" || this.gaps.size > 0; }
 	archivedObservations(): readonly UsageObservationV1[] { return [...this.archive.values()]; }
 	noteGap(reason: string): void {
+		if (reason === "memory-exhausted") this.ledger.markMemoryExhausted();
 		// Reasons are internal constants, never payload contents. A bounded summary,
 		// not an event log; overflow cannot make already observed gaps disappear.
 		if (!this.gaps.has(reason) && [...this.gaps.keys()].join().length + reason.length > USAGE_LIMITS.gapMarkerBudgetBytes - 64) reason = "gap-budget-exceeded";

@@ -192,6 +192,13 @@ export class UsageLedger {
 		this.persistLoadGap = reason;
 	}
 
+	/** Capacity rejection loses evidence even when no observation can be committed. */
+	markMemoryExhausted(): void {
+		if (this.memoryExhausted) return;
+		this.memoryExhausted = true;
+		this.invalidateProjections();
+	}
+
 	ingest(input: unknown): IngestResult {
 		const parsed = parseUsageObservationV1(input);
 		if (!parsed.ok) {
@@ -223,8 +230,7 @@ export class UsageLedger {
 		const replacingGroup = group && revisionOf(obs) > group.revision;
 		if (!existing && this.records.size - (replacingGroup ? group.keys.size : 0) >= USAGE_LIMITS.maxMemoryObservations) {
 			if (!this.evictProvisional()) {
-				this.memoryExhausted = true;
-				this.invalidateProjections();
+				this.markMemoryExhausted();
 				return { accepted: false, reason: "memory-exhausted" };
 			}
 		}
@@ -246,7 +252,7 @@ export class UsageLedger {
 		return { accepted: true };
 	}
 
-	/** Validate and commit a complete revision/progress transition, or change nothing. */
+	/** Commit observations atomically; a capacity rejection still marks coverage incomplete. */
 	ingestBatch(inputs: readonly unknown[], remove?: (obs: UsageObservationV1) => boolean): IngestResult {
 		if (inputs.length > USAGE_LIMITS.perTickEvents) return { accepted: false, reason: "batch-capacity" };
 		const trial = new UsageLedger(this.rootSessionId);
@@ -269,7 +275,10 @@ export class UsageLedger {
 			if (seen.has(key)) return { accepted: false, reason: "duplicate batch identity" };
 			seen.add(key);
 			const result = trial.ingest(parsed.value);
-			if (!result.accepted) return result;
+			if (!result.accepted) {
+				if (result.reason === "memory-exhausted") this.markMemoryExhausted();
+				return result;
+			}
 			if (result.reason !== "idempotent") changed = true;
 		}
 		if (!changed) return { accepted: true, reason: "idempotent" };

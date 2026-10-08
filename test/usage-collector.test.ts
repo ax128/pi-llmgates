@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { UsageCollector, createUsageCollector } from "../extensions/usage/collector.js";
-import { resolveUsagePolicy, USAGE_DIR_NAME } from "../extensions/usage/policy.js";
+import { resolveUsagePolicy, USAGE_DIR_NAME, USAGE_LIMITS } from "../extensions/usage/policy.js";
+import { formatTpsScopeWithQuality } from "../extensions/usage/format.js";
 import { USAGE_SCHEMA_VERSION } from "../extensions/usage/contract.js";
 import {
 	createUsagePersist,
@@ -21,6 +22,39 @@ function collector() {
 }
 
 describe("UsageCollector origin-turn binding", () => {
+	it("marks a rejected capacity overflow unknown instead of a free new turn", () => {
+		const { session, cleanup } = collector();
+		try {
+			const message = { role: "assistant", model: "fixture", usage: { input: 10, output: 1, cost: { total: 1 } } };
+			session.beginTurn();
+			expect(session.ingestAssistantEntry(message, "seed", "turn-1", true)).toBe(true);
+			const seed = session.ledger.observations()[0]!;
+			// Seed the full projection without making this regression an O(N²) ingestion benchmark.
+			for (let i = 1; i < USAGE_LIMITS.maxMemoryObservations; i++) {
+				expect(session.ledger.ingest({ ...seed, executionId: `entry-${i}`, callId: `entry-${i}`, sequence: i + 1 }).accepted).toBe(true);
+			}
+			session.finishRecovery();
+			const origin = session.beginTurn();
+			// Warm every projection cache before rejection changes only its quality.
+			expect(session.sessionTotals().costUsd).toBe(USAGE_LIMITS.maxMemoryObservations);
+			expect(session.sessionModelStats().get("fixture")?.costQuality).toBe("estimated");
+			expect(session.turnTotals().costQuality).toBe("reported");
+			const version = session.ledger.version;
+			expect(session.ingestAssistantEntry(message, "overflow", origin, true)).toBe(false);
+			expect(session.ledger.observations()).toHaveLength(USAGE_LIMITS.maxMemoryObservations);
+			expect(session.ledger.version).toBeGreaterThan(version);
+			expect(session.gapReasons()).toContain("memory-exhausted:1");
+			expect(session.historyPartial).toBe(true);
+			expect(session.sessionTotals()).toMatchObject({ costUsd: USAGE_LIMITS.maxMemoryObservations, costQuality: "unknown", callsQuality: "unknown", hasEstimatedCost: true });
+			expect(session.sessionModelStats().get("fixture")?.costQuality).toBe("unknown");
+			expect(formatTpsScopeWithQuality("all", 0, session.sessionTotals(), { historyPartial: session.historyPartial })).toContain("~$10000.00 + ?");
+			expect(formatTpsScopeWithQuality("turn", 0, session.turnTotals())).toBe("Turn 0s.?.?");
+			// Repeated rejection cannot make the known subtotal grow or clear its gap.
+			expect(session.ingestAssistantEntry(message, "overflow", origin, true)).toBe(false);
+			expect(session.sessionTotals().costUsd).toBe(USAGE_LIMITS.maxMemoryObservations);
+		} finally { cleanup(); }
+	});
+
 	it("drops only proven progress, not legacy final identities", () => {
 		const { session, cleanup } = collector();
 		try {
