@@ -22,6 +22,77 @@ function collector() {
 }
 
 describe("UsageCollector origin-turn binding", () => {
+	it.each([undefined, 5])("backfills only live unassigned records, preserving identities and amounts (revision=%s)", async (revision) => {
+		const { session, cleanup } = collector();
+		const row = (sourceKey: string, costUsd: number) => ({ sourceKey, modelLabel: "worker", input: 10, output: 1, cacheRead: 0, cacheWrite: 0,
+			calls: 1, costUsd, costQuality: "reported" as const, revision,
+		});
+		try {
+			const turn = session.beginTurn();
+			session.ingestLegacyRecords([row("meta:abcd:worker:0", 3)], "pi-subagents", undefined, 1000, "unassigned");
+			session.ingestLegacyRecords([row("meta:abcd:worker:1", 5)], "pi-subagents", undefined, 1000, "history", true);
+			session.ingestLegacyRecords([row("meta:abcd:worker:2", 7)], "pi-subagents", undefined, 1000, "turn-9");
+			const byExecution = () => [...session.ledger.observations()].sort((a, b) => a.executionId.localeCompare(b.executionId));
+			const before = byExecution();
+			expect(session.sessionTotals().costUsd).toBe(15); // Warm caches.
+			expect(session.turnModelStats(turn).size).toBe(0);
+			session.beginTurn();
+			session.bindRun("AB-CD", turn);
+			expect(session.turnTotals(turn).costUsd).toBe(0); // Binding never rewrites the ledger on the event stack.
+			session.drainOriginBackfill(USAGE_LIMITS.perTickEvents, Infinity);
+			expect(session.turnTotals(turn).costUsd).toBe(3);
+			expect(session.turnTotals().costUsd).toBe(0);
+			expect(session.turnModelStats(turn).get("worker")?.costUsd).toBe(3);
+			expect(session.sessionTotals().costUsd).toBe(15);
+			const after = byExecution();
+			expect(after.map((obs) => obs.originTurnId)).toEqual([turn, "history", "turn-9"]);
+			const withoutOriginRevision = ({ originTurnId: _origin, revision: _revision, ...obs }: typeof before[number]) => obs;
+			expect(after.map(withoutOriginRevision)).toEqual(before.map(withoutOriginRevision));
+			expect(session.revisionClock).toBeGreaterThan(revision ?? 0);
+			session.bindRun("abcd", "turn-2");
+			expect(byExecution()).toEqual(after);
+		} finally { await session.checkpointAndClose(); cleanup(); }
+	});
+
+	it("carries deferred child identity proof through a bounded parent chain, without guessing a turn", async () => {
+		const { session, cleanup } = collector();
+		try {
+			session.beginTurn();
+			session.linkRunParent("bcde", "abcd"); session.linkRunParent("cdef", "bcde");
+			session.ingestLegacyRecords([{ sourceKey: "meta:cdef:worker:0", modelLabel: "worker", calls: 1, input: 10, output: 1, cacheRead: 0, cacheWrite: 0,
+				costUsd: 3, costQuality: "reported", revision: 1 }], "pi-subagents", undefined, 1000, "unassigned");
+			expect(session.turnTotals().costUsd).toBe(0);
+			session.bindRun("abcd", "history"); session.bindRun("abcd", "unassigned");
+			expect(session.turnTotals().costUsd).toBe(0);
+			session.linkRunParent("bcde", "defa"); // Conflicting evidence cannot replace the original parent.
+			expect(session.gapReasons()).toContain("run-parent-conflict:1");
+			session.linkRunParent("abcd", "cdef"); // A cycle terminates once the root is proven.
+			session.bindRun("abcd", "turn-1");
+			expect(session.originForRun("cdef")).toBe("turn-1");
+			session.drainOriginBackfill(USAGE_LIMITS.perTickEvents, Infinity);
+			expect(session.turnTotals().costUsd).toBe(3);
+		} finally { await session.checkpointAndClose(); cleanup(); }
+	});
+
+	it("does not reassign archived unassigned records when new launch evidence arrives", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const make = () => new UsageCollector("root-1", "sess-1", resolveUsagePolicy(agentDir), createUsagePersist(agentDir, "root-1", true));
+		let session = make();
+		try {
+			session.restorePersisted();
+			session.ingestLegacyRecords([{ sourceKey: "meta:abcd:worker:0", modelLabel: "worker", calls: 1, input: 10, output: 1, cacheRead: 0, cacheWrite: 0,
+				costUsd: 3, costQuality: "reported", revision: 1, trustedFinal: true, revisionSource: "completion" }], "pi-subagents", undefined, 1000, "unassigned");
+			await session.checkpointAndClose(); session = make(); session.restorePersisted();
+			session.beginTurn();
+			// A later public entry can add a link, but does not make an old charge live.
+			session.linkToolEntry(["meta:abcd:worker:0"], "new-entry", session.revisionClock);
+			session.bindRun("abcd");
+			expect(session.sessionTotals().costUsd).toBe(3);
+			expect(session.turnTotals().costUsd).toBe(0);
+			expect(session.archivedObservations()[0]?.originTurnId).toBe("unassigned");
+		} finally { await session.checkpointAndClose(); cleanup(); }
+	});
+
 	it("marks a rejected capacity overflow unknown instead of a free new turn", () => {
 		const { session, cleanup } = collector();
 		try {

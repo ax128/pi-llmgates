@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
 	SUBAGENT_FOREGROUND_COMPLETE_EVENT,
@@ -7,6 +7,7 @@ import {
 	registerSubagentUsageBridge,
 } from "../extensions/tps-subagent-bridge.js";
 import type { SubagentUsageRecord } from "../extensions/tps-subagent.js";
+import { USAGE_LIMITS } from "../extensions/usage/policy.js";
 
 const UUID_RUN = "1d706627-aada-4828-9207-bbab8fad3864";
 
@@ -96,6 +97,59 @@ describe("tps-subagent-bridge", () => {
 		expect(batches[0]).toHaveLength(1);
 		expect(batches[0]?.[0]?.input).toBe(10);
 		unregister();
+	});
+
+	it("budgets parallel children separately without changing their indices or counting the aggregate", () => {
+		const bus = createMemoryEventBus();
+		const records: SubagentUsageRecord[] = [], gaps: string[] = [];
+		const usage = (cost: number) => ({ turns: 1, input: 10, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 11, cost });
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1", onRecords: (batch) => records.push(...batch), onGap: (gap) => gaps.push(gap),
+		});
+		try {
+			bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+				sessionId: "sess-1", runId: "abcd", totalCost: { costUsd: 99 },
+				results: Array.from({ length: 8 }, () => ({ agent: "worker", model: "fixture", usage: usage(3),
+					modelAttempts: [{ model: "fixture", usage: usage(1) }, { model: "fixture", usage: usage(2) }],
+					get content() { throw new Error("must not read content"); },
+				})),
+			});
+			expect(records.map((record) => record.sourceKey)).toEqual(Array.from({ length: 8 }, (_, i) => `meta:abcd:worker:${i}`));
+			expect(records.reduce((sum, record) => sum + record.costUsd, 0)).toBe(24);
+			expect(gaps).toEqual([]);
+		} finally { unregister(); }
+	});
+
+	it.each(["children", "child-nodes", "bytes", "time"])("reports %s budget rejection without authorizing runs or partial delivery", (limit) => {
+		const bus = createMemoryEventBus();
+		const onRecords = vi.fn(), onRunObserved = vi.fn(), onAsyncCompleteData = vi.fn(), onGap = vi.fn();
+		const unregister = registerSubagentUsageBridge(bus, { sessionId: "sess-1", onRecords, onRunObserved, onAsyncCompleteData, onGap });
+		const data = {
+			sessionId: "sess-1", runId: "abcd", results: [{ agent: "worker", model: "fixture", usage: { input: 10, cost: 3 } }],
+		};
+		const payload = limit === "children" ? { ...data, results: Array(USAGE_LIMITS.perTickEvents + 1).fill(data.results[0]) }
+			: limit === "child-nodes" ? { ...data, results: [{ modelAttempts: Array(USAGE_LIMITS.perTickEvents).fill({ model: "m", usage: { cost: 1 } }) }] }
+			: limit === "bytes" ? { ...data, results: Array(100).fill({ model: "m".repeat(4000), usage: { cost: 1 } }) } : data;
+		const clock = vi.spyOn(performance, "now");
+		clock.mockReturnValue(0);
+		if (limit === "time") clock.mockReturnValueOnce(0).mockReturnValue(USAGE_LIMITS.perTickMs + 1);
+		try {
+			bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, payload);
+			expect(onGap).toHaveBeenCalledExactlyOnceWith("metadata-budget-exceeded");
+			expect(onRunObserved).not.toHaveBeenCalled();
+			expect(onAsyncCompleteData).not.toHaveBeenCalled();
+			expect(onRecords).not.toHaveBeenCalled();
+		} finally { clock.mockRestore(); unregister(); }
+	});
+
+	it("rejects foreign-session payloads before inspecting metadata or reporting gaps", () => {
+		const bus = createMemoryEventBus(), onGap = vi.fn(), onRecords = vi.fn();
+		const unregister = registerSubagentUsageBridge(bus, { sessionId: "sess-1", onRecords, onGap });
+		try {
+			bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { sessionId: "other", get results() { throw new Error("foreign payload inspected"); } });
+			expect(onGap).not.toHaveBeenCalled();
+			expect(onRecords).not.toHaveBeenCalled();
+		} finally { unregister(); }
 	});
 
 	it("observes a matching async run even when the event has no usage", () => {

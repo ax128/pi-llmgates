@@ -47,9 +47,9 @@ export class SessionRecovery {
 		onRestored: () => void;
 		onRecords: (records: readonly SubagentUsageRecord[], category: UsageSwitchCategory, origin: string, historical: boolean, entryId?: string) => void;
 		onChange: () => void;
-	}) {}
-	get pendingCount(): number { return this.queue.length + this.activeTools.size + this.pending.length + this.deferred.size; }
-	get hasPendingRecovery(): boolean { return !this.initialized || Boolean(this.entries) || this.deferred.size > 0 || this.boundaryDirty || this.leafDirty || this.draining; }
+	}) { collector.setOriginBackfillScheduler(() => this.schedule()); }
+	get pendingCount(): number { return this.queue.length + this.activeTools.size + this.pending.length + this.deferred.size + Number(this.collector.hasPendingOriginBackfill); }
+	get hasPendingRecovery(): boolean { return !this.initialized || Boolean(this.entries) || this.deferred.size > 0 || this.boundaryDirty || this.leafDirty || this.draining || this.collector.hasPendingOriginBackfill; }
 	private owns(): boolean { return !this.cancelled && this.options.isOwner(); }
 	async start(): Promise<void> {
 		this.collector.recoveryState = "recovering";
@@ -325,13 +325,14 @@ export class SessionRecovery {
 				await item.run();
 				if (!this.owns()) return;
 			}
-			if (!this.entries && !this.queue.length && !this.leafDirty && !this.deferred.size) this.collector.finishRecovery();
+			count += this.collector.drainOriginBackfill(USAGE_LIMITS.perTickEvents - count, deadline);
+			if (!this.entries && !this.queue.length && !this.leafDirty && !this.deferred.size && !this.collector.hasPendingOriginBackfill) this.collector.finishRecovery();
 			if (this.owns() && !this.closing && (count > 0 || previousState !== this.collector.recoveryState)) this.options.onChange();
 		} catch { this.collector.noteGap("recovery-task-failed"); }
 		finally {
 			this.draining = false;
 			const runnableQueue = this.queue.length && (!this.queue[0]!.background || this.closing || (!this.entries && !this.leafDirty));
-			if (runnableQueue || (!this.closing && (this.entries || this.leafDirty || this.deferred.size))) this.schedule();
+			if (runnableQueue || this.collector.hasPendingOriginBackfill || (!this.closing && (this.entries || this.leafDirty || this.deferred.size))) this.schedule();
 		}
 	}
 	async stopAndDrain(): Promise<void> {
@@ -345,10 +346,11 @@ export class SessionRecovery {
 		if (this.pendingTimer) clearTimeout(this.pendingTimer);
 		if (this.boundaryTimer) clearTimeout(this.boundaryTimer);
 		if (this.scheduled) { clearImmediate(this.scheduled); this.scheduled = undefined; }
-		while (this.owns() && (this.draining || this.queue.length)) {
+		while (this.owns() && (this.draining || this.queue.length || this.collector.hasPendingOriginBackfill)) {
 			if (!this.draining) await this.drain();
 			await new Promise<void>((resolve) => setImmediate(resolve));
 		}
 		this.cancelled = true; this.queue.length = 0;
+		this.collector.setOriginBackfillScheduler(undefined);
 	}
 }

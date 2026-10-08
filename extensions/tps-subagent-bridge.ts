@@ -9,7 +9,8 @@ import {
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
 import { envFlag, isPlainObject } from "./util.js";
-import { boundedUsageMetadata } from "./usage/adapters/session-entries.js";
+import { boundedUsageMetadata, usageMetadataBytes } from "./usage/adapters/session-entries.js";
+import { USAGE_LIMITS } from "./usage/policy.js";
 
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete";
@@ -28,6 +29,7 @@ export interface SubagentUsageBridgeOptions {
 	onAsyncCompleteData?: (data: unknown) => void;
 	onRunObserved?: (normalizedRunId: string) => void;
 	onForegroundComplete?: (normalizedRunId: string) => void;
+	onGap?: (reason: "metadata-budget-exceeded") => void;
 	enabled?: boolean;
 }
 
@@ -63,7 +65,27 @@ export function registerSubagentUsageBridge(
 	);
 
 	const matchingSession = (data: unknown): data is Record<string, unknown> =>
-		isPlainObject(data) && boundedUsageMetadata(data) && subagentEventMatchesSession(data.sessionId, sessionIdentity);
+		isPlainObject(data) && typeof data.sessionId === "string" && data.sessionId.length <= 4096 &&
+		subagentEventMatchesSession(data.sessionId, sessionIdentity);
+
+	// A completion contains independent children, not one giant entry. Keep the
+	// per-child metadata bound and the shared event count/byte/time bounds; never
+	// reject eight ordinary children merely because their combined nodes exceed 200.
+	const boundedCompletion = (data: Record<string, unknown>): boolean => {
+		const deadline = performance.now() + USAGE_LIMITS.perTickMs;
+		if (!Array.isArray(data.results)) return boundedUsageMetadata(data) && performance.now() < deadline;
+		if (data.results.length > USAGE_LIMITS.perTickEvents) return false;
+		let bytes = usageMetadataBytes(data, { omitRootResults: true });
+		if (bytes === undefined) return false;
+		for (const child of data.results) {
+			if (performance.now() >= deadline) return false;
+			// Preserve the original nesting depth and do not read arbitrary content.
+			const size = usageMetadataBytes({ results: [child] });
+			if (size === undefined || bytes + size > USAGE_LIMITS.perTickReadBytes) return false;
+			bytes += size;
+		}
+		return performance.now() < deadline;
+	};
 
 	const normalizeCandidate = (candidate: unknown): string | null => {
 		if (typeof candidate !== "string" || !subagentRunAggregateSourceKey(candidate)) {
@@ -108,6 +130,10 @@ export function registerSubagentUsageBridge(
 		if (!matchingSession(data)) {
 			return;
 		}
+		if (!boundedCompletion(data)) {
+			options.onGap?.("metadata-budget-exceeded");
+			return;
+		}
 		for (const runId of observedRunIds(data)) {
 			options.onRunObserved?.(runId);
 		}
@@ -123,6 +149,10 @@ export function registerSubagentUsageBridge(
 
 	const onForegroundComplete = (data: unknown): void => {
 		if (!matchingSession(data)) {
+			return;
+		}
+		if (!boundedCompletion(data)) {
+			options.onGap?.("metadata-budget-exceeded");
 			return;
 		}
 		const runId = matchingRunId(data);
