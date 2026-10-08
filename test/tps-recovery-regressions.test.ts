@@ -5,8 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import registerTps from "../extensions/tps.js";
 import { UsageCollector } from "../extensions/usage/collector.js";
 import { FsUsagePersist } from "../extensions/usage/persist.js";
-import { resolveUsagePolicy } from "../extensions/usage/policy.js";
+import { resolveUsagePolicy, USAGE_LIMITS } from "../extensions/usage/policy.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
+import { toolResultMessage } from "./helpers/tps-session-entries.js";
 
 type Handler = (event: any, ctx: ExtensionContext) => void | Promise<void>;
 const drain = async () => { for (let i = 0; i < 25; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
@@ -27,11 +28,11 @@ function runtime(manager = SessionManager.inMemory()) {
 	let calls: (args: string, ctx: ExtensionContext) => Promise<void>;
 	let scope = "This session";
 	const menus: { title: string; options: string[] }[] = [];
-	const notifications: string[] = [];
+	const notifications: string[] = [], statuses: string[] = [];
 	const ctx = {
 		cwd: temp.agentDir, hasUI: true, mode: "tui", sessionManager: manager,
 		ui: {
-			theme: { fg: (_color: string, text: string) => text }, setStatus() {},
+			theme: { fg: (_color: string, text: string) => text }, setStatus(_key: string, text: string | undefined) { if (text) statuses.push(text); },
 			notify: (message: string) => notifications.push(message),
 			select: async (title: string, options: string[]) => { menus.push({ title, options }); return title === "Usage scope" ? scope : undefined; },
 		},
@@ -43,7 +44,7 @@ function runtime(manager = SessionManager.inMemory()) {
 		events: { on: (name: string, handler: (data: unknown) => void) => { events.set(name, handler); return () => events.delete(name); } },
 	} as unknown as ExtensionAPI);
 	return {
-		manager, notifications,
+		manager, notifications, statuses,
 		emit: async (name: string, event = {}) => { await handlers.get(name)?.(event, ctx); },
 		complete: (data: Record<string, unknown>) => events.get("subagent:async-complete")?.({ sessionId: manager.getSessionId(), ...data }),
 		show: async (choice = "This session") => { await drain(); scope = choice; await calls!("", ctx); return menus.at(-1)!; },
@@ -62,6 +63,58 @@ async function seed(manager: SessionManager, cost = 1) {
 }
 
 describe("review regressions: recovered subagent accounting", () => {
+	it("accounts parallel completion metadata and exposes rejected events in idle Coverage/status", async () => {
+		const r = runtime();
+		const fullUsage = (cost: number) => ({ ...usage(cost), cacheRead: 0, cacheWrite: 0, totalTokens: 11 });
+		try {
+			await r.emit("session_start"); await drain();
+			r.complete({ runId: "abcd", results: Array.from({ length: 8 }, () => ({ agent: "worker", model: "worker", usage: fullUsage(3),
+				modelAttempts: [{ model: "worker", usage: fullUsage(1) }, { model: "worker", usage: fullUsage(2) }],
+			})) });
+			expect((await r.show()).title).toContain("$24.00");
+			r.complete({ runId: "bcde", results: Array(USAGE_LIMITS.perTickEvents + 1).fill({ agent: "worker", usage: usage(3) }) });
+			await drain();
+			expect(r.statuses.at(-1)).toContain("All(partial)");
+			expect((await r.show("Coverage")).options.join()).toContain("metadata-budget-exceeded:1");
+			expect((await r.show()).title).toContain("$24.00");
+		} finally { await r.emit("session_shutdown"); }
+	});
+
+	it.each([false, true].flatMap((persist) => [false, true].map((distinctChild) => ({ persist, distinctChild }))))(
+		"backfills an early completion's launch origin without changing spend ($persist/$distinctChild)", async ({ persist, distinctChild }) => {
+			vi.stubEnv("LLMGATES_TPS_PERSIST", persist ? "1" : "0");
+			const r = runtime(), runId = "0B82240E-F5FE-4ADE-9458-8D08018D02E5";
+			const completion = { runId, results: [{ ...(distinctChild ? { runId: "abcd" } : {}), agent: "worker", modelAttempts: [
+				{ model: "a", usage: usage(1) }, { model: "b", usage: usage(2) },
+			] }] };
+			try {
+				await r.emit("session_start"); await drain(); await r.emit("before_agent_start");
+				await r.emit("tool_execution_start", { toolName: "subagent", toolCallId: "launch" });
+				r.complete(completion);
+				expect((await r.show()).title).toContain("$3.00");
+				await r.show("This turn"); expect(r.notifications.at(-1)).toContain("No model calls recorded in this turn");
+				const result = { details: { runId, async: true } };
+				await r.emit("tool_execution_end", { toolName: "subagent", toolCallId: "launch", result });
+				r.manager.appendMessage(toolResultMessage({ toolName: "subagent", toolCallId: "launch", result }));
+				expect((await r.show("This turn")).title).toContain("$3.00");
+				expect((await r.show()).options).toHaveLength(2);
+				r.complete(completion);
+				expect((await r.show()).title).toContain("$3.00");
+				await r.emit("agent_settled"); await r.emit("before_agent_start");
+				r.complete(completion);
+				await r.show("This turn"); expect(r.notifications.at(-1)).toContain("No model calls recorded in this turn");
+				if (persist) {
+					await r.emit("session_shutdown"); await r.emit("session_start");
+					expect((await r.show()).title).toContain("$3.00");
+					await r.emit("session_shutdown");
+					const stored = new FsUsagePersist(temp.agentDir, r.manager.getSessionId()).load();
+					expect(stored.map((row) => row.originTurnId)).toEqual(["turn-1", "turn-1"]);
+					expect(stored.map((row) => row.usage?.costUsd).sort()).toEqual([1, 2]);
+				}
+			} finally { await r.emit("session_shutdown"); }
+		},
+	);
+
 	it("replaces a restored indexed snapshot with one atomic completion, even without source revision", async () => {
 		const r = runtime(); await seed(r.manager);
 		const completion = { runId: "abcd", results: [{ agent: "worker", modelAttempts: [{ model: "a", usage: usage(2) }, { model: "b", usage: usage(3) }] }] };

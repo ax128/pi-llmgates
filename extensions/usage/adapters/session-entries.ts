@@ -13,14 +13,17 @@ export interface EntryParseResult { candidates: SessionCandidate[]; gaps: string
 // Only metadata keys. Text, prompt, thinking, content, args, headers and arbitrary
 // details are never traversed/stringified, even to calculate a budget.
 const KEYS = ["usage", "cost", "total", "input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "totalTokens", "turns", "costUsd", "details", "results", "completions", "modelAttempts", "model", "provider", "agent", "index", "runId", "parentRunId", "sessionId", "sessionFile", "totalChildUsage", "totalCost", "tokens", "async", "mode", "toolName", "toolCallId", "nestedCalls", "calls", "id", "name", "status", "complete", "reasoning", "kind"];
-export function usageMetadataBytes(value: unknown): number | undefined {
+export function usageMetadataBytes(value: unknown, options: { omitRootResults?: boolean } = {}): number | undefined {
 	let nodes = 0, bytes = 0;
 	const visit = (item: unknown, depth: number): boolean => {
 		bytes += 16;
 		if (++nodes > USAGE_LIMITS.perTickEvents || depth > 10 || bytes > USAGE_LIMITS.perTickReadBytes) return false;
 		if (typeof item === "string") { bytes += Buffer.byteLength(item); return bytes <= USAGE_LIMITS.perTickReadBytes && item.length <= 4096; }
 		if (Array.isArray(item)) return item.length <= USAGE_LIMITS.perTickEvents && item.every((v) => visit(v, depth + 1));
-		if (isPlainObject(item)) for (const key of KEYS) if (item[key] !== undefined && !visit(item[key], depth + 1)) return false;
+		if (isPlainObject(item)) for (const key of KEYS) {
+			if (depth === 0 && key === "results" && options.omitRootResults) continue;
+			if (item[key] !== undefined && !visit(item[key], depth + 1)) return false;
+		}
 		return true;
 	};
 	return visit(value, 0) ? bytes : undefined;

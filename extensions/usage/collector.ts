@@ -17,6 +17,10 @@ export class UsageCollector {
 	private originTurnId = PRE_TURN_ID;
 	private readonly sequences = new Map<string, number>();
 	private readonly runOrigin = new Map<string, string>();
+	// Generation-local proof only: replay/archives must never grant a new turn.
+	private readonly pendingRunParents = new Map<string, string>();
+	private readonly liveUnassignedExecutions = new Set<string>();
+	private maxRevision = 0;
 	private readonly archive = new Map<string, UsageObservationV1>();
 	private readonly archiveGroups = new Map<string, { revision: number; keys: Set<string> }>();
 	private readonly pendingDurable = new Map<string, UsageObservationV1>();
@@ -34,7 +38,7 @@ export class UsageCollector {
 	}
 	beginTurn(): string { this.originTurnId = `turn-${++this.turnSeq}`; return this.originTurnId; }
 	currentOriginTurnId(): string { return this.originTurnId; }
-	get revisionClock(): number { return Math.max(0, ...this.archivedObservations().map((o) => o.revision ?? 0)); }
+	get revisionClock(): number { return this.maxRevision; }
 	get historyPartial(): boolean { return this.recoveryState !== "ready" || this.gaps.size > 0; }
 	archivedObservations(): readonly UsageObservationV1[] { return [...this.archive.values()]; }
 	noteGap(reason: string): void {
@@ -50,9 +54,57 @@ export class UsageCollector {
 
 	bindRun(runId: string, originTurnId = this.originTurnId): void {
 		const id = normalizeRunIdForSourceKey(runId);
-		if (!id || this.runOrigin.has(id) || originTurnId === "unassigned" || originTurnId === "history") return;
-		if (this.runOrigin.size >= USAGE_LIMITS.maxMemoryObservations) { this.noteGap("ownership-capacity"); return; }
-		this.runOrigin.set(id, assignableOriginTurnId(originTurnId));
+		if (this.closed || !id || this.runOrigin.has(id) || originTurnId === "unassigned" || originTurnId === "history") return;
+		const children = new Map<string, string[]>();
+		for (const [child, parent] of this.pendingRunParents) {
+			const siblings = children.get(parent) ?? [];
+			siblings.push(child); children.set(parent, siblings);
+		}
+		const queue = [id];
+		for (let index = 0; index < queue.length; index++) {
+			const next = queue[index]!;
+			if (this.runOrigin.has(next)) continue; // First proven origin wins, including cycles.
+			if (this.runOrigin.size >= USAGE_LIMITS.maxMemoryObservations) { this.noteGap("ownership-capacity"); break; }
+			this.runOrigin.set(next, assignableOriginTurnId(originTurnId));
+			this.pendingRunParents.delete(next);
+			queue.push(...(children.get(next) ?? []));
+		}
+		this.backfillRunOrigins();
+	}
+
+	/** Called only with the parent/child identities of a session-verified completion. */
+	linkRunParent(childRunId: string, parentRunId: string): void {
+		const child = normalizeRunIdForSourceKey(childRunId), parent = normalizeRunIdForSourceKey(parentRunId);
+		if (this.closed || !child || !parent || child === parent || this.runOrigin.has(child)) return;
+		const previous = this.pendingRunParents.get(child);
+		if (previous && previous !== parent) { this.noteGap("run-parent-conflict"); return; }
+		const origin = this.runOrigin.get(parent);
+		if (origin) { this.bindRun(child, origin); return; }
+		if (!previous && this.pendingRunParents.size >= USAGE_LIMITS.maxMemoryObservations) { this.noteGap("ownership-capacity"); return; }
+		this.pendingRunParents.set(child, parent);
+	}
+
+	private backfillRunOrigins(): void {
+		if (!this.liveUnassignedExecutions.size) return;
+		const groups = new Map<string, UsageObservationV1[]>();
+		for (const obs of this.ledger.observations()) {
+			if (!this.liveUnassignedExecutions.has(obs.executionId)) continue;
+			const group = groups.get(obs.executionId) ?? [];
+			group.push(obs); groups.set(obs.executionId, group);
+		}
+		for (const execution of this.liveUnassignedExecutions) if (!groups.has(execution)) this.liveUnassignedExecutions.delete(execution);
+		for (const [execution, group] of groups) {
+			const run = parseMetaSourceKeyGranularity(execution)?.runId;
+			const origin = this.originForRun(run);
+			if (origin === "unassigned") continue;
+			// Retain every model partition and every non-origin field. A fresh local
+			// revision makes checkpoint + old journal recovery unambiguous as well.
+			const revision = Math.max(this.maxRevision, ...group.map((obs) => obs.revision ?? obs.sequence)) + 1;
+			const rows = group.map((obs) => ({ ...obs, revision,
+				originTurnId: obs.originTurnId === "unassigned" ? origin : obs.originTurnId,
+			}));
+			if (this.acceptBatch(rows, true)) this.liveUnassignedExecutions.delete(execution);
+		}
 	}
 	originForRun(runId: string | undefined): string { return runId ? this.runOrigin.get(normalizeRunIdForSourceKey(runId)) ?? "unassigned" : "unassigned"; }
 	enabled(category: UsageSwitchCategory, sourceId?: Parameters<typeof isUsageCategoryEnabled>[2]): boolean { return isUsageCategoryEnabled(category, this.policy, sourceId); }
@@ -177,7 +229,7 @@ export class UsageCollector {
 				observations.push(obs);
 			}
 			if (observations.length !== partitions.length) { this.noteGap("invalid-batch"); continue; }
-			if (this.acceptBatch(observations, !historical)) accepted += observations.length;
+			if (this.acceptBatch(observations, !historical, !historical)) accepted += observations.length;
 		}
 		return accepted;
 	}
@@ -220,6 +272,7 @@ export class UsageCollector {
 			this.persist.protect("identity-conflict"); this.noteGap("identity-conflict"); return;
 		}
 		this.archiveRows([obs]);
+		this.maxRevision = Math.max(this.maxRevision, obs.revision ?? 0);
 		this.sequences.set(obs.producerId, Math.max(this.sequences.get(obs.producerId) ?? 0, obs.sequence));
 		const turn = /^turn-(\d+)$/.exec(obs.originTurnId);
 		if (turn) this.turnSeq = Math.max(this.turnSeq, Number(turn[1]));
@@ -329,7 +382,7 @@ export class UsageCollector {
 		for (const [key, group] of groups) this.archiveGroups.set(key, group);
 		return true;
 	}
-	private acceptBatch(observations: readonly UsageObservationV1[], durable: boolean): boolean {
+	private acceptBatch(observations: readonly UsageObservationV1[], durable: boolean, liveRunEvidence = false): boolean {
 		if (this.closed || !this.policy.collect) return false;
 		if (durable && this.persist.enabled && !this.restored) this.restorePersisted();
 		const existing = [...this.archive.values(), ...this.ledger.observations()];
@@ -338,7 +391,16 @@ export class UsageCollector {
 		if (union.size > USAGE_LIMITS.maxMemoryObservations) { this.noteGap("memory-exhausted"); return false; }
 		const result = this.ledger.ingestBatch(observations);
 		if (!result.accepted) { this.noteGap(result.reason === "memory-exhausted" ? result.reason : "batch-rejected"); return false; }
-		if (result.reason === "idempotent" || !durable || !this.persist.enabled) return true;
+		if (result.reason === "idempotent") return true;
+		for (const obs of observations) {
+			this.maxRevision = Math.max(this.maxRevision, obs.revision ?? 0);
+			// Entry-link/revision updates alone are not new live execution evidence.
+			if (liveRunEvidence && obs.sessionId === this.sessionId && obs.originTurnId === "unassigned" && obs.phase === "final" && parseMetaSourceKeyGranularity(obs.executionId)) {
+				if (this.liveUnassignedExecutions.has(obs.executionId) || this.liveUnassignedExecutions.size < USAGE_LIMITS.maxMemoryObservations) this.liveUnassignedExecutions.add(obs.executionId);
+				else this.noteGap("origin-backfill-capacity");
+			}
+		}
+		if (!durable || !this.persist.enabled) return true;
 		const keys = new Set(observations.map(usageIdentity));
 		const rows = this.ledger.observations().filter((o) => keys.has(usageIdentity(o)) && o.phase !== "provisional" && o.phase !== "running");
 		if (!rows.length || !this.archiveRows(rows)) return true;

@@ -140,7 +140,7 @@ export default function (pi: ExtensionAPI) {
 	let lastSettledArgs: SettledStatusArgs | undefined;
 
 	function nextUsageRevision(): number {
-		usageRevisionClock += 1;
+		usageRevisionClock = Math.max(usageRevisionClock, usageCollector?.revisionClock ?? 0) + 1;
 		return usageRevisionClock;
 	}
 
@@ -869,6 +869,11 @@ export default function (pi: ExtensionAPI) {
 				sessionId: ctx.sessionManager.getSessionId(),
 				sessionFile,
 				onRecords: ingestSubagentRecords,
+				onGap: (reason) => {
+					usageCollector?.noteGap(reason);
+					if (requestStartMs !== null) scheduleStatusRefresh();
+					else if (statusCtx) setSettledStatus(statusCtx, sessionElapsedSeconds, sessionStats, lastTurnElapsedSeconds, turnStats);
+				},
 				onAsyncCompleteData: (data) => {
 					const sessionIdentity = normalizeSubagentSessionIdentity(
 						ctx.sessionManager.getSessionId()
@@ -888,7 +893,7 @@ export default function (pi: ExtensionAPI) {
 					}));
 					for (const record of records) {
 						const childRun = parseMetaSourceKeyGranularity(record.sourceKey)?.runId;
-						if (childRun) usageCollector?.bindRun(childRun, completionOrigin);
+						if (childRun && runId) usageCollector?.linkRunParent(childRun, runId);
 					}
 					if (records.length > 0) runUsageTask(() => applySubagentRecords(records, targetStats, "pi-subagents", completionOrigin), Buffer.byteLength(JSON.stringify(records)));
 				},
