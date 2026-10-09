@@ -21,12 +21,12 @@ export interface SubagentUsageBridgeOptions {
 	sessionFile?: string | null;
 	onRecords: (records: readonly SubagentUsageRecord[]) => void;
 	/**
-	 * When set, the async-complete handler hands off the payload and returns
-	 * instead of parsing it on the EventBus emit stack. The caller should extract
-	 * via `extractSubagentUsageFromAsyncComplete` on a background task chain, which
-	 * is also what keeps ingestion ordered against the `_meta.json` scan.
+	 * When set, the async-complete handler hands off the payload instead of
+	 * parsing it on the EventBus emit stack. Return false to withhold run
+	 * ownership — a rejected usage batch must not authorize later bg_wait.
+	 * A meta-only event should return true so identity is still recorded.
 	 */
-	onAsyncCompleteData?: (data: unknown) => void;
+	onAsyncCompleteData?: (data: unknown) => boolean | void;
 	onRunObserved?: (normalizedRunId: string) => void;
 	/** Session-checked identity evidence, independent of whether the child reports usage. */
 	onRunParentObserved?: (childRunId: string, parentRunId: string) => void;
@@ -136,15 +136,15 @@ export function registerSubagentUsageBridge(
 			options.onGap?.("metadata-budget-exceeded");
 			return;
 		}
+		// Usage-bearing handoffs enqueue first. Ownership follows only when the
+		// batch is admitted, so a rejected completion cannot trust its runs.
+		if (options.onAsyncCompleteData?.(data) === false) return;
 		const parentRunId = matchingRunId(data);
 		for (const runId of observedRunIds(data)) {
 			if (parentRunId && runId !== parentRunId) options.onRunParentObserved?.(runId, parentRunId);
 			options.onRunObserved?.(runId);
 		}
-		if (options.onAsyncCompleteData) {
-			options.onAsyncCompleteData(data);
-			return;
-		}
+		if (options.onAsyncCompleteData) return;
 		const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity);
 		if (records.length > 0) {
 			options.onRecords(records);

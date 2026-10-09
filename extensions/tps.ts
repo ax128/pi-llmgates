@@ -186,10 +186,11 @@ export default function (pi: ExtensionAPI) {
 		return count > 0 ? ctx.ui.theme.fg("error", `.x${count}`) : "";
 	}
 
-	function runUsageTasks(tasks: readonly RecoveryTask[], background = false): void {
+	function runUsageTasks(tasks: readonly RecoveryTask[], background = false): boolean {
+		if (!recovery) return false;
 		const expectedGeneration = sessionGeneration;
 		const owner = usageCollector;
-		recovery?.enqueueBatch(tasks.map((task) => ({ ...task, run: async () => {
+		return recovery.enqueueBatch(tasks.map((task) => ({ ...task, run: async () => {
 			if (!sessionActive || sessionGeneration !== expectedGeneration || usageCollector !== owner) return;
 			try { await task.run(); }
 			catch { owner?.noteGap("live-task-failed"); }
@@ -529,16 +530,17 @@ export default function (pi: ExtensionAPI) {
 		records: readonly SubagentUsageRecord[],
 		category: "pi-subagents" | "sync-subagent" | "tool-nested" | "compaction" = "pi-subagents",
 		originOverride?: string,
-	): void {
-		if (!usageCollector?.enabled(category)) return;
+	): boolean {
+		if (!usageCollector?.enabled(category)) return false;
 		if (records.length > USAGE_LIMITS.perTickEvents || records.some((r) => (r.modelBreakdown?.length ?? 1) > USAGE_LIMITS.perTickEvents)) {
-			usageCollector.noteGap("metadata-budget-exceeded"); return;
+			usageCollector.noteGap("metadata-budget-exceeded"); return false;
 		}
+		if (records.length === 0) return true;
 		const originAtEvent = originOverride ?? (category === "pi-subagents" ? "unassigned" : usageCollector.currentOriginTurnId());
 		// Each execution stays atomic, but independent children yield to the shared
 		// 200-row / 50ms budget. Admission is all-or-none; freshness is checked only
 		// when a task runs, so a rejected/cancelled batch cannot consume dedup keys.
-		runUsageTasks(records.map((record) => ({
+		return runUsageTasks(records.map((record) => ({
 			run: () => applySubagentRecords([record], category, originAtEvent),
 			bytes: Buffer.byteLength(JSON.stringify(record)),
 			events: Math.max(1, record.modelBreakdown?.length ?? 1),
@@ -888,12 +890,14 @@ export default function (pi: ExtensionAPI) {
 					);
 					const payload = data as { runId?: unknown; id?: unknown };
 					const runId = typeof payload.runId === "string" ? payload.runId : typeof payload.id === "string" ? payload.id : undefined;
-					if (runId && sessionRunIds.size < USAGE_LIMITS.maxMemoryObservations) sessionRunIds.add(runId);
-					const completionOrigin = usageCollector?.originForRun(runId) ?? "unassigned";
 					const records = extractSubagentUsageFromAsyncComplete(data, sessionIdentity).map((record) => ({
 						...record, trustedFinal: true, revisionSource: "completion" as const,
 					}));
-					ingestSubagentRecords(records, "pi-subagents", completionOrigin);
+					// No usage: keep the validated identity so a later meta file can
+					// bill the proven turn. Usage that the queue rejects must not.
+					if (records.length === 0) return true;
+					const completionOrigin = usageCollector?.originForRun(runId) ?? "unassigned";
+					return ingestSubagentRecords(records, "pi-subagents", completionOrigin);
 				},
 				onRunParentObserved: (childRunId, parentRunId) => usageCollector?.linkRunParent(childRunId, parentRunId),
 				onRunObserved: (runId) => {

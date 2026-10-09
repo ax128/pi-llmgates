@@ -455,6 +455,41 @@ describe("tps-subagent-bridge", () => {
 		unregister();
 	});
 
+	it("withholds run ownership when the usage handoff rejects the batch", () => {
+		const bus = createMemoryEventBus(), onRunObserved = vi.fn(), onRunParentObserved = vi.fn();
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1", onRecords() {}, onRunObserved, onRunParentObserved,
+			onAsyncCompleteData: () => false,
+		});
+		try {
+			bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+				sessionId: "sess-1", id: UUID_RUN, results: [{ runId: "ABCD", agent: "worker", usage: { input: 10, output: 1, cost: 3 } }],
+			});
+			expect(onRunObserved).not.toHaveBeenCalled();
+			expect(onRunParentObserved).not.toHaveBeenCalled();
+		} finally { unregister(); }
+	});
+
+	it("records run ownership only after a usage handoff accepts the batch", () => {
+		const bus = createMemoryEventBus(), onRunObserved = vi.fn(), onRunParentObserved = vi.fn();
+		let observedDuringHandoff = false;
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1", onRecords() {}, onRunObserved, onRunParentObserved,
+			onAsyncCompleteData: () => {
+				observedDuringHandoff = onRunObserved.mock.calls.length > 0 || onRunParentObserved.mock.calls.length > 0;
+				return true;
+			},
+		});
+		try {
+			bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+				sessionId: "sess-1", id: UUID_RUN, results: [{ id: "ABCD" }],
+			});
+			expect(observedDuringHandoff).toBe(false);
+			expect(onRunParentObserved.mock.calls).toEqual([["abcd", "1d706627aada48289207bbab8fad3864"]]);
+			expect(onRunObserved).toHaveBeenCalled();
+		} finally { unregister(); }
+	});
+
 	it("hands async-complete payload off without extracting on the emit stack when asked", () => {
 		const bus = createMemoryEventBus();
 		const seen: unknown[] = [];
