@@ -136,12 +136,57 @@ describe("atomic admission and budgeted execution batches", () => {
 		} finally { await h.close(); }
 	});
 
+	it("admits a batch whose combined bytes exceed one slice and runs the executions across slices", async () => {
+		const h = harness(), calls: string[] = [];
+		try {
+			await h.start();
+			expect(h.recovery.enqueueBatch([
+				task(() => { calls.push("first"); }, 1, USAGE_LIMITS.perTickReadBytes),
+				task(() => { calls.push("second"); }, 1, 128),
+			])).toBe(true);
+			await tick(); expect(calls).toEqual(["first"]);
+			await tick(); expect(calls).toEqual(["first", "second"]);
+			expect(h.collector.gapReasons().join()).not.toContain("live-queue-overflow");
+		} finally { await h.close(); }
+	});
+
+	it("does not mark a ready collector partial just because a live batch is waiting for the next slice", async () => {
+		const h = harness();
+		const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+		try {
+			await h.start();
+			expect(h.collector.recoveryState).toBe("ready");
+			expect(h.recovery.enqueueBatch([
+				task(() => {}, 1),
+				task(() => {}, USAGE_LIMITS.perTickEvents),
+			])).toBe(true);
+			expect(h.collector.recoveryState).toBe("ready");
+			expect(h.collector.historyPartial).toBe(false);
+			await tick();
+			expect(h.collector.recoveryState).toBe("ready");
+			expect(h.collector.historyPartial).toBe(false);
+			expect(h.recovery.hasPendingRecovery).toBe(true);
+		} finally { clock.mockRestore(); await h.close(); }
+	});
+
+	it("rejects a malformed task without marking queue overflow", async () => {
+		const h = harness(), run = vi.fn();
+		try {
+			await h.start();
+			expect(h.recovery.enqueueBatch([task(run, 0)])).toBe(false);
+			await tick();
+			expect(run).not.toHaveBeenCalled();
+			expect(h.collector.gapReasons().join()).not.toContain("live-queue-overflow");
+		} finally { await h.close(); }
+	});
+
 	it.each(["bytes", "atomic-group"])("rejects a batch exceeding the %s cap before running any task", async (limit) => {
 		const h = harness(), run = vi.fn();
 		try {
-			const tasks = limit === "bytes" ? [task(run, 1, USAGE_LIMITS.perTickReadBytes), task(run)] : [task(run), task(run, USAGE_LIMITS.perTickEvents + 1)];
+			const tasks = limit === "bytes" ? [task(run, 1, USAGE_LIMITS.perTickReadBytes + 1)] : [task(run), task(run, USAGE_LIMITS.perTickEvents + 1)];
 			expect(h.recovery.enqueueBatch(tasks)).toBe(false);
 			expect(h.recovery.pendingCount).toBe(0);
+			expect(h.collector.gapReasons().join()).toContain("live-queue-overflow");
 			await h.start(); expect(run).not.toHaveBeenCalled();
 		} finally { await h.close(); }
 	});

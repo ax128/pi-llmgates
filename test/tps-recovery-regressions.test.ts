@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import registerTps from "../extensions/tps.js";
 import { UsageCollector } from "../extensions/usage/collector.js";
+import { SessionRecovery } from "../extensions/usage/session-recovery.js";
 import { FsUsagePersist } from "../extensions/usage/persist.js";
 import { resolveUsagePolicy, USAGE_LIMITS } from "../extensions/usage/policy.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
@@ -235,6 +236,45 @@ describe("review regressions: recovered subagent accounting", () => {
 			} finally { ingest.mockRestore(); clock.mockRestore(); await r.emit("session_shutdown"); }
 		},
 	);
+
+	it("does not let a rejected usage completion authorize later bg_wait", async () => {
+		vi.stubEnv("LLMGATES_TPS_PERSIST", "0");
+		const r = runtime();
+		try {
+			await r.emit("session_start"); await drain();
+			const enqueue = vi.spyOn(SessionRecovery.prototype, "enqueueBatch").mockReturnValue(false);
+			try {
+				r.complete({ runId: "abcd", results: [{ agent: "worker", model: "wrong", usage: usage(99) }] });
+			} finally { enqueue.mockRestore(); }
+			const result = { details: { mode: "management", completions: [{ runId: "abcd", results: [{ agent: "worker", model: "wrong", usage: usage(99) }] }] } };
+			await r.emit("tool_execution_end", { toolName: "bg_wait", toolCallId: "wait", result });
+			const view = await r.show();
+			expect(view.title).not.toContain("$99");
+			expect(view.options.join("\n")).not.toContain("wrong");
+		} finally { await r.emit("session_shutdown"); }
+	});
+
+	it("does not mark All partial while a completion batch is only being sliced", async () => {
+		vi.stubEnv("LLMGATES_TPS_PERSIST", "0");
+		const r = runtime(); let now = 0;
+		const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+		const original = UsageCollector.prototype.ingestLegacyRecords;
+		const ingest = vi.spyOn(UsageCollector.prototype, "ingestLegacyRecords").mockImplementation(function (this: UsageCollector, ...args) {
+			const accepted = original.apply(this, args);
+			now += USAGE_LIMITS.perTickMs;
+			return accepted;
+		});
+		try {
+			await r.emit("session_start"); await drain();
+			r.complete({ runId: "abcd", results: Array.from({ length: 2 }, () => ({ agent: "worker", model: "worker", usage: usage(3) })) });
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(r.statuses.at(-1)).toContain("$3.00");
+			expect(r.statuses.at(-1)).not.toContain("All(partial)");
+			await drain();
+			expect(r.statuses.at(-1)).toContain("$6.00");
+			expect(r.statuses.join("\n")).not.toContain("All(partial)");
+		} finally { ingest.mockRestore(); clock.mockRestore(); await r.emit("session_shutdown"); }
+	});
 
 	it("projects and redraws a multi-child completion only once per accounting slice", async () => {
 		vi.stubEnv("LLMGATES_TPS_PERSIST", "0");

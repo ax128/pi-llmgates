@@ -76,16 +76,17 @@ export class SessionRecovery {
 	enqueueBatch(tasks: readonly RecoveryTask[], background = false): boolean {
 		if (this.closing || !this.owns()) return false;
 		if (tasks.length === 0) return true;
+		// A combined byte total may span slices. Only a task that cannot fit an
+		// empty slice, or a queue that cannot hold every task, rejects the batch.
+		if (tasks.some((task) => !Number.isFinite(task.bytes) || task.bytes < 0 || !Number.isInteger(task.events) || task.events < 1)) return false;
 		if (this.queue.length + tasks.length > USAGE_LIMITS.queueSoftLimit ||
-			tasks.some((task) => !Number.isFinite(task.bytes) || task.bytes < 0 || !Number.isInteger(task.events) || task.events < 1 || task.events > USAGE_LIMITS.perTickEvents) ||
-			tasks.reduce((sum, task) => sum + task.bytes, 0) > USAGE_LIMITS.perTickReadBytes) {
+			tasks.some((task) => task.bytes > USAGE_LIMITS.perTickReadBytes || task.events > USAGE_LIMITS.perTickEvents)) {
 			this.collector.noteGap("live-queue-overflow"); return false;
 		}
 		const firstBackground = background ? -1 : this.queue.findIndex((item) => item.background);
 		const items = tasks.map((task) => ({ ...task, background }));
 		if (firstBackground < 0) this.queue.push(...items);
 		else this.queue.splice(firstBackground, 0, ...items);
-		if (this.collector.recoveryState === "ready") this.collector.recoveryState = "recovering";
 		this.schedule(); return true;
 	}
 	noteAssistant(message: unknown, origin: string): void { this.addPending({ message, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
