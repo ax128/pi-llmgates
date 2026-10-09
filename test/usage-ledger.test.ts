@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { USAGE_SCHEMA_VERSION } from "../extensions/usage/contract.js";
+import { formatTpsScopeWithQuality } from "../extensions/usage/format.js";
 import { UsageLedger } from "../extensions/usage/ledger.js";
+import { USAGE_LIMITS } from "../extensions/usage/policy.js";
 
 function obs(overrides: Record<string, unknown> = {}) {
 	return {
@@ -311,6 +313,23 @@ describe("UsageLedger", () => {
 		expect(ledger.finalizedTotals().callsQuality).toBe("unknown");
 		expect(ledger.finalizedModelStats().get("gpt-test")?.callsQuality).toBe("unknown");
 		expect(ledger.finalizedTotals({ originTurnId: "turn-2" })).toMatchObject({ costUsd: 0, costQuality: "unknown", callsQuality: "unknown" });
+	});
+
+	it("marks an oversized batch as unknown spend instead of a free zero", () => {
+		const ledger = new UsageLedger("root-1");
+		ledger.ingest(obs());
+		expect(ledger.finalizedTotals().costQuality).toBe("estimated");
+		const overflow = Array.from({ length: USAGE_LIMITS.perTickEvents + 1 }, (_, index) => obs({
+			callId: `overflow-${index}`, executionId: `exec-${index}`, sequence: index + 10,
+		}));
+		const result = ledger.ingestBatch(overflow);
+		expect(result).toEqual({ accepted: false, reason: "batch-capacity" });
+		expect(ledger.observations()).toHaveLength(1);
+		expect(ledger.finalizedTotals()).toMatchObject({ costUsd: 0.01, costQuality: "unknown", hasEstimatedCost: true });
+		expect(ledger.finalizedTotals({ originTurnId: "turn-2" })).toMatchObject({ costUsd: 0, costQuality: "unknown" });
+		expect(ledger.finalizedModelStats().get("gpt-test")?.costQuality).toBe("unknown");
+		expect(formatTpsScopeWithQuality("all", 0, ledger.finalizedTotals())).toContain("~$0.010 + ?");
+		expect(formatTpsScopeWithQuality("turn", 0, ledger.finalizedTotals({ originTurnId: "turn-2" }))).toBe("Turn 0s.?.?");
 	});
 
 	it("propagates missing metrics alongside known estimates, but accepts an explicit reported zero", () => {
