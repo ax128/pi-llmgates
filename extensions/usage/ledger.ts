@@ -165,6 +165,8 @@ export class UsageLedger {
 	private persistState: CoverageRow["persist"] = "memory";
 	private persistLoadGap: string | undefined;
 	private memoryExhausted = false;
+	/** Capacity or atomic-batch rejection: known subtotals stay, but quality is no longer exact. */
+	private uncountedSpend = false;
 	private projectionVersion = 0;
 	private sequenceEntries = 0;
 	private snapshotGroups = new Map<string, { revision: number; keys: Set<string> }>();
@@ -192,8 +194,16 @@ export class UsageLedger {
 		this.persistLoadGap = reason;
 	}
 
+	/** A rejected batch or metadata budget left spend out of the ledger. */
+	markUncountedSpend(): void {
+		if (this.uncountedSpend) return;
+		this.uncountedSpend = true;
+		this.invalidateProjections();
+	}
+
 	/** Capacity rejection loses evidence even when no observation can be committed. */
 	markMemoryExhausted(): void {
+		this.markUncountedSpend();
 		if (this.memoryExhausted) return;
 		this.memoryExhausted = true;
 		this.invalidateProjections();
@@ -254,7 +264,10 @@ export class UsageLedger {
 
 	/** Commit observations atomically; a capacity rejection still marks coverage incomplete. */
 	ingestBatch(inputs: readonly unknown[], remove?: (obs: UsageObservationV1) => boolean): IngestResult {
-		if (inputs.length > USAGE_LIMITS.perTickEvents) return { accepted: false, reason: "batch-capacity" };
+		if (inputs.length > USAGE_LIMITS.perTickEvents) {
+			this.markUncountedSpend();
+			return { accepted: false, reason: "batch-capacity" };
+		}
 		const trial = new UsageLedger(this.rootSessionId);
 		trial.records = new Map(this.records);
 		trial.snapshotGroups = new Map([...this.snapshotGroups].map(([key, group]) => [key, { revision: group.revision, keys: new Set(group.keys) }]));
@@ -446,7 +459,7 @@ export class UsageLedger {
 				else totals[metric] += value;
 			}
 		}
-		if (!saw && !this.memoryExhausted) {
+		if (!saw && !this.uncountedSpend) {
 			return emptyTotals();
 		}
 		totals.inputQuality = qualities.input ?? "unknown";
@@ -458,7 +471,7 @@ export class UsageLedger {
 		totals.callsQuality = qualities.calls ?? "unknown";
 		totals.costQuality = qualities.costUsd ?? "unknown";
 		totals.hasUnknown = USAGE_METRIC_KEYS.some((metric) => qualities[metric] === "unknown");
-		if (this.memoryExhausted) {
+		if (this.uncountedSpend) {
 			totals.callsQuality = totals.costQuality = totals.inputQuality = totals.outputQuality = "unknown";
 			totals.cacheReadQuality = totals.cacheWriteQuality = totals.cacheWrite1hQuality = totals.totalTokensQuality = "unknown";
 			totals.hasUnknown = true;

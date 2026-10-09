@@ -126,6 +126,32 @@ describe("UsageCollector origin-turn binding", () => {
 		} finally { cleanup(); }
 	});
 
+	it("downgrades every view when a batch or metadata budget rejects spend", () => {
+		const { session, cleanup } = collector();
+		try {
+			session.finishRecovery();
+			const origin = session.beginTurn();
+			expect(formatTpsScopeWithQuality("turn", 0, session.turnTotals())).toContain("$0.000");
+			session.noteGap("metadata-budget-exceeded");
+			expect(session.turnTotals()).toMatchObject({ costUsd: 0, costQuality: "unknown" });
+			expect(formatTpsScopeWithQuality("turn", 0, session.turnTotals())).toBe("Turn 0s.?.?");
+			expect(session.ingestAssistant({ role: "assistant", provider: "test", model: "parent", usage: { input: 10, output: 1, cost: { total: 1.25 } } }, 1_000, origin)).toBe(true);
+			session.noteGap("batch-rejected");
+			session.noteGap("live-queue-overflow");
+			session.noteGap("batch-capacity");
+			expect(session.sessionTotals()).toMatchObject({ costUsd: 1.25, costQuality: "unknown" });
+			expect(session.turnTotals().costQuality).toBe("unknown");
+			expect(formatTpsScopeWithQuality("all", 0, session.sessionTotals(), { historyPartial: true })).toContain("~$1.25 + ?");
+			const unrelated = new UsageCollector("root-2", "sess-2", resolveUsagePolicy(""), createUsagePersist("", "root-2", false));
+			unrelated.finishRecovery();
+			unrelated.beginTurn();
+			expect(unrelated.ingestAssistant({ role: "assistant", provider: "test", model: "parent", usage: { input: 10, output: 1, cost: { total: 2 } } })).toBe(true);
+			unrelated.noteGap("origin-unassigned");
+			expect(unrelated.sessionTotals().costQuality).not.toBe("unknown");
+			expect(unrelated.sessionTotals().costUsd).toBe(2);
+		} finally { cleanup(); }
+	});
+
 	it("drops only proven progress, not legacy final identities", () => {
 		const { session, cleanup } = collector();
 		try {

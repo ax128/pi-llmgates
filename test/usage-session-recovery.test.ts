@@ -328,6 +328,28 @@ describe("bounded current-session recovery", () => {
 		} finally { await h.close(); temp.cleanup(); }
 	});
 
+	it("keeps the newest entries and still counts later parent and root-tool spend after the index is full", async () => {
+		const h = harness();
+		for (let i = 0; i < USAGE_LIMITS.maxMemoryObservations; i++) h.manager.appendCustomEntry("old");
+		h.manager.appendMessage(message(4));
+		try {
+			await h.recovery.start(); await settled(h);
+			expect(h.collector.sessionTotals().costUsd).toBe(4);
+			expect(h.collector.gapReasons().join()).toContain("entry-index-capacity");
+			const origin = h.collector.beginTurn();
+			const reply = message(6);
+			h.recovery.noteAssistant(reply, origin);
+			h.manager.appendMessage(reply);
+			h.recovery.noteTool("call-1", origin);
+			h.recovery.noteToolResult("call-1", origin, { usage: { input: 10, cost: 2 } });
+			h.manager.appendMessage(toolResultMessage({ toolName: "custom_llm", toolCallId: "call-1", result: { usage: { input: 10, cost: 2 } } }));
+			await tick(); await tick();
+			expect(h.collector.sessionTotals().costUsd).toBe(12);
+			expect(h.collector.turnTotals().costUsd).toBe(8);
+			expect(h.collector.turnTotals(origin).costQuality).not.toBe("unknown");
+		} finally { await h.close(); }
+	});
+
 	it("V14/V16: bounds queue/pending/index, and cancellation cannot mutate another owner", async () => {
 		const h = harness();
 		let ran = 0;

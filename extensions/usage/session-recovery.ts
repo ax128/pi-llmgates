@@ -29,6 +29,8 @@ export class SessionRecovery {
 	private readonly queue: Array<RecoveryTask & { background: boolean }> = [];
 	private entries: readonly unknown[] | undefined;
 	private cursor = 0;
+	private snapshotTruncated = false;
+	/** Full-history replay and idle probes only. Live parent/tool association stays open. */
 	private entryDiscoveryStopped = false;
 	private lastSnapshot = -Infinity;
 	private boundaryDirty = false;
@@ -92,7 +94,7 @@ export class SessionRecovery {
 	noteAssistant(message: unknown, origin: string): void { this.addPending({ message, origin, expires: Date.now() + USAGE_LIMITS.orphanTtlMs }); }
 	originForTool(toolCallId: string): string { return this.activeTools.get(toolCallId) ?? this.pending.find((p) => p.toolCallId === toolCallId)?.origin ?? this.nested.get(toolCallId)?.origin ?? "unassigned"; }
 	noteNestedTool(id: string, parentId: string, name: string): void {
-		if (this.closing || this.entryDiscoveryStopped || !this.owns()) return;
+		if (this.closing || !this.owns()) return;
 		if (!id || !parentId || id === parentId || id.length > 1024 || parentId.length > 1024 || name.length > 256 || this.nested.size >= USAGE_LIMITS.maxMemoryObservations) { this.collector.noteGap("nested-ownership-capacity"); return; }
 		const record = { parentId, rootId: this.nested.get(parentId)?.rootId ?? parentId, name: name.trim().toLowerCase(), origin: this.originForTool(parentId) };
 		const old = this.nested.get(id);
@@ -100,14 +102,14 @@ export class SessionRecovery {
 		this.nested.set(id, old?.conflicted ? { ...record, conflicted: true } : record);
 	}
 	noteTool(toolCallId: string, origin: string): void {
-		if (this.closing || this.entryDiscoveryStopped || !this.owns() || this.tools.has(toolCallId)) return;
+		if (this.closing || !this.owns() || this.tools.has(toolCallId)) return;
 		if (!toolCallId || toolCallId.length > 1024) { this.collector.noteGap("invalid-tool-identity"); return; }
 		if (this.activeTools.has(toolCallId) || this.pending.some((p) => p.toolCallId === toolCallId)) return;
 		if (this.activeTools.size >= USAGE_LIMITS.maxPendingOrphans) { this.collector.noteGap("active-tool-capacity"); return; }
 		this.activeTools.set(toolCallId, origin);
 	}
 	noteToolResult(toolCallId: string, origin: string, result: unknown): void {
-		if (this.closing || this.entryDiscoveryStopped || !this.owns() || this.tools.has(toolCallId)) return;
+		if (this.closing || !this.owns() || this.tools.has(toolCallId)) return;
 		if (!toolCallId || toolCallId.length > 1024) { this.collector.noteGap("invalid-tool-identity"); return; }
 		const launchOrigin = this.activeTools.get(toolCallId) ?? origin;
 		this.activeTools.delete(toolCallId);
@@ -126,7 +128,7 @@ export class SessionRecovery {
 		this.addPending({ entryId, origin, summaryModel, expires: Date.now() + USAGE_LIMITS.orphanTtlMs });
 	}
 	private addPending(item: Pending): void {
-		if (this.closing || this.entryDiscoveryStopped || !this.owns()) return;
+		if (this.closing || !this.owns()) return;
 		this.expirePending();
 		if (this.pending.some((p) => item.message !== undefined ? p.message === item.message : item.entryId ? p.entryId === item.entryId : p.toolCallId === item.toolCallId)) return;
 		if (this.pending.length >= USAGE_LIMITS.maxPendingOrphans) { this.collector.noteGap("pending-capacity"); return; }
@@ -172,8 +174,9 @@ export class SessionRecovery {
 		this.lastSnapshot = Date.now(); this.boundaryDirty = false;
 		try {
 			const snapshot = suppliedSnapshot ?? this.manager.getEntries();
-			if (snapshot.length > USAGE_LIMITS.maxMemoryObservations) this.collector.noteGap("entry-index-capacity");
-			this.entries = snapshot.length > USAGE_LIMITS.maxMemoryObservations ? snapshot.slice(0, USAGE_LIMITS.maxMemoryObservations) : snapshot;
+			// Append order is oldest-first. Keep the recent window; the dropped head is the gap.
+			this.snapshotTruncated = snapshot.length > USAGE_LIMITS.maxMemoryObservations;
+			this.entries = this.snapshotTruncated ? snapshot.slice(-USAGE_LIMITS.maxMemoryObservations) : snapshot;
 			this.cursor = 0;
 			if (initial) for (const entry of this.entries ?? []) if (isPlainObject(entry) && typeof entry.id === "string") this.startupIds.add(entry.id);
 		} catch { this.collector.noteGap("session-entries-unavailable"); }
@@ -183,20 +186,19 @@ export class SessionRecovery {
 		this.scheduled = setImmediate(() => { this.scheduled = undefined; void this.drain(); });
 		this.scheduled.unref?.();
 	}
-	private stopEntryDiscovery(): void {
+	/** Stop full snapshots and idle probes. Pending live associations stay until they link or expire. */
+	private stopHistoricalDiscovery(): void {
 		if (this.entryDiscoveryStopped) return;
 		this.entryDiscoveryStopped = true;
+		this.snapshotTruncated = false;
 		this.collector.noteGap("entry-index-capacity");
-		this.entries = undefined; this.leafDirty = this.boundaryDirty = false;
-		this.leafCursor = undefined; this.leafQueue.length = 0;
-		this.pending.length = 0; this.activeTools.clear(); this.nested.clear(); this.deferred.clear();
+		this.entries = undefined; this.boundaryDirty = false;
+		this.leafCursor = undefined; this.deferred.clear();
 		if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = undefined; }
 		if (this.boundaryTimer) { clearTimeout(this.boundaryTimer); this.boundaryTimer = undefined; }
-		if (this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = undefined; }
 	}
 	private leafSlice(): unknown[] {
 		const entries: unknown[] = [];
-		if (this.entryDiscoveryStopped) return entries;
 		try {
 			let entry = this.leafCursor ? this.manager.getEntry(this.leafCursor) : this.manager.getLeafEntry();
 			const walked = new Set<string>();
@@ -213,9 +215,16 @@ export class SessionRecovery {
 		catch { this.collector.noteGap("session-entry-unavailable"); return undefined; }
 	}
 	private process(entry: unknown, retry?: DeferredEntry): void {
-		if (this.entryDiscoveryStopped || !this.owns() || !isPlainObject(entry) || typeof entry.id !== "string") return;
+		if (!this.owns() || !isPlainObject(entry) || typeof entry.id !== "string") return;
 		if (this.seen.has(entry.id) && !retry) return;
-		if (!this.seen.has(entry.id) && this.seen.size >= USAGE_LIMITS.maxMemoryObservations) { this.stopEntryDiscovery(); return; }
+		if (!this.seen.has(entry.id) && this.seen.size >= USAGE_LIMITS.maxMemoryObservations) {
+			// A historical snapshot must not rotate the index and reread the dropped head.
+			const replayingHistory = this.entries !== undefined;
+			this.stopHistoricalDiscovery();
+			if (replayingHistory) return;
+			const oldest = this.seen.values().next().value;
+			if (oldest !== undefined) this.seen.delete(oldest);
+		}
 		this.seen.add(entry.id);
 		const historical = retry?.historical ?? this.startupIds.has(entry.id);
 		const message = isPlainObject(entry.message) ? entry.message : undefined;
@@ -300,10 +309,11 @@ export class SessionRecovery {
 					const size = usageMetadataBytes(isPlainObject(entry) ? entry.message ?? entry : entry) ?? USAGE_LIMITS.perTickReadBytes;
 					if (bytes + size > USAGE_LIMITS.perTickReadBytes) break;
 					this.leafQueue.shift(); bytes += size; this.process(entry); count++; processed = true;
-					if (this.entryDiscoveryStopped) break;
 				}
-				// Probe the current leaf once more after backfill, in case it advanced.
-				this.leafDirty = !this.entryDiscoveryStopped && ((processed && continuing) || this.leafQueue.length > 0 || this.leafCursor !== undefined);
+				// After the index is full, keep draining entries already queued from the leaf.
+				// Do not walk back into the dropped head just because idle or boundary fired.
+				this.leafDirty = this.leafQueue.length > 0 || this.leafCursor !== undefined
+					|| (!this.entryDiscoveryStopped && processed && continuing);
 			}
 			while (!this.closing && this.entries && this.cursor < this.entries.length && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {
 				const entry = this.entries[this.cursor];
@@ -311,7 +321,11 @@ export class SessionRecovery {
 				if (bytes + size > USAGE_LIMITS.perTickReadBytes) break;
 				bytes += size; this.process(entry); this.cursor++; count++;
 			}
-			if (this.entries && this.cursor >= this.entries.length) this.entries = undefined;
+			if (this.entries && this.cursor >= this.entries.length) {
+				const truncated = this.snapshotTruncated;
+				this.entries = undefined;
+				if (truncated) this.stopHistoricalDiscovery();
+			}
 			if (!this.entries && !this.closing) for (const [id, retry] of this.deferred) {
 				if (count >= USAGE_LIMITS.perTickEvents || performance.now() >= deadline) break;
 				const entry = this.readEntry(id);

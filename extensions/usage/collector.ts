@@ -8,6 +8,12 @@ import { createUsagePersist, persistToLedgerState, type UsagePersist } from "./p
 import { declaredExternalCoverage } from "./adapters/external.js";
 
 const PRE_TURN_ID = "turn-0";
+const UNCOUNTED_SPEND_GAPS = new Set([
+	"batch-rejected",
+	"batch-capacity",
+	"live-queue-overflow",
+	"metadata-budget-exceeded",
+]);
 const assignableOriginTurnId = (id: string) => id === PRE_TURN_ID ? "turn-1" : id;
 export type RecoveryState = "not-started" | "recovering" | "ready" | "partial" | "disabled";
 
@@ -46,6 +52,7 @@ export class UsageCollector {
 	archivedObservations(): readonly UsageObservationV1[] { return [...this.archive.values()]; }
 	noteGap(reason: string): void {
 		if (reason === "memory-exhausted") this.ledger.markMemoryExhausted();
+		else if (UNCOUNTED_SPEND_GAPS.has(reason)) this.ledger.markUncountedSpend();
 		// Reasons are internal constants, never payload contents. A bounded summary,
 		// not an event log; overflow cannot make already observed gaps disappear.
 		if (!this.gaps.has(reason) && [...this.gaps.keys()].join().length + reason.length > USAGE_LIMITS.gapMarkerBudgetBytes - 64) reason = "gap-budget-exceeded";
