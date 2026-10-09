@@ -178,7 +178,7 @@ export class SessionRecovery {
 		} catch { this.collector.noteGap("session-entries-unavailable"); }
 	}
 	private schedule(): void {
-		if (!this.initialized || this.scheduled || this.draining || !this.owns()) return;
+		if (!this.initialized || this.closing || this.scheduled || this.draining || !this.owns()) return;
 		this.scheduled = setImmediate(() => { this.scheduled = undefined; void this.drain(); });
 		this.scheduled.unref?.();
 	}
@@ -277,7 +277,7 @@ export class SessionRecovery {
 		let count = 0, bytes = 0;
 		try {
 			this.expirePending();
-			while (this.queue.length && (!this.queue[0]!.background || this.closing) && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {
+			while (this.queue.length && !this.queue[0]!.background && count < USAGE_LIMITS.perTickEvents && performance.now() < deadline) {
 				const item = this.queue[0]!;
 				if (bytes + item.bytes > USAGE_LIMITS.perTickReadBytes || count + item.events > USAGE_LIMITS.perTickEvents) break;
 				this.queue.shift(); bytes += item.bytes; count += item.events;
@@ -287,7 +287,7 @@ export class SessionRecovery {
 			// A group that does not fit the remaining budget keeps its place. Do not
 			// let later public entries claim its identity before the next queue slice.
 			if (this.queue.length && !this.queue[0]!.background) count = USAGE_LIMITS.perTickEvents;
-			if (!this.closing && this.leafDirty) {
+			if (this.leafDirty) {
 				this.leafDirty = false;
 				const continuing = this.leafQueue.length > 0 || this.leafCursor !== undefined;
 				if (!this.leafQueue.length) for (const entry of this.leafSlice()) {
@@ -354,19 +354,22 @@ export class SessionRecovery {
 	async stopAndDrain(): Promise<void> {
 		this.closing = true;
 		if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = undefined; }
-		// Final public leaf check before dropping history also commits entries whose
-		// message_end preceded append immediately before shutdown/reload.
-		this.leafCursor = undefined; this.leafQueue.length = 0;
-		if (this.initialized && this.owns()) for (const entry of this.leafSlice()) this.process(entry);
-		this.entries = undefined; this.pending.length = 0; this.activeTools.clear(); this.nested.clear(); this.deferred.clear();
-		if (this.pendingTimer) clearTimeout(this.pendingTimer);
-		if (this.boundaryTimer) clearTimeout(this.boundaryTimer);
+		if (this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = undefined; }
+		if (this.boundaryTimer) { clearTimeout(this.boundaryTimer); this.boundaryTimer = undefined; }
 		if (this.scheduled) { clearImmediate(this.scheduled); this.scheduled = undefined; }
-		while (this.owns() && (this.draining || this.queue.length || this.collector.hasPendingOriginBackfill)) {
+		// Stop history replay, but retain live associations until final leaf entries
+		// have been processed by the same budgeted drain: live queue -> leaf -> meta.
+		// Never process a leaf on this stack, ahead of an in-flight/partial batch.
+		this.entries = undefined; this.deferred.clear(); this.boundaryDirty = false;
+		this.leafCursor = undefined; this.leafQueue.length = 0;
+		this.leafDirty = this.initialized && this.owns();
+		while (this.owns() && (this.draining || this.queue.length || this.leafDirty || this.collector.hasPendingOriginBackfill)) {
 			if (!this.draining) await this.drain();
 			await new Promise<void>((resolve) => setImmediate(resolve));
 		}
 		this.cancelled = true; this.queue.length = 0;
+		this.leafDirty = false; this.leafCursor = undefined; this.leafQueue.length = 0;
+		this.pending.length = 0; this.activeTools.clear(); this.nested.clear();
 		this.collector.setOriginBackfillScheduler(undefined);
 	}
 }

@@ -189,6 +189,53 @@ describe("review regressions: recovered subagent accounting", () => {
 		} finally { ingest.mockRestore(); clock.mockRestore(); await r.emit("session_shutdown"); }
 	});
 
+	it.each([false, true].flatMap((persist) => [false, true].map((partial) => ({ persist, partial }))))(
+		"keeps completion FIFO against final public entries during shutdown ($persist/$partial)", async ({ persist, partial }) => {
+			vi.stubEnv("LLMGATES_TPS_PERSIST", persist ? "1" : "0");
+			const r = runtime(); let now = 0;
+			const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+			const original = UsageCollector.prototype.ingestLegacyRecords;
+			let collector: UsageCollector | undefined;
+			const ingest = vi.spyOn(UsageCollector.prototype, "ingestLegacyRecords").mockImplementation(function (this: UsageCollector, ...args) {
+				collector = this;
+				const accepted = original.apply(this, args);
+				now += USAGE_LIMITS.perTickMs;
+				return accepted;
+			});
+			try {
+				await r.emit("session_start"); await drain(); await r.emit("before_agent_start");
+				await r.emit("tool_execution_start", { toolName: "subagent", toolCallId: "launch" });
+				const launch = { details: { runId: "abcd", async: true } };
+				await r.emit("tool_execution_end", { toolName: "subagent", toolCallId: "launch", result: launch });
+				r.manager.appendMessage(toolResultMessage({ toolName: "subagent", toolCallId: "launch", result: launch }));
+				await drain();
+				r.complete({ runId: "abcd", results: Array.from({ length: 3 }, () => ({ agent: "worker", modelAttempts: [
+					{ model: "a", usage: usage(1) }, { model: "b", usage: usage(2) },
+				] })) });
+				if (partial) {
+					await new Promise<void>((resolve) => setImmediate(resolve));
+					expect(collector?.sessionTotals().costUsd).toBe(3);
+				}
+				const result = { details: { mode: "management", completions: [{ runId: "abcd", results: Array.from({ length: 3 }, () => ({ agent: "worker", model: "wrong", usage: usage(99) })) }] } };
+				await r.emit("tool_execution_end", { toolName: "bg_wait", toolCallId: "wait", result });
+				r.manager.appendMessage(toolResultMessage({ toolName: "bg_wait", toolCallId: "wait", result }));
+				const updates = r.statuses.length;
+				await r.emit("session_shutdown");
+				expect(collector?.sessionTotals().costUsd).toBe(9);
+				expect(collector?.turnTotals().costUsd).toBe(9);
+				expect(r.statuses).toHaveLength(updates);
+				if (persist) {
+					const stored = new FsUsagePersist(temp.agentDir, r.manager.getSessionId()).load();
+					expect(stored).toHaveLength(6);
+					expect(stored.every((row) => row.kind === "snapshot" && row.originTurnId === "turn-1")).toBe(true);
+					await r.emit("session_start");
+					expect((await r.show()).title).toContain("$9.00");
+					expect((await r.show()).options.map((row) => row.split(" · ")[0]).sort()).toEqual(["a", "b"]);
+				}
+			} finally { ingest.mockRestore(); clock.mockRestore(); await r.emit("session_shutdown"); }
+		},
+	);
+
 	it("projects and redraws a multi-child completion only once per accounting slice", async () => {
 		vi.stubEnv("LLMGATES_TPS_PERSIST", "0");
 		const r = runtime(), clock = vi.spyOn(performance, "now").mockReturnValue(0);

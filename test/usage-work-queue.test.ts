@@ -63,6 +63,67 @@ describe("atomic admission and budgeted execution batches", () => {
 		} finally { clock.mockRestore(); await h.close(); }
 	});
 
+	it("waits for in-flight live work before final entries and background work on shutdown", async () => {
+		const order: string[] = [], h = harness(() => { order.push("entry"); });
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		let closing: Promise<void> | undefined;
+		try {
+			await h.start(); h.onChange.mockClear();
+			h.recovery.enqueue(async () => { order.push("start"); await gate; order.push("end"); });
+			h.recovery.enqueue(() => { order.push("second"); });
+			h.recovery.enqueue(() => { order.push("meta"); }, 128, true);
+			h.recovery.noteToolResult("call", "turn-1", {});
+			h.manager.appendMessage(toolResultMessage({ toolName: "custom_llm", toolCallId: "call", result: { usage: { cost: 1 } } }));
+			await tick(); expect(order).toEqual(["start"]);
+			closing = h.close();
+			expect(order).toEqual(["start"]);
+			expect(h.recovery.enqueue(() => { order.push("rejected"); })).toBe(false);
+			release(); await closing;
+			expect(order).toEqual(["start", "end", "second", "entry", "meta"]);
+			expect(h.onChange).not.toHaveBeenCalled();
+			expect(h.recovery.pendingCount).toBe(0);
+		} finally { release(); await closing; await h.close(); }
+	});
+
+	it("slices final public leaves after live work and before background work on shutdown", async () => {
+		const order: string[] = [], h = harness(() => { order.push("entry"); });
+		const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+		let closing: Promise<void> | undefined;
+		try {
+			await h.start(); h.onChange.mockClear();
+			h.recovery.enqueueBatch([task(() => { order.push("live"); }, USAGE_LIMITS.perTickEvents)]);
+			h.recovery.enqueue(() => { order.push("meta"); }, 128, true);
+			for (let i = 0; i <= USAGE_LIMITS.perTickEvents; i++) {
+				h.recovery.noteToolResult(`call-${i}`, "turn-1", {});
+				h.manager.appendMessage(toolResultMessage({ toolName: "custom_llm", toolCallId: `call-${i}`, result: { usage: { cost: 1 } } }));
+			}
+			closing = h.close();
+			await tick(); expect(order).toEqual(["live"]); // The row budget still applies while closing.
+			await closing;
+			expect(order).toEqual(["live", ...Array(USAGE_LIMITS.perTickEvents + 1).fill("entry"), "meta"]);
+			expect(h.onChange).not.toHaveBeenCalled();
+			expect(h.recovery.pendingCount).toBe(0);
+		} finally { clock.mockRestore(); await closing; await h.close(); }
+	});
+
+	it("cancels final entries and background work if the owner changes during shutdown", async () => {
+		const order: string[] = [], h = harness(() => { order.push("entry"); });
+		const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+		let closing: Promise<void> | undefined;
+		try {
+			await h.start(); h.onChange.mockClear();
+			h.recovery.enqueueBatch([task(() => { order.push("live"); }, USAGE_LIMITS.perTickEvents)]);
+			h.recovery.enqueue(() => { order.push("meta"); }, 128, true);
+			h.recovery.noteToolResult("call", "turn-1", {});
+			h.manager.appendMessage(toolResultMessage({ toolName: "custom_llm", toolCallId: "call", result: { usage: { cost: 1 } } }));
+			closing = h.close(); h.cancel(); await closing;
+			expect(order).toEqual(["live"]);
+			expect(h.onChange).not.toHaveBeenCalled();
+			expect(h.recovery.pendingCount).toBe(0);
+		} finally { clock.mockRestore(); await closing; await h.close(); }
+	});
+
 	it("rejects a capacity-overflowing batch wholly, without consuming its prefix", async () => {
 		const h = harness(), rejected = vi.fn();
 		try {
