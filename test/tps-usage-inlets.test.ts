@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	acceptsPiSubagentsManagementWait,
 	extractCompactionUsage,
 	extractToolResultUsage,
 	TINTINWEB_TOOL_NAMES,
@@ -194,6 +195,19 @@ describe("extractToolResultUsage", () => {
 			details: { mode: "management", completions: [{ runId: "abcd", results: [] }] },
 		};
 		expect(extractToolResultUsage("jobs_wait", result, "call-1")).toEqual([]);
+	});
+
+	it("does not treat a known management tool as a renamed wait", () => {
+		const result = {
+			usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.5 } },
+			details: { mode: "management", completions: [{ runId: "abcd", results: [{ agent: "reviewer", usage: { cost: 0.5 } }] }] },
+		};
+		expect(acceptsPiSubagentsManagementWait("jobs_wait", result)).toBe(true);
+		expect(acceptsPiSubagentsManagementWait("bg_wait", result)).toBe(true);
+		expect(acceptsPiSubagentsManagementWait("subagent_wait", result)).toBe(false);
+		expect(acceptsPiSubagentsManagementWait("subagent_supervisor", result)).toBe(false);
+		expect(acceptsPiSubagentsManagementWait("intercom", result)).toBe(false);
+		expect(extractToolResultUsage("subagent_wait", result, "call-known")).toEqual([]);
 	});
 
 	it("counts a top-level usage under its toolCallId", () => {
