@@ -72,6 +72,19 @@ export const TOOL_USAGE_CLAIMED_ELSEWHERE: ReadonlySet<string> = new Set(
 );
 
 /**
+ * `bg_wait`, or a wait tool renamed with `waitTool.name`.
+ * `subagent_wait`, `subagent_supervisor` and `intercom` can carry the same
+ * management shape. They stay unclaimed so their children are not billed again
+ * beside async completion or `_meta.json`.
+ */
+export function acceptsPiSubagentsManagementWait(toolName: string, result: unknown): boolean {
+	const name = typeof toolName === "string" ? toolName.trim().toLowerCase() : "";
+	if (name === "bg_wait") return true;
+	if (TOOL_USAGE_CLAIMED_ELSEWHERE.has(name)) return false;
+	return isPiSubagentsManagementResult(result);
+}
+
+/**
  * Parse the top-level `usage` a tool may hang off its result.
  *
  * This is pi's own convention, not any one package's: `finalizeExecutedToolCall` puts

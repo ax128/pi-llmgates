@@ -114,6 +114,28 @@ describe("Pi 1.0.4 entry-only accounting", () => {
 		}
 	});
 
+	it("does not bill subagent_wait from a management-shaped completion", () => {
+		const entry = {
+			type: "message",
+			id: "e-sub-wait",
+			parentId: null,
+			message: {
+				role: "toolResult",
+				toolCallId: "wait-mgmt",
+				toolName: "subagent_wait",
+				sessionId: "root",
+				usage: usage(9),
+				details: {
+					mode: "management",
+					results: [],
+					completions: [{ runId: "abcd", results: [{ agent: "reviewer", usage: { turns: 1, input: 4, output: 1, cost: 0.5 } }] }],
+				},
+			},
+		};
+		const parsed = parseSessionEntry(entry, { ...options(), sessionIdentity: { sessionId: "root" }, historicalRuns: new Set(["abcd"]) });
+		expect(parsed.candidates).toEqual([]);
+	});
+
 	it("recovers dedicated spend on every persistence-off restart without restoring the rejected pool", async () => {
 		const entry = { ...pooled(), message: { ...pooled().message, toolName: "subagent", details: { runId: "abcd", results: [{ agent: "worker", model: "worker", usage: { turns: 1, input: 30, cost: 3 } }] } } };
 		entry.message.nestedCalls.calls[0]!.name = "intercom";

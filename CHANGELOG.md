@@ -10,7 +10,7 @@
 
 ### 修复
 
-- **改名后的 pi-subagents 等待工具只记 completion child。** `details.mode === "management"` 且带 `completions` 时，顶层池化 usage 不再进通用工具账。默认名 `bg_wait` 保持原解析。
+- **改名后的 pi-subagents 等待工具只记 completion child。** `details.mode === "management"` 且带 `completions` 时，顶层池化 usage 不再进通用工具账。默认名 `bg_wait` 保持原解析。已经排除的 `subagent_wait`、`subagent_supervisor`、`intercom` 不因相同形状入账。
 - **0.86 的前台完成事件和被 workflow await 的完成事件没有 usage 时不造账。** 金额仍来自 `subagent` 工具结果或 `_meta.json`，同一 source key 只留一笔。
 - **结构化委托 `prompt-template:subagent:response` 只出现在 Coverage，状态为 unavailable。**
 - **父会话识别 Pi 1.5 的 `usage.cost.totalFromProvider`。** 为 true 时 `cost.total` 标为 reported；缺省或 false 时仍是目录估价。该标志不是第二笔金额。子代理扁平 `usage.cost` 仍是 pi-subagents 的加总。

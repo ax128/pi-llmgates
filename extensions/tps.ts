@@ -20,7 +20,6 @@ import {
 	createSubagentIngestState,
 	restoreSubagentIngestState,
 	extractBgWaitUsage,
-	isPiSubagentsManagementResult,
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromToolExecution,
@@ -46,6 +45,7 @@ import {
 import { envFlag } from "./util.js";
 import { createUsageCollector, type UsageCollector } from "./usage/collector.js";
 import { SessionRecovery, type RecoveryTask } from "./usage/session-recovery.js";
+import { acceptsPiSubagentsManagementWait } from "./tps-usage-inlets.js";
 import { boundedUsageMetadata, runIdentifiedRecords } from "./usage/adapters/session-entries.js";
 import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, formatUsageScopeTitleFromLedger, replaceModelUsageStats } from "./usage/format.js";
 import { resolveUsagePolicy, USAGE_LIMITS, isModernUsageSdk } from "./usage/policy.js";
@@ -982,7 +982,7 @@ export default function (pi: ExtensionAPI) {
 			sessionFile: ctx.sessionManager.getSessionFile(),
 		});
 		const toolName = typeof event.toolName === "string" ? event.toolName.trim().toLowerCase() : "";
-		if (toolName === "bg_wait" || isPiSubagentsManagementResult(event.result)) {
+		if (acceptsPiSubagentsManagementWait(toolName, event.result)) {
 			const bgWaitRecords = extractBgWaitUsage(event.result, sessionIdentity, sessionRunIds);
 			if (bgWaitRecords.length > 0) {
 				ingestSubagentRecords(bgWaitRecords.map((record) => ({ ...record, trustedFinal: true, revisionSource: "completion" as const })), "pi-subagents", "unassigned");
