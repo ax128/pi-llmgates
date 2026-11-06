@@ -73,8 +73,10 @@ function copyPresentCounters(raw: unknown, present: ReadonlySet<string>): UsageC
 }
 
 /**
- * Parent `message_end` assistant payload. Cost is treated as a local/SDK estimate
- * even when `usage.cost.total` is already filled.
+ * Parent `message_end` assistant payload.
+ * `usage.cost.totalFromProvider === true` means `cost.total` is the provider bill
+ * (Pi 1.5). Absent or false means that same `total` is a catalog estimate.
+ * The flag is not a second amount.
  */
 export function observationFromAssistantMessage(
 	message: unknown,
@@ -105,12 +107,23 @@ export function observationFromAssistantMessage(
 	usage.calls = 1;
 	quality.calls = "reported";
 	if (isPlainObject(rawUsage)) {
+		const costRecord = isPlainObject(rawUsage.cost) ? rawUsage.cost : undefined;
+		const billedTotal = costRecord !== undefined
+			&& costRecord.totalFromProvider === true
+			&& typeof costRecord.total === "number"
+			&& Number.isFinite(costRecord.total)
+			&& costRecord.total >= 0
+			? costRecord.total
+			: undefined;
 		let costUsd = readCostUsd(rawUsage);
-		if (options.costMode !== "stored-only" && (costUsd === undefined || costUsd === 0)) {
+		if (billedTotal === undefined && options.costMode !== "stored-only" && (costUsd === undefined || costUsd === 0)) {
 			const estimated = estimateCostFromRates(rawUsage, model, provider);
 			if (estimated > 0) costUsd = estimated;
 		}
-		if (costUsd !== undefined && costUsd > 0) {
+		if (billedTotal !== undefined) {
+			usage.costUsd = billedTotal;
+			quality.costUsd = "reported";
+		} else if (costUsd !== undefined && costUsd > 0) {
 			usage.costUsd = costUsd;
 			quality.costUsd = "estimated";
 		}

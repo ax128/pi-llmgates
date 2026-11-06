@@ -130,4 +130,38 @@ describe("legacy usage adapter", () => {
 		expect(obs!.usage?.calls).toBe(1);
 		expect(obs!.metricQuality?.calls).toBe("unknown");
 	});
+
+	it("marks provider-billed parent cost reported and leaves catalog totals estimated", () => {
+		const billed = observationFromAssistantMessage(
+			{
+				role: "assistant",
+				provider: "llmgates",
+				model: "gpt-test",
+				usage: {
+					input: 10,
+					output: 5,
+					cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03, totalFromProvider: true },
+				},
+			},
+			identity,
+		);
+		expect(billed!.usage?.costUsd).toBe(0.03);
+		expect(billed!.metricQuality?.costUsd).toBe("reported");
+
+		const catalog = observationFromAssistantMessage(
+			{
+				role: "assistant",
+				provider: "llmgates",
+				model: "gpt-test",
+				usage: {
+					input: 10,
+					output: 5,
+					cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03, totalFromProvider: false },
+				},
+			},
+			identity,
+		);
+		expect(catalog!.usage?.costUsd).toBe(0.03);
+		expect(catalog!.metricQuality?.costUsd).toBe("estimated");
+	});
 });
