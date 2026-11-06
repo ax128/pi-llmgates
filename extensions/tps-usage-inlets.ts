@@ -23,6 +23,7 @@ import { isPlainObject } from "./util.js";
 import { resolveUsageCostWithQuality, usageModelLabel } from "./tps-stats.js";
 import {
 	SUBAGENT_TOOL_NAMES,
+	isPiSubagentsManagementResult,
 	usageCountersToRecord,
 	type SubagentUsageRecord,
 } from "./tps-subagent.js";
@@ -95,6 +96,7 @@ export function extractToolResultUsage(
 		if (typeof toolName !== "string" || TOOL_USAGE_CLAIMED_ELSEWHERE.has(toolName.trim().toLowerCase())) {
 			return [];
 		}
+		if (isPiSubagentsManagementResult(result)) return [];
 		if (!isPlainObject(result)) {
 			return [];
 		}

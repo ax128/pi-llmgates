@@ -20,6 +20,7 @@ import {
 	createSubagentIngestState,
 	restoreSubagentIngestState,
 	extractBgWaitUsage,
+	isPiSubagentsManagementResult,
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromToolExecution,
@@ -977,7 +978,8 @@ export default function (pi: ExtensionAPI) {
 			sessionId: ctx.sessionManager.getSessionId(),
 			sessionFile: ctx.sessionManager.getSessionFile(),
 		});
-		if (typeof event.toolName === "string" && event.toolName.trim().toLowerCase() === "bg_wait") {
+		const toolName = typeof event.toolName === "string" ? event.toolName.trim().toLowerCase() : "";
+		if (toolName === "bg_wait" || isPiSubagentsManagementResult(event.result)) {
 			const bgWaitRecords = extractBgWaitUsage(event.result, sessionIdentity, sessionRunIds);
 			if (bgWaitRecords.length > 0) {
 				ingestSubagentRecords(bgWaitRecords.map((record) => ({ ...record, trustedFinal: true, revisionSource: "completion" as const })), "pi-subagents", "unassigned");

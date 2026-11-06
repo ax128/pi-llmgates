@@ -1,7 +1,7 @@
 /** Pure current-session entry adapter. Never opens files or grants live run ownership. */
 import { isPlainObject } from "../../util.js";
 import { extractCompactionUsage, extractToolResultUsage, TOOL_USAGE_CLAIMED_ELSEWHERE } from "../../tps-usage-inlets.js";
-import { extractBgWaitUsage, extractSubagentRunIdsFromToolExecution, extractSubagentUsageFromToolExecution, parseMetaSourceKeyGranularity, type SubagentSessionIdentity, type SubagentUsageRecord } from "../../tps-subagent.js";
+import { extractBgWaitUsage, extractSubagentRunIdsFromToolExecution, extractSubagentUsageFromToolExecution, isPiSubagentsManagementResult, parseMetaSourceKeyGranularity, type SubagentSessionIdentity, type SubagentUsageRecord } from "../../tps-subagent.js";
 import { isUsageCategoryEnabled, USAGE_LIMITS, type UsagePolicy, type UsageSwitchCategory } from "../policy.js";
 
 export type SessionCandidate =
@@ -100,10 +100,11 @@ export function parseSessionEntry(entry: unknown, options: {
 				: options.modernUsage ? pooledToolGap(message, options.observedNested) : undefined;
 			// Usage/details/nestedCalls always come from the finalized public entry.
 			const result = { ...options.toolMetadata, ...message };
+			const management = isPiSubagentsManagementResult(result);
 			let dedicatedResult: unknown = result;
 			if (nestedGap) {
 				out.gaps.push(nestedGap);
-				if (name !== "subagent" && name !== "task" && name !== "bg_wait") return out;
+				if (name !== "subagent" && name !== "task" && name !== "bg_wait" && !management) return out;
 				// Reject only the pool. Dedicated details retain their own identity and
 				// policy gates; omit root usage so the subagent fallback cannot claim it.
 				dedicatedResult = { details: message.details, runId: result.runId, sessionId: result.sessionId, sessionFile: result.sessionFile };
@@ -121,7 +122,7 @@ export function parseSessionEntry(entry: unknown, options: {
 					records = identified;
 				}
 				if (!records.length) out.gaps.push("side-channel-history-unavailable");
-			} else if (name === "bg_wait") {
+			} else if (name === "bg_wait" || isPiSubagentsManagementResult(dedicatedResult)) {
 				category = "pi-subagents";
 				let unresolvedOwnership = false;
 				records = extractBgWaitUsage(dedicatedResult, options.sessionIdentity, options.historicalRuns, () => { unresolvedOwnership = true; });

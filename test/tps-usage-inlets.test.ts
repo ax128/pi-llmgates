@@ -188,6 +188,14 @@ describe("extractToolResultUsage", () => {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.31 },
 	};
 
+	it("drops pooled usage on a management-shaped result whatever the tool is called", () => {
+		const result = {
+			usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.5 } },
+			details: { mode: "management", completions: [{ runId: "abcd", results: [] }] },
+		};
+		expect(extractToolResultUsage("jobs_wait", result, "call-1")).toEqual([]);
+	});
+
 	it("counts a top-level usage under its toolCallId", () => {
 		const [record, ...rest] = extractToolResultUsage(
 			"delegate",
