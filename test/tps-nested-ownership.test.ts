@@ -4,6 +4,7 @@ import registerTps from "../extensions/tps.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
 
 // Exercise the version-gated extension wiring; this is not a real 1.0.4 SDK gate.
+// 1.2.0 and 1.5.0 are the other checked strings. 1.1.0, 1.3.0, 1.4.0 and any other version stay closed; those negatives live in usage-policy.test.ts.
 vi.mock("@earendil-works/pi-coding-agent", async (original) => ({
 	...await original<typeof import("@earendil-works/pi-coding-agent")>(), VERSION: "1.0.4",
 }));

@@ -48,7 +48,7 @@ import { createUsageCollector, type UsageCollector } from "./usage/collector.js"
 import { SessionRecovery, type RecoveryTask } from "./usage/session-recovery.js";
 import { boundedUsageMetadata, runIdentifiedRecords } from "./usage/adapters/session-entries.js";
 import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, formatUsageScopeTitleFromLedger, replaceModelUsageStats } from "./usage/format.js";
-import { resolveUsagePolicy, USAGE_LIMITS } from "./usage/policy.js";
+import { resolveUsagePolicy, USAGE_LIMITS, isModernUsageSdk } from "./usage/policy.js";
 import { classifyCostDifferences, formatPolicyExclusions, formatReconciliationLines, summarizeNativeCosts, type NativeCostSnapshot } from "./usage/reconciliation.js";
 import { isModelAuditEnabled } from "./model-audit/runtime.js";
 import {
@@ -60,7 +60,7 @@ import {
 } from "./model-audit/store.js";
 
 // Usage-only R3 gate, not a package peer compatibility claim.
-const MODERN_USAGE_VERIFIED = VERSION === "1.0.4";
+const MODERN_USAGE_VERIFIED = isModernUsageSdk(VERSION);
 const STATUS_KEY = "tps";
 const REFRESH_INTERVAL_MS = 1000;
 const SUBAGENT_META_SCAN_DEBOUNCE_MS = 250;
