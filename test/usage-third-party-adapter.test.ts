@@ -30,11 +30,14 @@ function fakeEvents(): { events: EventBus; emit: (name: string, data: unknown) =
 
 describe("third-party usage probes", () => {
 	it("fail-closes unknown usage keys and negative counters", () => {
-		expect(
-			inspectThirdPartyEvent("tintinweb", "subagents:completed", {
-				usage: { input: 1, promptTokens: 4 },
-			}),
-		).toEqual({ action: "ignore", reason: "unknown-usage-key:promptTokens" });
+		const unknown = inspectThirdPartyEvent("tintinweb", "subagents:completed", {
+			usage: { input: 1, promptTokens: 4 },
+		});
+		expect(unknown.action).toBe("coverage-only");
+		if (unknown.action === "coverage-only") {
+			expect(unknown.row.status).toBe("unavailable");
+			expect(unknown.row.reason).toBe("unknown-usage-key:promptTokens");
+		}
 		expect(
 			inspectThirdPartyEvent("gotgenes", "child:session-bound", {
 				lifetimeUsage: { input: -1, output: 2 },
@@ -84,6 +87,34 @@ describe("third-party usage probes", () => {
 		} finally {
 			if (previous === undefined) delete process.env.LLMGATES_TPS_EXT_TINTINWEB;
 			else process.env.LLMGATES_TPS_EXT_TINTINWEB = previous;
+			cleanup();
+		}
+	});
+
+	it("covers subagents:usage and a Pi cost object without adding them to All", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		try {
+			const policy = resolveUsagePolicy(agentDir);
+			const session = createUsageCollector("root-1", "sess-1", policy, agentDir)!;
+			const { events, emit } = fakeEvents();
+			registerThirdPartyUsageProbes(events, {
+				policy,
+				onCoverage: (row) => session.noteCoverage(row),
+			});
+			emit("subagents:usage", {
+				usage: {
+					input: 40,
+					output: 8,
+					cacheRead: 2,
+					cacheWrite: 0,
+					totalTokens: 50,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1.25, totalFromProvider: true },
+				},
+			});
+			expect(session.sessionTotals().input).toBe(0);
+			expect(session.sessionTotals().costUsd).toBe(0);
+			expect(session.coverageRows().some((row) => row.producerId === "probe:tintinweb" && row.status === "unavailable")).toBe(true);
+		} finally {
 			cleanup();
 		}
 	});

@@ -23,8 +23,8 @@ export const THIRD_PARTY_EVENT_PROBES: readonly {
 	{
 		sourceId: "tintinweb",
 		package: "@tintinweb/pi-subagents",
-		events: ["subagents:completed", "subagents:failed"],
-		reason: "source-inspected top-level events only; nested/workflow-owned excluded; no runtime fixture",
+		events: ["subagents:completed", "subagents:failed", "subagents:usage"],
+		reason: "0.23.1 lifecycle and per-message usage events are coverage-only; reportUsage remains excluded",
 	},
 	{
 		sourceId: "gotgenes",
@@ -85,13 +85,21 @@ export function inspectThirdPartyEvent(
 	if (!isPlainObject(usage)) {
 		return { action: "ignore", reason: "usage-not-object" };
 	}
+	let unknownKey: string | undefined;
 	for (const [key, value] of Object.entries(usage)) {
 		if (!METRIC_SET.has(key) && !USAGE_ALIASES.has(key)) {
-			return { action: "ignore", reason: `unknown-usage-key:${key}` };
+			unknownKey = key;
+			break;
 		}
 		if (typeof value === "number" && (!Number.isFinite(value) || value < 0)) {
 			return { action: "ignore", reason: `invalid-usage:${key}` };
 		}
+	}
+	if (unknownKey) {
+		return {
+			action: "coverage-only",
+			row: coverageRow(probe, now, "unavailable", `unknown-usage-key:${unknownKey}`),
+		};
 	}
 	return {
 		action: "coverage-only",
