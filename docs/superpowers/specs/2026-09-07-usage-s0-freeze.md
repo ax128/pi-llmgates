@@ -12,11 +12,13 @@
 
 **2026-11-06 修订：** 管理投影按结果形状认领；0.86 无 usage 完成事件不造账；委托响应与 tintinweb `subagents:usage` 只写 Coverage `unavailable`；父会话用 `totalFromProvider === true` 把 `cost.total` 标为 reported。现代用量入口的 SDK 字符串为 `1.0.4`、`1.2.0`、`1.5.0`。peer 单元格仍是 `<0.87.0`，直到安装包门禁 PASS 后的单独修订。
 
+**2026-11-06 门禁后修订：** peer 单元格现为 `>=0.81.0 <1.6.0`。依据是隔离的 Pi 1.2.0 与 1.5.0 上的安装包门禁：扩展加载、`/calls` 原名、前台一笔、后台一笔、改名等待一笔。`certified` 仍为 false。`/endpoint`、`/balance`、`/logout`、输入历史和 `restoreLastModel` 未在这两版复验，仍沿用 0.86.0 / 0.84.3 的结论。
+
 ## 1. Peer 与 Pi 版本
 
 | 项 | 冻结值 | 理由 |
 | --- | --- | --- |
-| `package.json` peer | `@earendil-works/pi-ai` / `pi-coding-agent` `>=0.81.0 <0.87.0`（0.7.1 修订，原 `<0.85.0`） | 上界已按本行原定条件放宽：0.7.1 门禁在 pi 0.86.0 上完成独立兼容验证（范围见文首修订说明）。`certified` 仍为 false，未验路径不得当作已支持 |
+| `package.json` peer | `@earendil-works/pi-ai` / `pi-coding-agent` `>=0.81.0 <1.6.0`（2026-11-06 门禁后修订，原 `<0.87.0`） | 上界依据隔离的 Pi 1.2.0 与 1.5.0 安装包门禁：加载、`/calls` 原名、前台一笔、后台一笔、改名等待一笔。`certified` 仍为 false，未复验命令不得当作已支持 |
 | 开发依赖 | `0.81.1` | 现有 focused 测试与类型以此为准 |
 | 0.85.1 `telemetryContext` / `pi.ai.usage.*` | 不作为现成全局账本 | 源码为显式上下文且默认 NOOP |
 
