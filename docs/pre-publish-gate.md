@@ -199,6 +199,12 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # 装回 registry 版；§3 
 
 - [ ] TUI 统计或 `/calls` 显示符合预期
 - [ ] 子代理任务后用量归因（若本次有改）
+- [ ] Pi 1.2.0 与 Pi 1.5.0 各一次：解包后的本插件能加载，`/calls` 原名仍在
+- [ ] 一次前台 `subagent` 工具结果入账一笔；对应的 `subagent:foreground-complete` 不使 All 翻倍
+- [ ] 一次后台完成后，同一 run 的 meta 或等待工具不把 All 再加一笔
+- [ ] 等待工具改名后，All 等于 completion child 的金额，不等于 child 加顶层池化 usage
+- [ ] lite 1.18 若装在该 Pi 上：跑一次 `Agent` 后，本插件 All 不增加一笔来自 `Agent` 结果的费用；Coverage 不必出现 lite 行
+- [ ] 未安装 tintinweb 时不必造 `subagents:usage`。装了的话，All 不因该事件增加
 
 **输入历史（`/input-history`）**
 

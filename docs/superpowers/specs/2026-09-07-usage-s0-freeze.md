@@ -10,6 +10,8 @@
 
 **2026-09-19 当前实现补充：** Pi 顶层工具结果中的 numeric cost 与完整 `{input, output, cacheRead, cacheWrite, total}` cost object（五个字段均为有限非负数，含明确 0）可标为 `reported`；部分/非法 object 为 `unknown`。缺失 cost 仅在命中已知定价规则时 `estimated`，未知 model/provider 不套默认费率。该补充不改变 peer 范围或持久化 schema。
 
+**2026-11-06 修订：** 管理投影按结果形状认领；0.86 无 usage 完成事件不造账；委托响应与 tintinweb `subagents:usage` 只写 Coverage `unavailable`；父会话用 `totalFromProvider === true` 把 `cost.total` 标为 reported。现代用量入口的 SDK 字符串为 `1.0.4`、`1.2.0`、`1.5.0`。peer 单元格仍是 `<0.87.0`，直到安装包门禁 PASS 后的单独修订。
+
 ## 1. Peer 与 Pi 版本
 
 | 项 | 冻结值 | 理由 |
