@@ -8,6 +8,8 @@ import {
 } from "../extensions/tps-subagent-bridge.js";
 import type { SubagentUsageRecord } from "../extensions/tps-subagent.js";
 import { USAGE_LIMITS } from "../extensions/usage/policy.js";
+import foregroundComplete086 from "./fixtures/pi-subagents-0.86/foreground-complete.json" with { type: "json" };
+import awaitedComplete086 from "./fixtures/pi-subagents-0.86/awaited-workflow-child-complete.json" with { type: "json" };
 
 const UUID_RUN = "1d706627-aada-4828-9207-bbab8fad3864";
 
@@ -522,5 +524,23 @@ describe("tps-subagent-bridge", () => {
 		expect(seen).toHaveLength(1);
 		expect(records).toHaveLength(0);
 		unregister();
+	});
+
+	it("observes a 0.86 foreground completion and an awaited child without billing the event", () => {
+		const bus = createMemoryEventBus();
+		const batches: SubagentUsageRecord[][] = [];
+		const observed: string[] = [];
+		registerSubagentUsageBridge(bus, {
+			sessionId: "sess-0.86",
+			onRecords: (records) => batches.push([...records]),
+			onRunObserved: (runId) => observed.push(runId),
+		});
+		bus.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, foregroundComplete086);
+		bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, awaitedComplete086);
+		expect(batches).toEqual([]);
+		expect(observed).toEqual([
+			"aa11aa11aa11aa11aa11aa11aa11aa11",
+			"aa11aa11aa11aa11aa11aa11aa11aa11",
+		]);
 	});
 });

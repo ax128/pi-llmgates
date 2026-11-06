@@ -1,0 +1,14 @@
+{
+  "id": "aa11aa11aa11aa11aa11aa11aa11aa11:0",
+  "runId": "aa11aa11aa11aa11aa11aa11aa11aa11",
+  "source": "foreground",
+  "mode": "single",
+  "agent": "worker",
+  "success": true,
+  "summary": "done",
+  "exitCode": 0,
+  "state": "complete",
+  "timestamp": 1,
+  "sessionId": "sess-0.86",
+  "taskIndex": 0
+}
