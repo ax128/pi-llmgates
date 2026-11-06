@@ -325,6 +325,35 @@ describe("UsageCollector origin-turn binding", () => {
 			cleanup();
 		}
 	});
+
+	it("keeps a child on the launch turn when a later beginTurn opens the wake turn", () => {
+		const { session, cleanup } = collector();
+		const row = (sourceKey: string, costUsd: number) => ({
+			sourceKey,
+			modelLabel: "worker",
+			input: 5,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			calls: 1,
+			costUsd,
+			costQuality: "reported" as const,
+		});
+		try {
+			const launch = session.beginTurn();
+			session.ingestLegacyRecords([row("meta:abcd:worker:0", 2)], "pi-subagents", "abcd", 1000, launch);
+			expect(session.turnTotals(launch).costUsd).toBe(2);
+			expect(session.sessionTotals().costUsd).toBe(2);
+			const wake = session.beginTurn();
+			expect(wake).not.toBe(launch);
+			expect(session.currentOriginTurnId()).toBe(wake);
+			expect(session.sessionTotals().costUsd).toBe(2);
+			expect(session.turnTotals(launch).costUsd).toBe(2);
+			expect(session.turnTotals().costUsd).toBe(0);
+		} finally {
+			cleanup();
+		}
+	});
 });
 
 describe("UsageCollector persistence restore", () => {
