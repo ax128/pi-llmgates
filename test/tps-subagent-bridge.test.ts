@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
+	SUBAGENT_DELEGATION_RESPONSE_EVENT,
 	SUBAGENT_FOREGROUND_COMPLETE_EVENT,
 	isSubagentBridgeEnabled,
 	isSubagentToolAvailable,
@@ -542,5 +543,28 @@ describe("tps-subagent-bridge", () => {
 			"aa11aa11aa11aa11aa11aa11aa11aa11",
 			"aa11aa11aa11aa11aa11aa11aa11aa11",
 		]);
+	});
+
+	it("records structured delegation as unavailable coverage and does not bill response.usage", () => {
+		const bus = createMemoryEventBus();
+		const batches: SubagentUsageRecord[][] = [];
+		const coverage: string[] = [];
+		registerSubagentUsageBridge(bus, {
+			sessionId: "sess-0.86",
+			onRecords: (records) => batches.push([...records]),
+			onCoverage: (row) => coverage.push(row.producerId),
+		});
+		bus.emit(SUBAGENT_DELEGATION_RESPONSE_EVENT, {
+			requestId: "req-1",
+			ownerRunId: "aa11aa11aa11aa11aa11aa11aa11aa11",
+			nodeId: "review",
+			status: "completed",
+			usage: { input: 40, output: 8, cacheRead: 0, cacheWrite: 0, totalTokens: 48, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1.25 } },
+		});
+		bus.emit("prompt-template:subagent:update", {
+			usage: { input: 40, output: 8, cost: 1.25 },
+		});
+		expect(batches).toEqual([]);
+		expect(coverage).toEqual(["probe:pi-subagents-delegation"]);
 	});
 });

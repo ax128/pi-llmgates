@@ -875,6 +875,9 @@ export default function (pi: ExtensionAPI) {
 				sessionId: ctx.sessionManager.getSessionId(),
 				sessionFile,
 				onRecords: ingestSubagentRecords,
+				onCoverage: (row) => {
+					usageCollector?.noteCoverage(row);
+				},
 				onGap: (reason) => {
 					usageCollector?.noteGap(reason);
 					if (requestStartMs !== null) scheduleStatusRefresh();
