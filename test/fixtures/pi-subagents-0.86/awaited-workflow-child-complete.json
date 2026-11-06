@@ -1,0 +1,14 @@
+{
+  "id": "aa11aa11aa11aa11aa11aa11aa11aa11",
+  "runId": "aa11aa11aa11aa11aa11aa11aa11aa11",
+  "sessionId": "sess-0.86",
+  "asyncDir": "/tmp/pi-subagents-example/async",
+  "agent": "worker",
+  "mode": "single",
+  "state": "complete",
+  "success": true,
+  "timestamp": 1,
+  "triggerTurn": false,
+  "awaitedByWorkflow": true,
+  "parentWorkflowRunId": "bb22bb22bb22bb22bb22bb22bb22bb22"
+}

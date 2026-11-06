@@ -1,0 +1,19 @@
+{
+  "details": {
+    "runId": "aa11aa11aa11aa11aa11aa11aa11aa11",
+    "results": [
+      {
+        "index": 0,
+        "agent": "worker",
+        "usage": {
+          "input": 12,
+          "output": 3,
+          "cacheRead": 1,
+          "cacheWrite": 0,
+          "cost": 0.02,
+          "turns": 1
+        }
+      }
+    ]
+  }
+}

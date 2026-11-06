@@ -31,6 +31,9 @@ import { totalCostUsd, totalModelCalls } from "../extensions/tps-stats.js";
 import { USAGE_LIMITS } from "../extensions/usage/policy.js";
 import asyncCompleteFixture from "./fixtures/pi-subagents-0.69/async-complete-parent-child.json" with { type: "json" };
 import bgWaitFixture from "./fixtures/pi-subagents-0.69/bg-wait-management.json" with { type: "json" };
+import foregroundComplete086 from "./fixtures/pi-subagents-0.86/foreground-complete.json" with { type: "json" };
+import awaitedComplete086 from "./fixtures/pi-subagents-0.86/awaited-workflow-child-complete.json" with { type: "json" };
+import awaitedTool086 from "./fixtures/pi-subagents-0.86/awaited-child-tool-result.json" with { type: "json" };
 
 const UUID_RUN = "1d706627-aada-4828-9207-bbab8fad3864";
 const UUID_NORM = "1d706627aada48289207bbab8fad3864";
@@ -93,6 +96,23 @@ describe("tps subagent usage", () => {
 		const records = extractBgWaitUsage(renamed, "sess-1", new Set(["abcd"]));
 		expect(records.map((record) => record.costUsd)).toEqual([0.5]);
 		expect(records[0]?.sourceKey).toBe("meta:abcd:worker:0");
+	});
+
+	it("counts an awaited 0.86 child once from the tool result when the complete event has no usage", () => {
+		expect(extractSubagentUsageFromAsyncComplete(awaitedComplete086, "sess-0.86")).toEqual([]);
+		expect(extractSubagentUsageFromAsyncComplete(foregroundComplete086, "sess-0.86")).toEqual([]);
+		const [toolRecord] = extractSubagentUsageFromToolExecution("subagent", awaitedTool086, "call-86");
+		expect(toolRecord).toMatchObject({
+			sourceKey: "meta:aa11aa11aa11aa11aa11aa11aa11aa11:worker:0",
+			input: 12,
+			output: 3,
+			costUsd: 0.02,
+		});
+		const state = createSubagentIngestState();
+		const first = selectFreshSubagentRecords(state, [toolRecord!]);
+		const second = selectFreshSubagentRecords(state, [toolRecord!]);
+		expect(first).toHaveLength(1);
+		expect(second).toEqual([]);
 	});
 
 	it("keeps the 0.69 async parent-run and flat-index fixture on the existing source key", () => {
