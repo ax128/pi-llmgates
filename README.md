@@ -395,6 +395,15 @@ meta 与 tool 各自检查本入口的 revision，再按本会话接收顺序替
 - 有可信启动证据的子代理与工具用量按**启动时所在父轮**归入 This turn，不按数据稍后到达时的轮次；UUID 的大小写/连字符在绑定与查询时一致归一，完成事件中不同 ID 的 child 沿用已证明的父 run 归属。没有启动证据的完成事件只计 All/未归属；第一轮前明确启动的 run 仍归第一轮。
 - 同步 pi `subagent` / Cursor `Task` 工具结果与 `_meta.json` 汇总计入同一计数器；扫描 `.pi/subagents/artifacts`（pi-subagents ≥ 0.49）、旧版 `.pi-subagents/artifacts` 及会话文件旁的 `subagent-artifacts/`。
 - async / background 子代理通过 `subagent:async-complete` / `subagent:foreground-complete` 事件旁路采集：数字取事件自带的 `usage` / `modelAttempts` / `totalCost` / `tokens`，事件没带就等上一条那三个目录里的 `_meta.json`。pi-subagents 0.69 的 `bg_wait` 是 management projection：只读取已经由当前会话受信路径观察过的 completion child，忽略 pooled 顶层 `usage` 和 `details.results`，不从 wait 结果新绑定 run。进行中的 `tool_execution_update` 若自带 usage 也会入账；同一 `toolCallId` 的 `tool_execution_end` 会换掉这份进行中进度（即使两边因载荷形状不同而 sourceKey 不一致）。同一 `_meta.json` 仅在 **该文件** mtime 变新时替换自己先前的快照，已被跨粒度丢弃的 sibling 不会因为文件又增长而重新入账。**无 revision 的完成事件一旦占住同一 `sourceKey`，后续 meta 不再替换**（先到者胜，防双计）；只有事件没带数字时才等 meta。普通 0.69 child 按 parent-run + flat index 归一；无 index 的 meta 只有在同一 parent/agent 没有其他 indexed child 时才映射为 index 0，否则 fail-closed。**不读 pi-subagents 临时目录里的 `status.json`，也不扫子会话 `session.jsonl`**——两者在默认布局下都落在工作区之外（asyncDir 在 `os.tmpdir()`、子会话在 `~/.pi/`），而这两条兜底当初就限定只读工作区内的路径，实际从未生效，已连同那道门禁一起删除。
+
+pi-subagents 0.85 起等待工具可以用 `waitTool.name` 改名。结果只要是 `details.mode === "management"` 且带 `completions`，顶层池化 usage 就不进通用工具账；child 仍只接受本会话已经观察过的 run。0.86 的 `subagent:foreground-complete`，以及被 workflow await 的 `subagent:async-complete`，可以不带 usage。没有数字就不记一笔，金额来自 `subagent` 工具结果或 `_meta.json`，同一 source key 只留一笔。结构化委托事件 `prompt-template:subagent:response` 只把 Coverage 标为 unavailable。
+
+`pi-subagents-lite` 1.18 的 `Agent` / `StopAgent` / `MessageAgent` / `AgentStatus` 成功结果没有顶层 `usage`。父会话 All 不含这些调用的模型花费，本插件不扫它的子会话。`@tintinweb/pi-subagents` 0.23.1 的 `subagents:completed`、`subagents:failed` 和 `subagents:usage` 只更新 Coverage；不认识的 usage 键标 unavailable，不进 All。`Agent`、`get_subagent_result`、`steer_subagent` 仍排除。
+
+Pi 1.5 在 `usage.cost` 上增加布尔字段 `totalFromProvider`。为 true 时父会话把同一个 `cost.total` 标为 reported；缺省或 false 时这个 `total` 仍是目录估价。两个状态都只显示这一个数字。子代理路径拿到的是 pi-subagents 加总后的数字 `usage.cost`，不能从这个数字恢复该标志。
+
+嵌套工具的父条目池化 usage，以及 `type: "usage"` 的独立条目，只在运行中的 SDK 版本字符串为 `1.0.4`、`1.2.0` 或 `1.5.0` 时入账。其它版本保持关闭。这三版只核对了会话条目形状，不是整包 peer 认证。
+
 - indexless meta 的唯一性是本次扫描的证据，不能直接跨重启沿用。存档通过既有 `source.runner` 区分 indexed、indexless 与 completion，不修改 v1 字段集合。恢复时 indexless 及旧版无法区分来源的 child-0 snapshot 保留在存档但暂不计入，标 `indexless-origin-unproven`；只有新的受信证据才能重新计量，已撤销的推断不会因重载或来源开关切换复活。明确 indexed 与 completion 记录正常恢复。
 - 事件里的 `sessionId` 可能是裸 ID、会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。
 - 子代理的**费用**只在上游报了金额时才有：按 `usage.cost` → `modelAttempts[].usage.cost` 之和 → `totalCost.costUsd` 的顺序取第一个有值的，原样采用；只报到 token（`tokens` / `totalTokens`）时，**token 照记、费用显示 unknown（`?`）**，不按父模型的费率倒推。所以 `/calls` 里子代理行的费用偏低是预期行为，不代表 token 漏算。

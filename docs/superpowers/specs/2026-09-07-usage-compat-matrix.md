@@ -16,6 +16,18 @@
 
 **P2 实测补充：** Pi 1.0.4 的编译 TPS 模块通过合成 SDK 多层/并行嵌套工具池、排除/截断拒绝、空闲公开 leaf 发现、未知有效独立 usage 与独立进程重启门禁（persist 开/关）。只启用该精确 SDK 版本的新入口；不扩大 peer，不认证整个插件。snapshot 不完整、源别名关联不明仍 partial；隐藏 child-factory 仍 blocked。
 
+## 2026-11-06 pi-subagents 0.86 / Pi 1.2 与 1.5 形状核对
+
+| 来源 | 等级 | 入口 | 缺口 |
+| --- | --- | --- | --- |
+| pi-subagents 0.86 前台完成事件与 awaited child 完成事件 | `wired` | 事件只保留 run 身份；金额在工具结果或 `_meta.json` | 未在 Pi 1.2+ TUI 执行 0.86 包 |
+| 改名后的 management wait | `wired` | `details.mode === "management"` 且 `completions` 走 `extractBgWaitUsage` | 顶层池化 usage 排除；未认证自定义名的真实安装 |
+| `prompt-template:subagent:response` | `probe-only` | Coverage `unavailable` | `response.usage` 不进 All |
+| tintinweb 0.23.1 `subagents:usage` | `probe-only` | 与 completed/failed 同一 fail-closed 探测 | 不进 All |
+| pi-subagents-lite 1.18 | `unavailable` | 工具结果无顶层 usage | 不扫子会话 |
+| SDK `1.0.4` / `1.2.0` / `1.5.0` 的 nestedCalls 与 `type: "usage"` | `wired` | `isModernUsageSdk` | 其它版本字符串关闭；不是整包认证 |
+| 父会话 `cost.totalFromProvider === true` | `wired` | `observationFromAssistantMessage` 把 `cost.total` 标 reported | 子代理扁平 cost 不带该标志 |
+
 ## 证据等级
 
 | 等级 | 含义 |

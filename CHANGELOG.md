@@ -6,6 +6,17 @@
 
 > 0.2.11 及更早的条目是在 0.2.11 发布后，依据 git 历史与各版本 tag 回补的；只收录对使用者可见的变更，纯内部重构与测试补强不单列。
 
+## [Unreleased]
+
+### 修复
+
+- **改名后的 pi-subagents 等待工具只记 completion child。** `details.mode === "management"` 且带 `completions` 时，顶层池化 usage 不再进通用工具账。默认名 `bg_wait` 保持原解析。
+- **0.86 的前台完成事件和被 workflow await 的完成事件没有 usage 时不造账。** 金额仍来自 `subagent` 工具结果或 `_meta.json`，同一 source key 只留一笔。
+- **结构化委托 `prompt-template:subagent:response` 只出现在 Coverage，状态为 unavailable。**
+- **父会话识别 Pi 1.5 的 `usage.cost.totalFromProvider`。** 为 true 时 `cost.total` 标为 reported；缺省或 false 时仍是目录估价。该标志不是第二笔金额。子代理扁平 `usage.cost` 仍是 pi-subagents 的加总。
+- **嵌套工具池和独立 usage 条目对 SDK `1.0.4`、`1.2.0`、`1.5.0` 打开，其它版本字符串关闭。** 这不扩大整包 peer 认证。
+- **`@tintinweb/pi-subagents` 的 `subagents:usage` 只更新 Coverage。** 不认识的 usage 键标 unavailable，不进 All。`pi-subagents-lite` 1.18 的工具结果没有顶层 usage，父会话 All 不含这笔花费。
+
 ## [0.8.2] — 2026-10-09
 
 ### 修复
