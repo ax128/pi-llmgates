@@ -1,4 +1,5 @@
 import type { EventBus } from "@earendil-works/pi-coding-agent";
+import type { CoverageRow } from "./usage/ledger.js";
 import {
 	extractSubagentUsageFromAsyncComplete,
 	normalizeSubagentSessionIdentity,
@@ -14,6 +15,7 @@ import { USAGE_LIMITS } from "./usage/policy.js";
 
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete";
+export const SUBAGENT_DELEGATION_RESPONSE_EVENT = "prompt-template:subagent:response";
 
 export interface SubagentUsageBridgeOptions {
 	sessionId: string | null | undefined;
@@ -31,6 +33,7 @@ export interface SubagentUsageBridgeOptions {
 	/** Session-checked identity evidence, independent of whether the child reports usage. */
 	onRunParentObserved?: (childRunId: string, parentRunId: string) => void;
 	onForegroundComplete?: (normalizedRunId: string) => void;
+	onCoverage?: (row: CoverageRow) => void;
 	onGap?: (reason: "metadata-budget-exceeded") => void;
 	enabled?: boolean;
 }
@@ -167,8 +170,23 @@ export function registerSubagentUsageBridge(
 		options.onForegroundComplete?.(runId);
 	};
 
+	const onDelegationResponse = (data: unknown): void => {
+		if (!isPlainObject(data)) return;
+		options.onCoverage?.({
+			package: "pi-subagents",
+			version: "unverified",
+			runner: "pi-subagents",
+			producerId: "probe:pi-subagents-delegation",
+			status: "unavailable",
+			lastObservedAt: Date.now(),
+			persist: "memory",
+			reason: "structured delegation response.usage has no certified inlet",
+		});
+	};
+
 	const offAsync = events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, onAsyncComplete);
 	const offForeground = events.on(SUBAGENT_FOREGROUND_COMPLETE_EVENT, onForegroundComplete);
+	const offDelegation = events.on(SUBAGENT_DELEGATION_RESPONSE_EVENT, onDelegationResponse);
 
 	let active = true;
 	return () => {
@@ -178,6 +196,7 @@ export function registerSubagentUsageBridge(
 		active = false;
 		offAsync();
 		offForeground();
+		offDelegation();
 	};
 }
 
