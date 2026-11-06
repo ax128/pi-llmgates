@@ -724,6 +724,13 @@ export function extractSubagentUsageFromToolExecution(
 	return [];
 }
 
+/** True for pi-subagents wait/management results, including a renamed wait tool. */
+export function isPiSubagentsManagementResult(result: unknown): boolean {
+	if (!isPlainObject(result)) return false;
+	const details = isPlainObject(result.details) ? result.details : result;
+	return details.mode === "management" && Array.isArray(details.completions);
+}
+
 /**
  * Parse the pi-subagents 0.69 `bg_wait` management result.
  *

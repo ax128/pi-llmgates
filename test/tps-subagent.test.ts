@@ -8,6 +8,7 @@ import {
 	collectPiSubagentsMetaUsage,
 	createSubagentIngestState,
 	extractBgWaitUsage,
+	isPiSubagentsManagementResult,
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromToolExecution,
@@ -76,6 +77,22 @@ describe("tps subagent usage", () => {
 		const retried = extractBgWaitUsage(payload, "sess-1", new Set(["abcd", "bcde"]));
 		expect(retried.map((r) => r.costUsd)).toEqual([3, 5]);
 		expect(extractBgWaitUsage({ ...payload, sessionId: "foreign" }, "sess-1", new Set(["abcd", "bcde"]))).toEqual([]);
+	});
+
+	it("recognizes a renamed wait tool by management shape", () => {
+		const renamed = {
+			usage: { input: 100, output: 10, cost: 0.5 },
+			details: {
+				mode: "management",
+				results: [],
+				completions: [{ runId: "abcd", results: [{ agent: "worker", usage: { turns: 1, input: 4, output: 1, cost: 0.5 } }] }],
+			},
+		};
+		expect(isPiSubagentsManagementResult(renamed)).toBe(true);
+		expect(isPiSubagentsManagementResult({ details: { mode: "single", results: [] } })).toBe(false);
+		const records = extractBgWaitUsage(renamed, "sess-1", new Set(["abcd"]));
+		expect(records.map((record) => record.costUsd)).toEqual([0.5]);
+		expect(records[0]?.sourceKey).toBe("meta:abcd:worker:0");
 	});
 
 	it("keeps the 0.69 async parent-run and flat-index fixture on the existing source key", () => {

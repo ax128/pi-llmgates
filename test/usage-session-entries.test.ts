@@ -86,6 +86,34 @@ describe("Pi 1.0.4 entry-only accounting", () => {
 		expect(parseSessionEntry({ ...entry, message: { ...entry.message, sessionId: "another-session" } }, trusted).candidates).toEqual([]);
 	});
 
+	it("bills a renamed management wait from completions and drops the pooled usage", () => {
+		const entry = {
+			type: "message",
+			id: "e-wait",
+			parentId: null,
+			message: {
+				role: "toolResult",
+				toolCallId: "wait-1",
+				toolName: "jobs_wait",
+				sessionId: "root",
+				usage: usage(9),
+				details: {
+					mode: "management",
+					results: [],
+					completions: [{ runId: "abcd", results: [{ agent: "worker", usage: { turns: 1, input: 4, output: 1, cost: 0.5 } }] }],
+				},
+			},
+		};
+		const parsed = parseSessionEntry(entry, { ...options(), sessionIdentity: { sessionId: "root" }, historicalRuns: new Set(["abcd"]) });
+		expect(parsed.candidates).toHaveLength(1);
+		const candidate = parsed.candidates[0]!;
+		expect(candidate.kind).toBe("legacy");
+		if (candidate.kind === "legacy") {
+			expect(candidate.category).toBe("pi-subagents");
+			expect(candidate.records.map((record) => record.costUsd)).toEqual([0.5]);
+		}
+	});
+
 	it("recovers dedicated spend on every persistence-off restart without restoring the rejected pool", async () => {
 		const entry = { ...pooled(), message: { ...pooled().message, toolName: "subagent", details: { runId: "abcd", results: [{ agent: "worker", model: "worker", usage: { turns: 1, input: 30, cost: 3 } }] } } };
 		entry.message.nestedCalls.calls[0]!.name = "intercom";
