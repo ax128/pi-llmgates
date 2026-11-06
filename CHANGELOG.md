@@ -16,6 +16,7 @@
 - **父会话识别 Pi 1.5 的 `usage.cost.totalFromProvider`。** 为 true 时 `cost.total` 标为 reported；缺省或 false 时仍是目录估价。该标志不是第二笔金额。子代理扁平 `usage.cost` 仍是 pi-subagents 的加总。
 - **嵌套工具池和独立 usage 条目对 SDK `1.0.4`、`1.2.0`、`1.5.0` 打开，其它版本字符串关闭。** 这不扩大整包 peer 认证。
 - **`@tintinweb/pi-subagents` 的 `subagents:usage` 只更新 Coverage。** 不认识的 usage 键标 unavailable，不进 All。`pi-subagents-lite` 1.18 的工具结果没有顶层 usage，父会话 All 不含这笔花费。
+- **peer 上界改为 `>=0.81.0 <1.6.0`。** 下界仍是 0.81.0。1.2.0 与 1.5.0 做过加载和子代理记账门禁；中间版本和未复验命令不因此变成已认证。
 
 ## [0.8.2] — 2026-10-09
 

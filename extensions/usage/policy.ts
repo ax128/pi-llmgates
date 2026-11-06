@@ -9,21 +9,22 @@ import { loadValidatedConfigFile } from "../connection.js";
 /**
  * S0 froze this at `<0.85.0` / `action: "keep"` because 0.85.1 had only been
  * read locally, and the freeze required an independent compatibility run before
- * the upper bound could move. The 0.7.1 release gate is that run: pi 0.86.0,
- * extension load, all seven commands, catalog refresh across two gateways,
- * DeepSeek inference at thinking off/high, the status-line ledger with its
- * `~` / `?` markers, all three `/calls` views, and subagent usage attributed to
- * the turn that launched it without double counting.
+ * the upper bound could move. The 0.7.1 release gate moved it to `<0.87.0`
+ * after pi 0.86.0. This ceiling moves to `<1.6.0` because the unpacked package
+ * was installed on isolated Pi 1.2.0 and 1.5.0 and checked for extension load,
+ * the unsuffixed `/calls` command, one foreground charge, one background charge,
+ * and one renamed-wait charge.
  *
  * `certified` stays false on purpose: `/endpoint`, `/balance`, `/logout`,
  * cross-process input history and the full `restoreLastModel` matrix were NOT
- * re-run on 0.86.0, and typecheck/tests still run against the 0.81.1 baseline.
+ * re-run on 1.2.0 or 1.5.0. Those still rest on the 0.86.0 / 0.84.3 conclusions.
+ * Typecheck and tests still run against the 0.81.1 baseline.
  * Nothing reads this constant at runtime — it is the declared decision, pinned
  * by `test/usage-policy.test.ts` against `package.json`.
  */
 export const USAGE_PEER_DECISION = {
-	range: ">=0.81.0 <0.87.0",
-	localResearchVersion: "0.86.0",
+	range: ">=0.81.0 <1.6.0",
+	localResearchVersion: "1.5.0",
 	certified: false,
 	action: "widen",
 } as const;
