@@ -8,6 +8,8 @@ import {
 	USAGE_FILE_MODE,
 	USAGE_LIMITS,
 	USAGE_PEER_DECISION,
+	MODERN_USAGE_SDK_VERSIONS,
+	isModernUsageSdk,
 	isUsageCategoryEnabled,
 	isUsagePersistEnabled,
 	resolveUsagePolicy,
@@ -47,6 +49,19 @@ describe("usage S0 policy freeze", () => {
 		// so the range moves while certification deliberately does not.
 		expect(USAGE_PEER_DECISION.certified).toBe(false);
 		expect(USAGE_PEER_DECISION.action).toBe("widen");
+	});
+
+	it("enables nested and standalone usage only on source-checked SDK versions", () => {
+		expect([...MODERN_USAGE_SDK_VERSIONS]).toEqual(["1.0.4", "1.2.0", "1.5.0"]);
+		expect(isModernUsageSdk("1.0.4")).toBe(true);
+		expect(isModernUsageSdk("1.2.0")).toBe(true);
+		expect(isModernUsageSdk("1.5.0")).toBe(true);
+		expect(isModernUsageSdk("1.5.1")).toBe(false);
+		expect(isModernUsageSdk("1.4.0")).toBe(false);
+		expect(isModernUsageSdk("1.3.0")).toBe(false);
+		expect(isModernUsageSdk("1.1.0")).toBe(false);
+		expect(isModernUsageSdk("0.86.0")).toBe(false);
+		expect(isModernUsageSdk("1.0.4 ")).toBe(false);
 	});
 
 	it("freezes bounded storage and scheduling limits", () => {

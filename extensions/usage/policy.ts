@@ -28,6 +28,18 @@ export const USAGE_PEER_DECISION = {
 	action: "widen",
 } as const;
 
+/**
+ * Nested tool pools and standalone `type: "usage"` entries stay off unless the
+ * running SDK string was checked against Pi's session entry shape.
+ * 1.0.4, 1.2.0 and 1.5.0 all keep UsageEntry and message.nestedCalls.
+ * This set is not a package peer certification.
+ */
+export const MODERN_USAGE_SDK_VERSIONS = ["1.0.4", "1.2.0", "1.5.0"] as const;
+
+export function isModernUsageSdk(version: string): boolean {
+	return (MODERN_USAGE_SDK_VERSIONS as readonly string[]).includes(version);
+}
+
 export const USAGE_LIMITS = {
 	maxJournalBytesPerRoot: 8 * 1024 * 1024,
 	maxGlobalUsageBytes: 64 * 1024 * 1024,
