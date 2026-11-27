@@ -17,6 +17,7 @@
 - **嵌套工具池和独立 usage 条目对 SDK `1.0.4`、`1.2.0`、`1.5.0` 打开，其它版本字符串关闭。** 这不扩大整包 peer 认证。
 - **`@tintinweb/pi-subagents` 的 `subagents:usage` 只更新 Coverage。** 不认识的 usage 键标 unavailable，不进 All。`pi-subagents-lite` 1.18 的工具结果没有顶层 usage，父会话 All 不含这笔花费。
 - **peer 上界改为 `>=0.81.0 <1.6.0`。** 下界仍是 0.81.0。1.2.0 与 1.5.0 做过加载和子代理记账门禁；中间版本和未复验命令不因此变成已认证。
+- **pi-subagents 子进程（`PI_SUBAGENT_CHILD=1`）不恢复、也不记录上次使用的模型与思考档位。** 子进程的模型由编排器经 SDK 指定，不一定带 CLI 旗标；之前可能被改回用户上次的模型，或者反过来覆盖用户级 `last-model.json`。
 
 ## [0.8.2] — 2026-10-09
 

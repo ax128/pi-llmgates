@@ -549,6 +549,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 
 | 情况 | 原因 |
 | --- | --- |
+| pi-subagents 子进程（`PI_SUBAGENT_CHILD=1`） | 模型与档位由编排器指定，不恢复，也不记录到用户级 `last-model.json`；SDK 指定模型不一定带 CLI 旗标 |
 | `/resume` / `/tree` 分叉 / `/reload` | 这些动作的 `reason` 不是 startup/new，交给 pi |
 | 会话里已经有对话内容 | 含 `pi -c` / `--session` 打开的老会话。CLI 打开会话时 reason 仍是 `startup`，所以按有没有对话内容跳过，不认 `-c` 这个旗标 |
 | 命令行带 `--model` / `--models` | `--model` 是单次运行钉死的模型，优先于「上次用的」；`--models` 是本次运行临时换了一份白名单，一并不介入（长期存在 `settings.json` 里的 `enabledModels` 则照常恢复）。这一条连档位一起跳过 |
@@ -571,7 +572,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 - **非交互运行同样生效**：`pi -p "..."` 与 RPC 模式走的是同一个 `session_start`，脚本 / CI 里也会被切到上次用的模型与档位。要钉死模型带 `--model`，要钉死档位带 `--thinking`，或用 `LLMGATES_RESTORE_LAST_MODEL=0`。
 - 若恢复出的模型**不在** `enabledModels` 里，之后第一次按 Ctrl+P 会跳到白名单第 2 条（pi 在当前模型不在列表里时从索引 0 开始往后走，第 1 条被跳过），Ctrl+N 则跳到最后一条。
 - 同机开多个 pi 时是「最后一次整份写入胜出」：每次写都是原子覆盖整份文件，但写之前会读出另一半字段（切模型要带上已记的档，换档要带上已记的模型），两个进程交错切模型和换档时，后写的那份可能带上过期的另一半。这是偏好文件的 last-writer-wins，不加锁。
-- 记录始终进行，即使恢复被关掉——否则重新打开开关时会没有可恢复的东西。文件里只有 provider id、模型 id 与思考档位。
+- 除上述 pi-subagents 子进程外，记录始终进行，即使恢复被关掉——否则重新打开开关时会没有可恢复的东西。文件里只有 provider id、模型 id 与思考档位。
 - 关闭用 `"restoreLastModel": false` 或 `LLMGATES_RESTORE_LAST_MODEL=0`；一个开关同时管模型与档位，不另加键。关掉后启动行为与 pi 原样一致。
 
 `LLMGATES_DEBUG=1` 会打印每次启动的判定结果，模型与档位各一段（`model=restored thinking=restored`、`model=already-selected thinking=restored`、`model=cli-model thinking=skipped`、`model=restored thinking=cli-thinking` …），用来确认到底走了哪条分支。

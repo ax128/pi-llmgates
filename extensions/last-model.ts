@@ -38,6 +38,9 @@
  * per-model override or `defaultThinkingLevel`) and clamps it to the incoming
  * one, so a level set first would be overwritten by our own model switch.
  *
+ * pi-subagents child hosts opt out of BOTH recording and restoring: the
+ * orchestrator owns their model/level, and child switches are not user preferences.
+ *
  * Restoring deliberately does nothing when
  * - the start is not fresh (`resume` / `fork` / `reload`) — those reasons are
  *   in-process session swaps, and pi already has the right model,
@@ -460,6 +463,11 @@ export function registerLastModelRestore(
 	pi: ExtensionAPI,
 	agentDir: string,
 ): void {
+	// Native pi-subagents hosts set this before loading extensions. Their SDK
+	// model/level selection does not appear in argv, so the CLI guard cannot
+	// protect it. Do not let children overwrite the user's remembered pair either.
+	if (envFlag("PI_SUBAGENT_CHILD") === true) return;
+
 	/**
 	 * Recording stays on even when restoring is off: the setting governs whether
 	 * a start is corrected, and flipping it back on should not need a switch

@@ -551,6 +551,7 @@ This extension adds the two missing halves:
 
 | Case | Why |
 | --- | --- |
+| pi-subagents child host (`PI_SUBAGENT_CHILD=1`) | the orchestrator owns the model and level; neither restoring nor recording to the user's `last-model.json` runs. SDK model selection need not appear in CLI flags |
 | `/resume` / a `/tree` fork / `/reload` | those actions arrive with a reason other than startup/new, so pi keeps the model |
 | the session already carries a conversation | including an old chat opened with `pi -c` / `--session`. CLI continue still arrives as `reason: "startup"`, so the skip is the conversation, not the `-c` flag |
 | `--model` / `--models` on the command line | `--model` pins the model for this run and outranks a remembered one; `--models` swaps in a different scope just for this run, so it is skipped too (an `enabledModels` scope stored in `settings.json` is still restored over). This row skips the level as well |
@@ -573,7 +574,7 @@ Known costs and boundaries:
 - **Non-interactive runs are covered too**: `pi -p "..."` and RPC mode go through the same `session_start`, so scripts and CI get switched to the last used model and level as well. Pin the model with `--model`, the level with `--thinking`, or set `LLMGATES_RESTORE_LAST_MODEL=0`.
 - If the restored model is **not** in `enabledModels`, the next Ctrl+P jumps to the scope's *second* entry (pi starts from index 0 when the current model is not in the list, so the first is skipped); Ctrl+N jumps to the last one.
 - With several pi processes open it is last-whole-write-wins: each write replaces the file atomically, but it first reads the other field (a model switch carries the stored level, a level change carries the stored model), so two processes interleaving a model switch and a level change can lose one field. That is last-writer-wins for a preference file; no lock is added.
-- Recording keeps running even when restoring is turned off — otherwise turning it back on would have nothing to restore. The file holds a provider id, a model id and a thinking level, nothing else.
+- Except in the pi-subagents child hosts above, recording keeps running even when restoring is turned off — otherwise turning it back on would have nothing to restore. The file holds a provider id, a model id and a thinking level, nothing else.
 - Turn it off with `"restoreLastModel": false` or `LLMGATES_RESTORE_LAST_MODEL=0`; one switch covers both the model and the level, there is no second key. Startup then behaves exactly as pi does on its own.
 
 `LLMGATES_DEBUG=1` prints the decision taken on every start, one part per half (`model=restored thinking=restored`, `model=already-selected thinking=restored`, `model=cli-model thinking=skipped`, `model=restored thinking=cli-thinking`, …), which is the quickest way to see which branch you hit.
