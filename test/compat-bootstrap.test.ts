@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { registerCompatGateways } from "../extensions/compat/index.js";
 import { runCompatInstanceLogin } from "../extensions/compat/provider.js";
-import { addInstance, listInstances } from "../extensions/compat/storage.js";
+import { addInstance, encodeCompatRefreshMeta, listInstances } from "../extensions/compat/storage.js";
 import { BOOTSTRAP_PROVIDER_ID } from "../extensions/compat/types.js";
 import { COMPAT_BOOTSTRAP_LOGIN_UI, COMPAT_DEFAULT_LOGIN_INTRO } from "../extensions/login-ui.js";
 import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
@@ -412,6 +412,32 @@ describe("compat bootstrap transaction", () => {
 				readFileSync(join(agentDir, "auth.json"), "utf8"),
 			) as Record<string, OAuthCredential>;
 			expect(auth.Orphan?.access).toBe("keep");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("keeps loading an instance stored under a builtin id Pi added after it was created", () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		const harness = createPi();
+		harness.bindAgentDir(agentDir);
+		try {
+			writeJson(join(agentDir, "llmgates/2api.json"), {
+				instances: [{ id: "azure", name: "Old gateway", scheme: "newapi", baseUrl: BASE_URL }],
+			});
+			writeJson(join(agentDir, "auth.json"), {
+				azure: {
+					type: "oauth",
+					access: "gateway-key",
+					refresh: encodeCompatRefreshMeta({ baseUrl: BASE_URL, scheme: "newapi" }),
+					expires: 4_102_444_800_000,
+				},
+			});
+			expect(() =>
+				registerCompatGateways(harness.pi, agentDir, { fetchImpl: successfulFetch() }),
+			).not.toThrow();
+			expect(harness.registered.has("azure")).toBe(true);
+			expect(listInstances(agentDir).map((instance) => instance.id)).toEqual(["azure"]);
 		} finally {
 			cleanup();
 		}

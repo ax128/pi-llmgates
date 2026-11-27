@@ -3,6 +3,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { join } from "node:path";
 import {
 	BUILTIN_PROVIDER_IDS,
+	LOGIN_RESERVED_PROVIDER_IDS,
 	loadValidatedConfigFile,
 	normalizeAndValidateBaseUrl,
 	resolvePricingAutoUpdate,
@@ -94,9 +95,17 @@ describe("normalizeAndValidateBaseUrl", () => {
 describe("builtin provider reservations", () => {
 	it("is a superset of installed Pi builtin provider IDs and keeps legacy reservations", () => {
 		for (const provider of builtinProviders()) {
-			expect(BUILTIN_PROVIDER_IDS.has(provider.id), provider.id).toBe(true);
+			const reserved = BUILTIN_PROVIDER_IDS.has(provider.id) || LOGIN_RESERVED_PROVIDER_IDS.has(provider.id);
+			expect(reserved, provider.id).toBe(true);
 		}
 		expect(BUILTIN_PROVIDER_IDS.has("google-gemini-cli")).toBe(true);
+		expect(BUILTIN_PROVIDER_IDS.has("azure-openai-responses")).toBe(true);
+	});
+
+	it("keeps login-only reservations out of the load-time set", () => {
+		for (const id of LOGIN_RESERVED_PROVIDER_IDS) {
+			expect(BUILTIN_PROVIDER_IDS.has(id), id).toBe(false);
+		}
 	});
 });
 

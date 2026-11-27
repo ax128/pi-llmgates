@@ -44,6 +44,7 @@ import {
 	type CatalogModelRef,
 } from "../model-pricing-cache.js";
 import { resolveModelCostRates } from "../model-pricing.js";
+import { LOGIN_RESERVED_PROVIDER_IDS } from "../connection.js";
 import type { ModelAuditStreamHook } from "../model-audit/runtime.js";
 import {
 	HttpStatusError,
@@ -276,14 +277,15 @@ export async function runCompatInstanceLogin(
 			if (!rawBaseUrl.trim()) throw new Error("Base URL is required");
 			if (!apiKey.trim()) throw new Error("API key is required");
 			const baseUrl = normalizeCompatBaseUrl(rawBaseUrl);
+			const loginReservedIds = [...reservedProviderIds, ...LOGIN_RESERVED_PROVIDER_IDS];
 			const id =
 				isDefaultScheme && !rawId.trim()
 					? deriveDefaultInstanceId(
 							baseUrl,
 							existingInstanceIds,
-							reservedProviderIds,
+							loginReservedIds,
 						)
-					: normalizeInstanceId(rawId, reservedProviderIds);
+					: normalizeInstanceId(rawId, loginReservedIds);
 			instance = {
 				id,
 				name: normalizeInstanceName(rawName, id),

@@ -196,6 +196,32 @@ describe("extension registration and lifecycle", () => {
 		}
 	});
 
+	it("refuses a builtin id Pi added later for a new login before any network call", async () => {
+		const { agentDir, cleanup } = withTempAgentDir();
+		agentDirState.value = agentDir;
+		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
+		const runtime = createPi();
+		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		try {
+			registerExtension(runtime.pi);
+			const bootstrap = runtime.providers.get(BOOTSTRAP_PROVIDER_ID)!;
+			const answers = Array.from({ length: 5 }, () => [
+				"newapi",
+				"Azure",
+				"",
+				"https://compat.example/v1",
+				"key",
+			]).flat();
+
+			await expect(
+				bootstrap.auth.oauth!.login(scriptedAuthInteraction(answers)),
+			).rejects.toThrow(/^(?!.*is reserved)(?=.*Azure)(?=.*[一-鿿]).*$/s);
+			expect(fetchSpy).not.toHaveBeenCalled();
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("/balance says there is nothing to query before the first login", async () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		agentDirState.value = agentDir;
