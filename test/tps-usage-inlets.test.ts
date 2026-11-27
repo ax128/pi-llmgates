@@ -189,6 +189,13 @@ describe("extractToolResultUsage", () => {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.31 },
 	};
 
+	it("ignores a foreign usage shape without token counters, such as pi-lens tokens/elapsedMs", () => {
+		expect(extractToolResultUsage("lens_check", { usage: { tokens: 1234, elapsedMs: 50 } }, "call-lens")).toEqual([]);
+		expect(
+			extractToolResultUsage("lens_check", { model: "x", usage: { tokens: 1234, elapsedMs: 50, bytes: 9 } }, "call-lens-2"),
+		).toEqual([]);
+	});
+
 	it("drops pooled usage on a management-shaped result whatever the tool is called", () => {
 		const result = {
 			usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.5 } },
