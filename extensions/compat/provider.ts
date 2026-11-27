@@ -3,7 +3,6 @@ import type {
 	Api,
 	ApiStreamOptions,
 	AuthInteraction,
-	Context,
 	Credential,
 	Model,
 	OAuthCredential,
@@ -92,6 +91,9 @@ import {
 	type CompatInstance,
 	type CompatScheme,
 } from "./types.js";
+
+/** pi-ai <0.86 passes `Context`; >=0.86 passes `TranscriptContext`. Follow whichever is installed. */
+type ProviderStreamContext = Parameters<ProviderStreams["stream"]>[1];
 
 /** One stream adapter per supported api. */
 const COMPAT_API_STREAMS: Record<string, ProviderStreams> = {
@@ -1284,7 +1286,7 @@ export function createCompatProvider(
 		refreshModels,
 		stream<T extends Api>(
 			model: Model<T>,
-			context: Context,
+			context: ProviderStreamContext,
 			streamOptions?: ApiStreamOptions<T>,
 		) {
 			const streams = compatStreamFor(model as Model<Api>);
@@ -1301,7 +1303,7 @@ export function createCompatProvider(
 		},
 		streamSimple(
 			model: Model<Api>,
-			context: Context,
+			context: ProviderStreamContext,
 			streamOptions?: SimpleStreamOptions,
 		) {
 			const streams = compatStreamFor(model);
