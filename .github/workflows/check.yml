@@ -18,3 +18,21 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+
+  compat:
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.pi == 'latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pi: ["1.6.1", "latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19"
+          cache: npm
+      - run: npm ci
+      - run: npm install --no-save "@earendil-works/pi-coding-agent@${{ matrix.pi }}" "@earendil-works/pi-ai@${{ matrix.pi }}"
+      - run: npm run typecheck:extensions
+      - run: npx vitest run
