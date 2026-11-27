@@ -38,13 +38,13 @@ afterEach(() => {
 });
 
 describe("usage S0 policy freeze", () => {
-	it("widens the declared Pi peer range through 1.5.x without certifying every command", () => {
-		expect(USAGE_PEER_DECISION.range).toBe(">=0.81.0 <1.6.0");
+	it("widens the declared Pi peer range through 1.6.x without certifying every command", () => {
+		expect(USAGE_PEER_DECISION.range).toBe(">=0.81.0 <1.7.0");
 		expect(USAGE_PEER_DECISION.range).toBe(packageJson.peerDependencies["@earendil-works/pi-ai"]);
 		expect(USAGE_PEER_DECISION.range).toBe(
 			packageJson.peerDependencies["@earendil-works/pi-coding-agent"],
 		);
-		expect(USAGE_PEER_DECISION.localResearchVersion).toBe("1.5.0");
+		expect(USAGE_PEER_DECISION.localResearchVersion).toBe("1.6.1");
 		// The 0.7.1 gate ran the main paths on 0.86.0, but not the full §4 matrix,
 		// so the range moves while certification deliberately does not.
 		expect(USAGE_PEER_DECISION.certified).toBe(false);

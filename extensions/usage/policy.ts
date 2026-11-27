@@ -14,6 +14,9 @@ import { loadValidatedConfigFile } from "../connection.js";
  * was installed on isolated Pi 1.2.0 and 1.5.0 and checked for extension load,
  * the unsuffixed `/calls` command, one foreground charge, one background charge,
  * and one renamed-wait charge.
+ * It moves to `<1.7.0` after the unpacked package passed the same gate on an
+ * isolated Pi 1.6.1, plus the 1.6-specific checks in docs/pre-publish-gate.md
+ * (restoreLastModel against a dynamic catalog, history dedupe, picker widths).
  *
  * `certified` stays false on purpose: `/endpoint`, `/balance`, `/logout`,
  * cross-process input history and the full `restoreLastModel` matrix were NOT
@@ -23,8 +26,8 @@ import { loadValidatedConfigFile } from "../connection.js";
  * by `test/usage-policy.test.ts` against `package.json`.
  */
 export const USAGE_PEER_DECISION = {
-	range: ">=0.81.0 <1.6.0",
-	localResearchVersion: "1.5.0",
+	range: ">=0.81.0 <1.7.0",
+	localResearchVersion: "1.6.1",
 	certified: false,
 	action: "widen",
 } as const;
