@@ -206,6 +206,15 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # 装回 registry 版；§3 
 - [ ] lite 1.18 若装在该 Pi 上：跑一次 `Agent` 后，本插件 All 不增加一笔来自 `Agent` 结果的费用；Coverage 不必出现 lite 行
 - [ ] 未安装 tintinweb 时不必造 `subagents:usage`。装了的话，All 不因该事件增加
 
+**Pi 1.6.x 专项（peer 上界覆盖 1.6 时必做）**
+
+- [ ] Pi 1.6.1 隔离环境：解包后的本插件能加载，网关命令原名都在，`/calls` 原名仍在
+- [ ] `restoreLastModel`：上次用的是网关模型时，新建会话能恢复，且不出现 "Could not restore model"（1.6.0 起所有模式都会上报）
+- [ ] 输入历史：按 ↑ 选中较早的一条再提交，下次按 ↑ 时它出现在最上面，且只出现一次（1.6.1 起 addToHistory 会移动已有条目）
+- [ ] `/endpoint` 与 `/endpoint-setting` 列表里有中文、印地语或缅甸文名称时对齐正常，不报宽度错误
+- [ ] `/model-audit` 状态里 openai-completions 一行 `response` ≥ 1（1.6 起走 fetch 旁路）
+- [ ] 一次前台和一次后台 `subagent`，All 各增加一笔，没有翻倍
+
 **输入历史（`/input-history`）**
 
 默认开启，且失败模式是**输入框直接消失**（pi 换编辑器时先清空容器再调工厂）。改动 `input-history*.ts`、`connection.ts` 的配置读写或任何换编辑器的代码时必测：
