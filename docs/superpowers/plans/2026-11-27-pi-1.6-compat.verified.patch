@@ -1,0 +1,769 @@
+diff --git a/extensions/compat/catalog.ts b/extensions/compat/catalog.ts
+index 2279c87..6c06b8a 100644
+--- a/extensions/compat/catalog.ts
++++ b/extensions/compat/catalog.ts
+@@ -155,10 +155,21 @@ export function isMoonshotKimiCompatModel(modelId: string, vendor?: string): boo
+ 	return isMoonshotKimiK3Model(modelId) || bareId.startsWith("kimi-") || bareId.startsWith("moonshot");
+ }
+ 
++/**
++ * Kimi K3 deferred tools span two pi-ai contracts: <=0.85 reads `deferredToolsMode`,
++ * >=0.86 reads the mid-conversation pair. No release reads both, and each ignores
++ * the other's keys, so both are emitted.
++ */
++type KimiK3OpenAICompat = OpenAICompletionsCompat & {
++	deferredToolsMode?: "kimi";
++	supportsMidConvoSystemMessages?: boolean;
++	supportsMidConvoToolAdditions?: boolean;
++};
++
+ /** Align with pi-ai moonshotai provider metadata for openai-completions. */
+ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsCompat {
+ 	if (isMoonshotKimiK3Model(modelId)) {
+-		return {
++		const compat: KimiK3OpenAICompat = {
+ 			supportsStore: false,
+ 			supportsDeveloperRole: false,
+ 			supportsReasoningEffort: true,
+@@ -167,7 +178,10 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
+ 			thinkingFormat: "openai",
+ 			requiresReasoningContentOnAssistantMessages: true,
+ 			deferredToolsMode: "kimi",
++			supportsMidConvoSystemMessages: true,
++			supportsMidConvoToolAdditions: true,
+ 		};
++		return compat;
+ 	}
+ 
+ 	return {
+diff --git a/extensions/compat/provider.ts b/extensions/compat/provider.ts
+index 9c4f8c0..b38a432 100644
+--- a/extensions/compat/provider.ts
++++ b/extensions/compat/provider.ts
+@@ -3,7 +3,6 @@ import type {
+ 	Api,
+ 	ApiStreamOptions,
+ 	AuthInteraction,
+-	Context,
+ 	Credential,
+ 	Model,
+ 	OAuthCredential,
+@@ -45,6 +44,7 @@ import {
+ 	type CatalogModelRef,
+ } from "../model-pricing-cache.js";
+ import { resolveModelCostRates } from "../model-pricing.js";
++import { LOGIN_RESERVED_PROVIDER_IDS } from "../connection.js";
+ import type { ModelAuditStreamHook } from "../model-audit/runtime.js";
+ import {
+ 	HttpStatusError,
+@@ -93,6 +93,9 @@ import {
+ 	type CompatScheme,
+ } from "./types.js";
+ 
++/** pi-ai <0.86 passes `Context`; >=0.86 passes `TranscriptContext`. Follow whichever is installed. */
++type ProviderStreamContext = Parameters<ProviderStreams["stream"]>[1];
++
+ /** One stream adapter per supported api. */
+ const COMPAT_API_STREAMS: Record<string, ProviderStreams> = {
+ 	"openai-completions": openAICompletionsApi(),
+@@ -274,14 +277,15 @@ export async function runCompatInstanceLogin(
+ 			if (!rawBaseUrl.trim()) throw new Error("Base URL is required");
+ 			if (!apiKey.trim()) throw new Error("API key is required");
+ 			const baseUrl = normalizeCompatBaseUrl(rawBaseUrl);
++			const loginReservedIds = [...reservedProviderIds, ...LOGIN_RESERVED_PROVIDER_IDS];
+ 			const id =
+ 				isDefaultScheme && !rawId.trim()
+ 					? deriveDefaultInstanceId(
+ 							baseUrl,
+ 							existingInstanceIds,
+-							reservedProviderIds,
++							loginReservedIds,
+ 						)
+-					: normalizeInstanceId(rawId, reservedProviderIds);
++					: normalizeInstanceId(rawId, loginReservedIds);
+ 			instance = {
+ 				id,
+ 				name: normalizeInstanceName(rawName, id),
+@@ -1284,7 +1288,7 @@ export function createCompatProvider(
+ 		refreshModels,
+ 		stream<T extends Api>(
+ 			model: Model<T>,
+-			context: Context,
++			context: ProviderStreamContext,
+ 			streamOptions?: ApiStreamOptions<T>,
+ 		) {
+ 			const streams = compatStreamFor(model as Model<Api>);
+@@ -1301,7 +1305,7 @@ export function createCompatProvider(
+ 		},
+ 		streamSimple(
+ 			model: Model<Api>,
+-			context: Context,
++			context: ProviderStreamContext,
+ 			streamOptions?: SimpleStreamOptions,
+ 		) {
+ 			const streams = compatStreamFor(model);
+diff --git a/extensions/connection.ts b/extensions/connection.ts
+index 7a76d32..c3af7d7 100644
+--- a/extensions/connection.ts
++++ b/extensions/connection.ts
+@@ -70,6 +70,21 @@ export const BUILTIN_PROVIDER_IDS = new Set<string>([
+ 	"google-gemini-cli",
+ ]);
+ 
++/**
++ * Builtin ids Pi added after an instance could already be stored under them.
++ * Only a new login is refused one: a stored instance keeps loading, logging out
++ * and reading its credential, because a load-time rejection takes every gateway
++ * down with it. Pi lets an extension provider shadow a builtin id.
++ */
++export const LOGIN_RESERVED_PROVIDER_IDS = new Set<string>([
++	"azure",
++	"baseten",
++	"meta",
++	"qwen-token-plan-individual",
++	"qwen-token-plan-individual-cn",
++	"typesafe",
++]);
++
+ // BlockList checks IPv4-mapped IPv6 (::ffff:127.0.0.1 and ::ffff:7f00:1) against the IPv4 rule.
+ const LOOPBACK_RANGES = new BlockList();
+ LOOPBACK_RANGES.addSubnet("127.0.0.0", 8, "ipv4");
+diff --git a/extensions/terminal-width.ts b/extensions/terminal-width.ts
+index 051a2e1..4329a89 100644
+--- a/extensions/terminal-width.ts
++++ b/extensions/terminal-width.ts
+@@ -174,19 +174,83 @@ function couldBeWideEmoji(segment: string): boolean {
+ 	return (
+ 		(cp !== undefined && cp >= 0x1f000 && cp <= 0x1fbff) ||
+ 		segment.includes("\uFE0F") ||
+-		segment.length > 2
++		(segment.length > 1 && pictographicRegex.test(segment))
+ 	);
+ }
+ 
++/**
++ * pi-tui (>= 1.6) gives spacing marks a cell each, with or without a base, and
++ * counts the visible code point after a mark inside one Indic/Myanmar grapheme.
++ * Mirrors its `terminalSpacingMarkRegex` / `clusterWidth` with `u`-flag syntax
++ * (ES2022 target): Spacing_Mark minus U+1734/U+302E/U+302F, plus its extras.
++ */
++const terminalSpacingMarkRegex =
++	/^(?:(?![\u1734\u302E\u302F])\p{Mc}|[\u065F\u0F7F\u102B\u102C\u1031\u1033-\u1035\u1038\u103A-\u103E])+$/u;
++const markCharRegex = /^\p{Mark}$/u;
++const nonPrintingCharRegex =
++	/^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]$/u;
++const leadingNonPrintingRegex =
++	/^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/u;
++const pictographicRegex = /\p{Extended_Pictographic}/u;
++/** `v`-flag property of strings; built at runtime because the TS target is ES2022. */
++const rgiEmojiRegex: RegExp | undefined = (() => {
++	try {
++		return new RegExp("^\\p{RGI_Emoji}$", "v");
++	} catch {
++		return undefined;
++	}
++})();
++
++function codePointCells(cp: number): number {
++	return isWideOrFullwidth(cp) ? 2 : 1;
++}
++
++function clusterVisibleWidth(segment: string): number {
++	const base = segment.replace(leadingNonPrintingRegex, "");
++	const cp = base.codePointAt(0);
++	if (cp === undefined) return 0;
++	let width = codePointCells(cp);
++	let followsMark = false;
++	for (const char of [...base].slice(1)) {
++		if (terminalSpacingMarkRegex.test(char)) {
++			width += 1;
++			followsMark = false;
++		} else if (markCharRegex.test(char)) {
++			followsMark = true;
++		} else if (!nonPrintingCharRegex.test(char)) {
++			const next = char.codePointAt(0)!;
++			if (followsMark || (next >= 0xff00 && next <= 0xffef)) width += codePointCells(next);
++			else if (next === 0x0e33 || next === 0x0eb3) width += 1;
++			followsMark = false;
++		}
++	}
++	return Math.max(width, legacyClusterWidth(segment, cp));
++}
++
++/**
++ * pi-tui <1.6 (still inside the peer range) scans the whole segment after its
++ * first code unit, so a grapheme that starts with a mark counts a trailing AM
++ * vowel or fullwidth form twice there.
++ */
++function legacyClusterWidth(segment: string, baseCodePoint: number): number {
++	let width = codePointCells(baseCodePoint);
++	for (const char of segment.slice(1)) {
++		const next = char.codePointAt(0)!;
++		if (next >= 0xff00 && next <= 0xffef) width += codePointCells(next);
++		else if (next === 0x0e33 || next === 0x0eb3) width += 1;
++	}
++	return width;
++}
++
+ function graphemeVisibleWidth(segment: string): number {
+ 	if (segment === "\t") return 3;
++	if (terminalSpacingMarkRegex.test(segment)) return [...segment].length;
+ 	if (zeroWidthRegex.test(segment)) return 0;
+-	if (couldBeWideEmoji(segment)) return 2;
+-	if (wideScriptRegex.test(segment)) return 2;
+-	const cp = segment.codePointAt(0);
+-	if (cp === undefined) return 0;
+-	if (isWideOrFullwidth(cp)) return 2;
+-	return 1;
++	if (couldBeWideEmoji(segment)) {
++		return rgiEmojiRegex?.test(segment) ? 2 : Math.max(2, clusterVisibleWidth(segment));
++	}
++	const width = clusterVisibleWidth(segment);
++	return wideScriptRegex.test(segment) ? Math.max(width, 2) : width;
+ }
+ 
+ export function padEndToWidth(value: string, width: number): string {
+diff --git a/extensions/tps-subagent-bridge.ts b/extensions/tps-subagent-bridge.ts
+index 14f50a9..0a17cdd 100644
+--- a/extensions/tps-subagent-bridge.ts
++++ b/extensions/tps-subagent-bridge.ts
+@@ -34,7 +34,7 @@ export interface SubagentUsageBridgeOptions {
+ 	onRunParentObserved?: (childRunId: string, parentRunId: string) => void;
+ 	onForegroundComplete?: (normalizedRunId: string) => void;
+ 	onCoverage?: (row: CoverageRow) => void;
+-	onGap?: (reason: "metadata-budget-exceeded") => void;
++	onGap?: (reason: "metadata-budget-exceeded" | "bridge-handler-error") => void;
+ 	enabled?: boolean;
+ }
+ 
+@@ -184,9 +184,21 @@ export function registerSubagentUsageBridge(
+ 		});
+ 	};
+ 
+-	const offAsync = events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, onAsyncComplete);
+-	const offForeground = events.on(SUBAGENT_FOREGROUND_COMPLETE_EVENT, onForegroundComplete);
+-	const offDelegation = events.on(SUBAGENT_DELEGATION_RESPONSE_EVENT, onDelegationResponse);
++	/**
++	 * Pi >=1.6 reports a throwing `pi.events` handler as an extension error in the
++	 * chat. A usage bug may cost a Coverage gap, never an error on every completion.
++	 */
++	const guarded = (handler: (data: unknown) => void) => (data: unknown): void => {
++		try {
++			handler(data);
++		} catch {
++			options.onGap?.("bridge-handler-error");
++		}
++	};
++
++	const offAsync = events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, guarded(onAsyncComplete));
++	const offForeground = events.on(SUBAGENT_FOREGROUND_COMPLETE_EVENT, guarded(onForegroundComplete));
++	const offDelegation = events.on(SUBAGENT_DELEGATION_RESPONSE_EVENT, guarded(onDelegationResponse));
+ 
+ 	let active = true;
+ 	return () => {
+diff --git a/extensions/usage/collector.ts b/extensions/usage/collector.ts
+index 428faf7..b45f9b0 100644
+--- a/extensions/usage/collector.ts
++++ b/extensions/usage/collector.ts
+@@ -13,6 +13,7 @@ const UNCOUNTED_SPEND_GAPS = new Set([
+ 	"batch-capacity",
+ 	"live-queue-overflow",
+ 	"metadata-budget-exceeded",
++	"bridge-handler-error",
+ ]);
+ const assignableOriginTurnId = (id: string) => id === PRE_TURN_ID ? "turn-1" : id;
+ export type RecoveryState = "not-started" | "recovering" | "ready" | "partial" | "disabled";
+diff --git a/extensions/usage/policy.ts b/extensions/usage/policy.ts
+index a7c6e78..62dd5d3 100644
+--- a/extensions/usage/policy.ts
++++ b/extensions/usage/policy.ts
+@@ -32,10 +32,11 @@ export const USAGE_PEER_DECISION = {
+ /**
+  * Nested tool pools and standalone `type: "usage"` entries stay off unless the
+  * running SDK string was checked against Pi's session entry shape.
+- * 1.0.4, 1.2.0 and 1.5.0 all keep UsageEntry and message.nestedCalls.
++ * 1.0.4, 1.2.0, 1.5.0, 1.5.1, 1.5.2, 1.6.0 and 1.6.1 all keep UsageEntry and
++ * message.nestedCalls (status ok/error/unfinished, `complete` flag).
+  * This set is not a package peer certification.
+  */
+-export const MODERN_USAGE_SDK_VERSIONS = ["1.0.4", "1.2.0", "1.5.0"] as const;
++export const MODERN_USAGE_SDK_VERSIONS = ["1.0.4", "1.2.0", "1.5.0", "1.5.1", "1.5.2", "1.6.0", "1.6.1"] as const;
+ 
+ export function isModernUsageSdk(version: string): boolean {
+ 	return (MODERN_USAGE_SDK_VERSIONS as readonly string[]).includes(version);
+diff --git a/test/catalog.test.ts b/test/catalog.test.ts
+index 6b594d4..111c8d8 100644
+--- a/test/catalog.test.ts
++++ b/test/catalog.test.ts
+@@ -1,5 +1,5 @@
+ import type { Api, Context, Model } from "@earendil-works/pi-ai";
+-import { anthropicMessagesApi } from "@earendil-works/pi-ai/compat";
++import { anthropicMessagesApi, getModels } from "@earendil-works/pi-ai/compat";
+ import { afterEach, describe, expect, it } from "vitest";
+ import {
+ 	applyAnthropicAdaptiveCompatToModel,
+@@ -96,12 +96,16 @@ describe("resolveThinkingMetadata", () => {
+ 		expect(
+ 			resolveThinkingMetadata("kiro/claude-opus-4-8", "anthropic-messages").compat,
+ 		).toEqual({ forceAdaptiveThinking: true, supportsTemperature: false });
+-		expect(resolveThinkingMetadata("claude-sonnet-5", "anthropic-messages").compat).toEqual({
+-			forceAdaptiveThinking: true,
+-		});
+-		expect(resolveThinkingMetadata("claude-fable-5", "anthropic-messages").compat).toEqual({
+-			forceAdaptiveThinking: true,
+-		});
++		// pi-ai 1.6 marks Sonnet 5 as temperature-less; follow the installed catalog.
++		for (const id of ["claude-sonnet-5", "claude-fable-5"]) {
++			const native = getModels("anthropic").find((model) => model.id === id)?.compat as
++				| { supportsTemperature?: boolean }
++				| undefined;
++			expect(resolveThinkingMetadata(id, "anthropic-messages").compat, id).toEqual({
++				forceAdaptiveThinking: true,
++				...(native?.supportsTemperature === false ? { supportsTemperature: false as const } : {}),
++			});
++		}
+ 	});
+ 
+ 	it("extrapolates adaptive compat for Claude releases newer than the built-in catalog", () => {
+diff --git a/test/compat-bootstrap.test.ts b/test/compat-bootstrap.test.ts
+index 11364c6..7a91429 100644
+--- a/test/compat-bootstrap.test.ts
++++ b/test/compat-bootstrap.test.ts
+@@ -10,7 +10,7 @@ import { join } from "node:path";
+ import { describe, expect, it, vi } from "vitest";
+ import { registerCompatGateways } from "../extensions/compat/index.js";
+ import { runCompatInstanceLogin } from "../extensions/compat/provider.js";
+-import { addInstance, listInstances } from "../extensions/compat/storage.js";
++import { addInstance, encodeCompatRefreshMeta, listInstances } from "../extensions/compat/storage.js";
+ import { BOOTSTRAP_PROVIDER_ID } from "../extensions/compat/types.js";
+ import { COMPAT_BOOTSTRAP_LOGIN_UI, COMPAT_DEFAULT_LOGIN_INTRO } from "../extensions/login-ui.js";
+ import { LITELLM_PRICING_URL } from "../extensions/model-pricing-cache.js";
+@@ -417,6 +417,32 @@ describe("compat bootstrap transaction", () => {
+ 		}
+ 	});
+ 
++	it("keeps loading an instance stored under a builtin id Pi added after it was created", () => {
++		const { agentDir, cleanup } = withTempAgentDir();
++		const harness = createPi();
++		harness.bindAgentDir(agentDir);
++		try {
++			writeJson(join(agentDir, "llmgates/2api.json"), {
++				instances: [{ id: "azure", name: "Old gateway", scheme: "newapi", baseUrl: BASE_URL }],
++			});
++			writeJson(join(agentDir, "auth.json"), {
++				azure: {
++					type: "oauth",
++					access: "gateway-key",
++					refresh: encodeCompatRefreshMeta({ baseUrl: BASE_URL, scheme: "newapi" }),
++					expires: 4_102_444_800_000,
++				},
++			});
++			expect(() =>
++				registerCompatGateways(harness.pi, agentDir, { fetchImpl: successfulFetch() }),
++			).not.toThrow();
++			expect(harness.registered.has("azure")).toBe(true);
++			expect(listInstances(agentDir).map((instance) => instance.id)).toEqual(["azure"]);
++		} finally {
++			cleanup();
++		}
++	});
++
+ 	it("fails compat initialization for reserved or duplicate stored IDs before registering anything", () => {
+ 		for (const instances of [
+ 			[{ id: "openai", name: "Bad", scheme: "newapi", baseUrl: BASE_URL }],
+diff --git a/test/compat-catalog.test.ts b/test/compat-catalog.test.ts
+index d1e7eac..7fc905c 100644
+--- a/test/compat-catalog.test.ts
++++ b/test/compat-catalog.test.ts
+@@ -510,9 +510,11 @@ describe("mapCompatModelsPayload", () => {
+ 
+ 		expect(gatewayCompat).toMatchObject({
+ 			supportsStore: nativeCompat?.supportsStore,
+-			supportsDeveloperRole: nativeCompat?.supportsDeveloperRole,
+ 			thinkingFormat: nativeCompat?.thinkingFormat,
+ 		});
++		// pi-ai >=1.6 drops this from native GLM metadata, but a gateway URL never
++		// triggers its Z.ai URL detection, so the gateway keeps the system role explicit.
++		expect(gatewayCompat.supportsDeveloperRole).toBe(false);
+ 		expect(gatewayCompat.maxTokensField).toBe("max_tokens");
+ 		// Effort support stays endpoint-detected; native tool_stream is not opted in.
+ 		expect(gatewayCompat).not.toHaveProperty("supportsReasoningEffort");
+@@ -656,6 +658,8 @@ describe("mapCompatModelsPayload", () => {
+ 			supportsDeveloperRole: false,
+ 			supportsReasoningEffort: true,
+ 			deferredToolsMode: "kimi",
++			supportsMidConvoSystemMessages: true,
++			supportsMidConvoToolAdditions: true,
+ 		});
+ 		expect(moonshotKimiOpenAICompat("k3")).toMatchObject({
+ 			supportsDeveloperRole: false,
+@@ -674,6 +678,15 @@ describe("mapCompatModelsPayload", () => {
+ 		});
+ 	});
+ 
++	it("mirrors every Kimi K3 compat key the installed pi-ai declares natively", () => {
++		const native = getBuiltinModel("moonshotai", "kimi-k3").compat as Record<string, unknown> | undefined;
++		expect(native).toBeDefined();
++		const gateway = moonshotKimiOpenAICompat("kimi-k3") as Record<string, unknown>;
++		for (const [key, value] of Object.entries(native!)) {
++			expect(gateway[key], key).toEqual(value);
++		}
++	});
++
+ 	it("patches cached gateway models that predate compat metadata", () => {
+ 		const cached: Model<"openai-completions"> = {
+ 			id: "k3",
+diff --git a/test/compat-glm-transport.test.ts b/test/compat-glm-transport.test.ts
+index b37d205..f75280c 100644
+--- a/test/compat-glm-transport.test.ts
++++ b/test/compat-glm-transport.test.ts
+@@ -1,8 +1,8 @@
+-import type { Api, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+-import { Type } from "@earendil-works/pi-ai";
++import type { Api, Context, Model, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
+ import { describe, expect, it, vi } from "vitest";
+ import { mapCompatModelsPayload } from "../extensions/compat/catalog.js";
+ import { createCompatProvider } from "../extensions/compat/provider.js";
++import { providerContext } from "./helpers/provider-context.js";
+ import type { CompatInstance } from "../extensions/compat/types.js";
+ import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
+ 
+@@ -19,7 +19,12 @@ const CONTEXT: Context = {
+ 	tools: [{
+ 		name: "test_tool",
+ 		description: "Test-only tool",
+-		parameters: Type.Object({ path: Type.String() }),
++		// pi-ai 1.6 no longer re-exports TypeBox; the transport only serializes the schema.
++		parameters: {
++			type: "object",
++			properties: { path: { type: "string" } },
++			required: ["path"],
++		} as unknown as Tool["parameters"],
+ 	}],
+ };
+ 
+@@ -49,7 +54,7 @@ async function capturePayload(
+ 			initialModels: [model],
+ 		});
+ 		let payload: Record<string, unknown> | undefined;
+-		const result = await provider.streamSimple(provider.getModels()[0]!, CONTEXT, {
++		const result = await provider.streamSimple(provider.getModels()[0]!, providerContext(CONTEXT), {
+ 			apiKey: "test-key",
+ 			reasoning,
+ 			maxTokens: 4096,
+@@ -159,7 +164,12 @@ describe("gateway-routed GLM transport", () => {
+ 	it("does not change the default request shape for unrelated models", async () => {
+ 		const payload = await capturePayload(gatewayModel({ id: "gpt-4o" }), "high");
+ 
+-		expect(payload.messages).toMatchObject([{ role: "developer" }, { role: "user" }]);
++		// The role is pi-ai's call (1.6 gives non-OpenAI hosts `system`); what this
++		// plugin must not do is stamp GLM compat, which max_completion_tokens rules out.
++		expect(payload.messages).toMatchObject([
++			{ role: expect.stringMatching(/^(developer|system)$/) },
++			{ role: "user" },
++		]);
+ 		expect(payload.max_completion_tokens).toBe(4096);
+ 		expect(payload).not.toHaveProperty("thinking");
+ 	});
+diff --git a/test/compat-index.test.ts b/test/compat-index.test.ts
+index d66709e..fb27b8e 100644
+--- a/test/compat-index.test.ts
++++ b/test/compat-index.test.ts
+@@ -196,6 +196,32 @@ describe("extension registration and lifecycle", () => {
+ 		}
+ 	});
+ 
++	it("refuses a builtin id Pi added later for a new login before any network call", async () => {
++		const { agentDir, cleanup } = withTempAgentDir();
++		agentDirState.value = agentDir;
++		process.env.LLMGATES_PRICING_AUTO_UPDATE = "0";
++		const runtime = createPi();
++		const fetchSpy = vi.spyOn(globalThis, "fetch");
++		try {
++			registerExtension(runtime.pi);
++			const bootstrap = runtime.providers.get(BOOTSTRAP_PROVIDER_ID)!;
++			const answers = Array.from({ length: 5 }, () => [
++				"newapi",
++				"Azure",
++				"",
++				"https://compat.example/v1",
++				"key",
++			]).flat();
++
++			await expect(
++				bootstrap.auth.oauth!.login(scriptedAuthInteraction(answers)),
++			).rejects.toThrow(/^(?!.*is reserved)(?=.*Azure)(?=.*[一-鿿]).*$/s);
++			expect(fetchSpy).not.toHaveBeenCalled();
++		} finally {
++			cleanup();
++		}
++	});
++
+ 	it("/balance says there is nothing to query before the first login", async () => {
+ 		const { agentDir, cleanup } = withTempAgentDir();
+ 		agentDirState.value = agentDir;
+diff --git a/test/connection.test.ts b/test/connection.test.ts
+index 48e3fcd..591fcdb 100644
+--- a/test/connection.test.ts
++++ b/test/connection.test.ts
+@@ -3,6 +3,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+ import { join } from "node:path";
+ import {
+ 	BUILTIN_PROVIDER_IDS,
++	LOGIN_RESERVED_PROVIDER_IDS,
+ 	loadValidatedConfigFile,
+ 	normalizeAndValidateBaseUrl,
+ 	resolvePricingAutoUpdate,
+@@ -94,9 +95,17 @@ describe("normalizeAndValidateBaseUrl", () => {
+ describe("builtin provider reservations", () => {
+ 	it("is a superset of installed Pi builtin provider IDs and keeps legacy reservations", () => {
+ 		for (const provider of builtinProviders()) {
+-			expect(BUILTIN_PROVIDER_IDS.has(provider.id), provider.id).toBe(true);
++			const reserved = BUILTIN_PROVIDER_IDS.has(provider.id) || LOGIN_RESERVED_PROVIDER_IDS.has(provider.id);
++			expect(reserved, provider.id).toBe(true);
+ 		}
+ 		expect(BUILTIN_PROVIDER_IDS.has("google-gemini-cli")).toBe(true);
++		expect(BUILTIN_PROVIDER_IDS.has("azure-openai-responses")).toBe(true);
++	});
++
++	it("keeps login-only reservations out of the load-time set", () => {
++		for (const id of LOGIN_RESERVED_PROVIDER_IDS) {
++			expect(BUILTIN_PROVIDER_IDS.has(id), id).toBe(false);
++		}
+ 	});
+ });
+ 
+diff --git a/test/helpers/provider-context.ts b/test/helpers/provider-context.ts
+new file mode 100644
+index 0000000..4117785
+--- /dev/null
++++ b/test/helpers/provider-context.ts
+@@ -0,0 +1,15 @@
++import * as piAi from "@earendil-works/pi-ai";
++import type { Context } from "@earendil-works/pi-ai";
++
++const normalizeContext = (piAi as unknown as { normalizeContext?: (context: Context) => unknown })
++	.normalizeContext;
++
++/**
++ * pi-ai >=0.86 providers take a TranscriptContext, which the Pi runtime builds
++ * with `normalizeContext` before calling them; older providers take `Context`.
++ * Tests that call a provider directly must do the same, or the system prompt
++ * and tools never reach the request.
++ */
++export function providerContext(context: Context): never {
++	return (normalizeContext ? normalizeContext(context) : context) as never;
++}
+diff --git a/test/model-audit-provider.test.ts b/test/model-audit-provider.test.ts
+index 33978ab..09b1b4d 100644
+--- a/test/model-audit-provider.test.ts
++++ b/test/model-audit-provider.test.ts
+@@ -144,9 +144,11 @@ describe("compat provider model audit wiring", () => {
+ 				});
+ 				expect(read.file.roots["root-1"]).toMatchObject({ all: 1 });
+ 			});
+-			// pi-ai 0.81.x never calls options.fetch: the adapter's responseModel
+-			// field is what carried the observation here.
+-			expect(modelAuditProcessStats().byApi["openai-completions"]).toMatchObject({ field: 1, none: 0 });
++			// pi-ai 0.81.x never calls options.fetch, so the adapter's responseModel
++			// field carries the observation; 1.6+ reads it from the response bytes.
++			const counts = modelAuditProcessStats().byApi["openai-completions"];
++			expect(counts.response + counts.field).toBe(1);
++			expect(counts.none).toBe(0);
+ 			await runtime.sessionShutdown();
+ 		} finally {
+ 			await server.close();
+@@ -171,7 +173,8 @@ describe("compat provider model audit wiring", () => {
+ 			const historyPath = runtime.status().marker!.historyPath;
+ 			await provider.streamSimple(model("gpt-5", `${server.baseUrl}/v1`), context, { apiKey: "k" }).result();
+ 			await runtime.sessionShutdown();
+-			expect(modelAuditProcessStats().byApi["openai-completions"]).toMatchObject({ field: 1 });
++			const counts = modelAuditProcessStats().byApi["openai-completions"];
++			expect(counts.response + counts.field).toBe(1);
+ 			expect(readModelAuditFile(historyPath).status).toBe("missing");
+ 		} finally {
+ 			await server.close();
+diff --git a/test/terminal-width.test.ts b/test/terminal-width.test.ts
+index a3c0396..ecdd933 100644
+--- a/test/terminal-width.test.ts
++++ b/test/terminal-width.test.ts
+@@ -82,6 +82,23 @@ describe("terminal-width", () => {
+ 		expect(visibleWidth("☺️")).toBe(2);
+ 	});
+ 
++	it("gives spacing marks a cell like pi-tui 1.6, so Indic and Myanmar text is not under-counted", () => {
++		expect(visibleWidth("\u093E")).toBe(1);
++		expect(visibleWidth("कि")).toBe(2);
++		expect(visibleWidth("किताब")).toBe(5);
++		expect(visibleWidth("ক্ষি")).toBe(3);
++		expect(visibleWidth("தமிழ்")).toBe(4);
++		expect(visibleWidth("မြန်မာ")).toBe(6);
++		expect(visibleWidth("กำ")).toBe(2);
++	});
++
++	it("keeps RGI emoji sequences at two columns and widens a non-RGI cluster with a spacing mark", () => {
++		expect(visibleWidth("👨‍👩‍👧")).toBe(2);
++		expect(visibleWidth("🏳️‍🌈")).toBe(2);
++		expect(visibleWidth("❤️‍🔥")).toBe(2);
++		expect(visibleWidth("👍\u093E")).toBe(3);
++	});
++
+ 	it("pads to a visible-column width so CJK and ASCII share a column start", () => {
+ 		expect(padEndToWidth("中", 4)).toBe("中  ");
+ 		expect(visibleWidth(padEndToWidth("中", 4))).toBe(4);
+@@ -209,4 +226,32 @@ describe("terminal-width drift against the installed pi-tui", () => {
+ 			}ms)`,
+ 		).toEqual([]);
+ 	});
++
++	// Single code points miss the 1.6 rule that counts a visible code point after
++	// a mark inside one grapheme, so clusters get their own guard.
++	it("never reports a smaller width than pi-tui for marks and mark clusters", async () => {
++		const upstream = await loadPiTui();
++		const marks: string[] = [];
++		for (let cp = 0; cp <= 0x10ffff; cp++) {
++			if (cp >= 0xd800 && cp <= 0xdfff) continue;
++			const ch = String.fromCodePoint(cp);
++			if (/^\p{Mark}$/u.test(ch)) marks.push(ch);
++		}
++		const bases = ["a", "क", "ক", "த", "ಕ", "ก", "မ", "ລ", "中", "한", "ཀ", "👍"];
++		const tails = ["", "क", "\u093E", "\u103A", "\uFF71", "\u0E33"];
++		const samples = [
++			...marks,
++			...bases.flatMap((base) => marks.flatMap((mark) => tails.map((tail) => base + mark + tail))),
++		];
++		const undercounted: string[] = [];
++		for (const sample of samples) {
++			const local = visibleWidth(sample);
++			const theirs = upstream.visibleWidth(sample);
++			if (local < theirs && undercounted.length < 20) {
++				undercounted.push(`${JSON.stringify(sample)}: local ${local} < pi-tui ${theirs}`);
++			}
++		}
++		expect(samples.length).toBeGreaterThan(100_000);
++		expect(undercounted).toEqual([]);
++	});
+ });
+diff --git a/test/tps-subagent-bridge.test.ts b/test/tps-subagent-bridge.test.ts
+index 4a732df..7c6ca8e 100644
+--- a/test/tps-subagent-bridge.test.ts
++++ b/test/tps-subagent-bridge.test.ts
+@@ -102,6 +102,67 @@ describe("tps-subagent-bridge", () => {
+ 		unregister();
+ 	});
+ 
++	it("turns a throwing usage callback into a bridge gap instead of an EventBus error", () => {
++		const bus = createMemoryEventBus();
++		const gaps: string[] = [];
++		const unregister = registerSubagentUsageBridge(bus, {
++			sessionId: "sess-1",
++			onRecords: () => {
++				throw new Error("ledger bug");
++			},
++			onForegroundComplete: () => {
++				throw new Error("ownership bug");
++			},
++			onGap: (gap) => gaps.push(gap),
++		});
++		try {
++			const usage = { turns: 1, input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.001 };
++			expect(() =>
++				bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
++					sessionId: "sess-1",
++					runId: UUID_RUN,
++					results: [{ agent: "reviewer", model: "m", modelAttempts: [{ model: "m", usage }] }],
++				}),
++			).not.toThrow();
++			expect(() =>
++				bus.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, { sessionId: "sess-1", runId: UUID_RUN }),
++			).not.toThrow();
++			expect(gaps).toEqual(["bridge-handler-error", "bridge-handler-error"]);
++		} finally {
++			unregister();
++		}
++	});
++
++	it("bills only top-level results when pi-subagents 0.90 attaches nested children", () => {
++		const bus = createMemoryEventBus();
++		const records: SubagentUsageRecord[] = [];
++		const unregister = registerSubagentUsageBridge(bus, {
++			sessionId: "sess-1",
++			onRecords: (batch) => records.push(...batch),
++		});
++		try {
++			const usage = { turns: 1, input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.001 };
++			const nestedUsage = { turns: 3, input: 9_000, output: 900, cacheRead: 0, cacheWrite: 0, cost: 9 };
++			bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
++				sessionId: "sess-1",
++				runId: UUID_RUN,
++				results: [
++					{
++						agent: "reviewer",
++						model: "m",
++						modelAttempts: [{ model: "m", usage }],
++						children: [{ runId: "nested-1", agent: "helper", usage: nestedUsage, totalTokens: 9_900 }],
++					},
++				],
++				nestedChildren: [{ id: "nested-1", agent: "helper", state: "completed", usage: nestedUsage, totalTokens: 9_900 }],
++			});
++			expect(records).toHaveLength(1);
++			expect(records[0]).toMatchObject({ input: 10, output: 5 });
++		} finally {
++			unregister();
++		}
++	});
++
+ 	it("budgets parallel children separately without changing their indices or counting the aggregate", () => {
+ 		const bus = createMemoryEventBus();
+ 		const records: SubagentUsageRecord[] = [], gaps: string[] = [];
+diff --git a/test/tps-usage-inlets.test.ts b/test/tps-usage-inlets.test.ts
+index fb2493f..6183b26 100644
+--- a/test/tps-usage-inlets.test.ts
++++ b/test/tps-usage-inlets.test.ts
+@@ -189,6 +189,13 @@ describe("extractToolResultUsage", () => {
+ 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.31 },
+ 	};
+ 
++	it("ignores a foreign usage shape without token counters, such as pi-lens tokens/elapsedMs", () => {
++		expect(extractToolResultUsage("lens_check", { usage: { tokens: 1234, elapsedMs: 50 } }, "call-lens")).toEqual([]);
++		expect(
++			extractToolResultUsage("lens_check", { model: "x", usage: { tokens: 1234, elapsedMs: 50, bytes: 9 } }, "call-lens-2"),
++		).toEqual([]);
++	});
++
+ 	it("drops pooled usage on a management-shaped result whatever the tool is called", () => {
+ 		const result = {
+ 			usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.5 } },
+diff --git a/test/usage-collector.test.ts b/test/usage-collector.test.ts
+index bf45f10..f03b261 100644
+--- a/test/usage-collector.test.ts
++++ b/test/usage-collector.test.ts
+@@ -139,6 +139,8 @@ describe("UsageCollector origin-turn binding", () => {
+ 			session.noteGap("batch-rejected");
+ 			session.noteGap("live-queue-overflow");
+ 			session.noteGap("batch-capacity");
++			session.noteGap("bridge-handler-error");
++			expect(session.gapReasons()).toContain("bridge-handler-error:1");
+ 			expect(session.sessionTotals()).toMatchObject({ costUsd: 1.25, costQuality: "unknown" });
+ 			expect(session.turnTotals().costQuality).toBe("unknown");
+ 			expect(formatTpsScopeWithQuality("all", 0, session.sessionTotals(), { historyPartial: true })).toContain("~$1.25 + ?");
+diff --git a/test/usage-policy.test.ts b/test/usage-policy.test.ts
+index 1c02cb5..74bac2c 100644
+--- a/test/usage-policy.test.ts
++++ b/test/usage-policy.test.ts
+@@ -52,11 +52,10 @@ describe("usage S0 policy freeze", () => {
+ 	});
+ 
+ 	it("enables nested and standalone usage only on source-checked SDK versions", () => {
+-		expect([...MODERN_USAGE_SDK_VERSIONS]).toEqual(["1.0.4", "1.2.0", "1.5.0"]);
+-		expect(isModernUsageSdk("1.0.4")).toBe(true);
+-		expect(isModernUsageSdk("1.2.0")).toBe(true);
+-		expect(isModernUsageSdk("1.5.0")).toBe(true);
+-		expect(isModernUsageSdk("1.5.1")).toBe(false);
++		expect([...MODERN_USAGE_SDK_VERSIONS]).toEqual(["1.0.4", "1.2.0", "1.5.0", "1.5.1", "1.5.2", "1.6.0", "1.6.1"]);
++		for (const version of MODERN_USAGE_SDK_VERSIONS) expect(isModernUsageSdk(version), version).toBe(true);
++		expect(isModernUsageSdk("1.6.2")).toBe(false);
++		expect(isModernUsageSdk("1.7.0")).toBe(false);
+ 		expect(isModernUsageSdk("1.4.0")).toBe(false);
+ 		expect(isModernUsageSdk("1.3.0")).toBe(false);
+ 		expect(isModernUsageSdk("1.1.0")).toBe(false);

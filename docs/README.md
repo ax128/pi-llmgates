@@ -27,6 +27,8 @@
 | --- | --- | --- |
 | [2026-10-06-usage-accounting-reconciliation-design.md](./superpowers/specs/2026-10-06-usage-accounting-reconciliation-design.md) | 用量统计优化：All / Turn 费用与对账视图、当前会话历史恢复、实时 / 回放 / 旧账本统一去重、新版 Pi 独立 usage 入口与有界核对 | 冻结设计原文保留；P0/P1/P2 实现与实际验证见执行记录，不默认开启持久化或扩大 peer 范围 |
 | [2026-10-06-usage-accounting-execution.md](./superpowers/plans/2026-10-06-usage-accounting-execution.md) | 隔离基线、分阶段依赖、方案偏差、R1/R2/R3 与剩余风险 | 259 项 focused 测试、typecheck/build、四版 SDK 共八组 persist 开关生命周期/独立进程恢复通过；不等于安装/发布或整包兼容认证 |
+| [2026-11-06-subagent-usage-host-compat.md](./superpowers/plans/2026-11-06-subagent-usage-host-compat.md) | 一条实施计划：pi-subagents 0.86 防双计、Pi 1.0.4/1.2.0/1.5.0 用量入口、tintinweb 探测、lite 保持缺口、门禁通过后才把 peer 上界改为 `<1.6.0` | 已实施（`beb1148`…`bcbb680`） |
+| [2026-11-27-pi-1.6-and-stats-plugin-compat.md](./superpowers/plans/2026-11-27-pi-1.6-and-stats-plugin-compat.md) | Pi 1.6.1 适配（宽度、TranscriptContext、Kimi K3、内置 id 保留）、统计插件边界回归测试、CI 兼容通道、门禁后 peer `<1.7.0` | 未实施；补丁已在 0.81.1 / 1.6.1 隔离验证 |
 
 ### 本次实施记录
 
