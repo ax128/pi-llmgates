@@ -656,6 +656,8 @@ describe("mapCompatModelsPayload", () => {
 			supportsDeveloperRole: false,
 			supportsReasoningEffort: true,
 			deferredToolsMode: "kimi",
+			supportsMidConvoSystemMessages: true,
+			supportsMidConvoToolAdditions: true,
 		});
 		expect(moonshotKimiOpenAICompat("k3")).toMatchObject({
 			supportsDeveloperRole: false,
@@ -672,6 +674,15 @@ describe("mapCompatModelsPayload", () => {
 			supportsReasoningEffort: false,
 			thinkingFormat: "deepseek",
 		});
+	});
+
+	it("mirrors every Kimi K3 compat key the installed pi-ai declares natively", () => {
+		const native = getBuiltinModel("moonshotai", "kimi-k3").compat as Record<string, unknown> | undefined;
+		expect(native).toBeDefined();
+		const gateway = moonshotKimiOpenAICompat("kimi-k3") as Record<string, unknown>;
+		for (const [key, value] of Object.entries(native!)) {
+			expect(gateway[key], key).toEqual(value);
+		}
 	});
 
 	it("patches cached gateway models that predate compat metadata", () => {

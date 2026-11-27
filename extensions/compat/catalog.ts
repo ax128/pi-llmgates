@@ -155,10 +155,21 @@ export function isMoonshotKimiCompatModel(modelId: string, vendor?: string): boo
 	return isMoonshotKimiK3Model(modelId) || bareId.startsWith("kimi-") || bareId.startsWith("moonshot");
 }
 
+/**
+ * Kimi K3 deferred tools span two pi-ai contracts: <=0.85 reads `deferredToolsMode`,
+ * >=0.86 reads the mid-conversation pair. No release reads both, and each ignores
+ * the other's keys, so both are emitted.
+ */
+type KimiK3OpenAICompat = OpenAICompletionsCompat & {
+	deferredToolsMode?: "kimi";
+	supportsMidConvoSystemMessages?: boolean;
+	supportsMidConvoToolAdditions?: boolean;
+};
+
 /** Align with pi-ai moonshotai provider metadata for openai-completions. */
 export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsCompat {
 	if (isMoonshotKimiK3Model(modelId)) {
-		return {
+		const compat: KimiK3OpenAICompat = {
 			supportsStore: false,
 			supportsDeveloperRole: false,
 			supportsReasoningEffort: true,
@@ -167,7 +178,10 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
 			thinkingFormat: "openai",
 			requiresReasoningContentOnAssistantMessages: true,
 			deferredToolsMode: "kimi",
+			supportsMidConvoSystemMessages: true,
+			supportsMidConvoToolAdditions: true,
 		};
+		return compat;
 	}
 
 	return {
