@@ -144,9 +144,11 @@ describe("compat provider model audit wiring", () => {
 				});
 				expect(read.file.roots["root-1"]).toMatchObject({ all: 1 });
 			});
-			// pi-ai 0.81.x never calls options.fetch: the adapter's responseModel
-			// field is what carried the observation here.
-			expect(modelAuditProcessStats().byApi["openai-completions"]).toMatchObject({ field: 1, none: 0 });
+			// pi-ai 0.81.x never calls options.fetch, so the adapter's responseModel
+			// field carries the observation; 1.6+ reads it from the response bytes.
+			const counts = modelAuditProcessStats().byApi["openai-completions"];
+			expect(counts.response + counts.field).toBe(1);
+			expect(counts.none).toBe(0);
 			await runtime.sessionShutdown();
 		} finally {
 			await server.close();
@@ -171,7 +173,8 @@ describe("compat provider model audit wiring", () => {
 			const historyPath = runtime.status().marker!.historyPath;
 			await provider.streamSimple(model("gpt-5", `${server.baseUrl}/v1`), context, { apiKey: "k" }).result();
 			await runtime.sessionShutdown();
-			expect(modelAuditProcessStats().byApi["openai-completions"]).toMatchObject({ field: 1 });
+			const counts = modelAuditProcessStats().byApi["openai-completions"];
+			expect(counts.response + counts.field).toBe(1);
 			expect(readModelAuditFile(historyPath).status).toBe("missing");
 		} finally {
 			await server.close();

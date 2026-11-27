@@ -510,9 +510,11 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(gatewayCompat).toMatchObject({
 			supportsStore: nativeCompat?.supportsStore,
-			supportsDeveloperRole: nativeCompat?.supportsDeveloperRole,
 			thinkingFormat: nativeCompat?.thinkingFormat,
 		});
+		// pi-ai >=1.6 drops this from native GLM metadata, but a gateway URL never
+		// triggers its Z.ai URL detection, so the gateway keeps the system role explicit.
+		expect(gatewayCompat.supportsDeveloperRole).toBe(false);
 		expect(gatewayCompat.maxTokensField).toBe("max_tokens");
 		// Effort support stays endpoint-detected; native tool_stream is not opted in.
 		expect(gatewayCompat).not.toHaveProperty("supportsReasoningEffort");
