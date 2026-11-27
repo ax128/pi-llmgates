@@ -174,19 +174,83 @@ function couldBeWideEmoji(segment: string): boolean {
 	return (
 		(cp !== undefined && cp >= 0x1f000 && cp <= 0x1fbff) ||
 		segment.includes("\uFE0F") ||
-		segment.length > 2
+		(segment.length > 1 && pictographicRegex.test(segment))
 	);
+}
+
+/**
+ * pi-tui (>= 1.6) gives spacing marks a cell each, with or without a base, and
+ * counts the visible code point after a mark inside one Indic/Myanmar grapheme.
+ * Mirrors its `terminalSpacingMarkRegex` / `clusterWidth` with `u`-flag syntax
+ * (ES2022 target): Spacing_Mark minus U+1734/U+302E/U+302F, plus its extras.
+ */
+const terminalSpacingMarkRegex =
+	/^(?:(?![\u1734\u302E\u302F])\p{Mc}|[\u065F\u0F7F\u102B\u102C\u1031\u1033-\u1035\u1038\u103A-\u103E])+$/u;
+const markCharRegex = /^\p{Mark}$/u;
+const nonPrintingCharRegex =
+	/^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]$/u;
+const leadingNonPrintingRegex =
+	/^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/u;
+const pictographicRegex = /\p{Extended_Pictographic}/u;
+/** `v`-flag property of strings; built at runtime because the TS target is ES2022. */
+const rgiEmojiRegex: RegExp | undefined = (() => {
+	try {
+		return new RegExp("^\\p{RGI_Emoji}$", "v");
+	} catch {
+		return undefined;
+	}
+})();
+
+function codePointCells(cp: number): number {
+	return isWideOrFullwidth(cp) ? 2 : 1;
+}
+
+function clusterVisibleWidth(segment: string): number {
+	const base = segment.replace(leadingNonPrintingRegex, "");
+	const cp = base.codePointAt(0);
+	if (cp === undefined) return 0;
+	let width = codePointCells(cp);
+	let followsMark = false;
+	for (const char of [...base].slice(1)) {
+		if (terminalSpacingMarkRegex.test(char)) {
+			width += 1;
+			followsMark = false;
+		} else if (markCharRegex.test(char)) {
+			followsMark = true;
+		} else if (!nonPrintingCharRegex.test(char)) {
+			const next = char.codePointAt(0)!;
+			if (followsMark || (next >= 0xff00 && next <= 0xffef)) width += codePointCells(next);
+			else if (next === 0x0e33 || next === 0x0eb3) width += 1;
+			followsMark = false;
+		}
+	}
+	return Math.max(width, legacyClusterWidth(segment, cp));
+}
+
+/**
+ * pi-tui <1.6 (still inside the peer range) scans the whole segment after its
+ * first code unit, so a grapheme that starts with a mark counts a trailing AM
+ * vowel or fullwidth form twice there.
+ */
+function legacyClusterWidth(segment: string, baseCodePoint: number): number {
+	let width = codePointCells(baseCodePoint);
+	for (const char of segment.slice(1)) {
+		const next = char.codePointAt(0)!;
+		if (next >= 0xff00 && next <= 0xffef) width += codePointCells(next);
+		else if (next === 0x0e33 || next === 0x0eb3) width += 1;
+	}
+	return width;
 }
 
 function graphemeVisibleWidth(segment: string): number {
 	if (segment === "\t") return 3;
+	if (terminalSpacingMarkRegex.test(segment)) return [...segment].length;
 	if (zeroWidthRegex.test(segment)) return 0;
-	if (couldBeWideEmoji(segment)) return 2;
-	if (wideScriptRegex.test(segment)) return 2;
-	const cp = segment.codePointAt(0);
-	if (cp === undefined) return 0;
-	if (isWideOrFullwidth(cp)) return 2;
-	return 1;
+	if (couldBeWideEmoji(segment)) {
+		return rgiEmojiRegex?.test(segment) ? 2 : Math.max(2, clusterVisibleWidth(segment));
+	}
+	const width = clusterVisibleWidth(segment);
+	return wideScriptRegex.test(segment) ? Math.max(width, 2) : width;
 }
 
 export function padEndToWidth(value: string, width: number): string {
