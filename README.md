@@ -52,7 +52,7 @@ pi
 
 ## 安装
 
-**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 1.6.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1、0.83.0、0.84.0 与 0.84.3 也已验证）。0.7.1 发版门禁在 **pi 0.86.0** 上实测了扩展加载、七个命令注册、两个网关的 catalog 刷新、DeepSeek 推理（思考档 off/high）、状态行账本与质量标记、`/calls` 三视图以及子代理用量归属；`/endpoint`、`/balance`、`/logout`、输入历史跨进程与 `restoreLastModel` 完整矩阵在 0.86.0 上**未**逐条复验，仍以 0.84.3 的结论为准。1.2.0 与 1.5.0 的安装包门禁覆盖了扩展加载、`/calls` 原名、前台一笔、后台一笔和改名等待一笔；未在这两版复验的命令仍沿用原先的结论。这不是整包认证。**0.8.0** 同在 pi 0.86.0 上用解包 tarball 实测了 `/model-audit`（三 API mismatch 与 `response≥1`、开关与等价表、clear）；子代理 / lite 归属与 peer 0.81.0 floor 未在该次 0.8.0 安装包门禁中认证。
+**环境要求：** [pi](https://pi.dev)、Node **≥ 22.19**、 `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 1.7.0**（基线 0.81.1，即测试与类型检查跑在这一版上；0.82.1、0.83.0、0.84.0 与 0.84.3 也已验证）。0.7.1 发版门禁在 **pi 0.86.0** 上实测了扩展加载、七个命令注册、两个网关的 catalog 刷新、DeepSeek 推理（思考档 off/high）、状态行账本与质量标记、`/calls` 三视图以及子代理用量归属；`/endpoint`、`/balance`、`/logout`、输入历史跨进程与 `restoreLastModel` 完整矩阵在 0.86.0 上**未**逐条复验，仍以 0.84.3 的结论为准。1.2.0 与 1.5.0 的安装包门禁覆盖了扩展加载、`/calls` 原名、前台一笔、后台一笔和改名等待一笔；未在这两版复验的命令仍沿用原先的结论。1.6.1 的安装包门禁另外覆盖了 `restoreLastModel` 恢复网关模型、输入历史去重、选择器宽度与 `/model-audit` fetch 旁路。这不是整包认证。**0.8.0** 同在 pi 0.86.0 上用解包 tarball 实测了 `/model-audit`（三 API mismatch 与 `response≥1`、开关与等价表、clear）；子代理 / lite 归属与 peer 0.81.0 floor 未在该次 0.8.0 安装包门禁中认证。
 
 **0.8.1 发布前门禁**在 Node **22.19.0** 上将升版本前的 `0.8.0` tarball 解包目录分别安装到隔离的 **pi 0.81.0 / 0.86.0**：实测登录重配、八个命令原名注册、`/reload`、0.86.0 的模型选择与流式推理；89 轮 loopback 请求覆盖 GLM 六档思考、跨厂商别名优先级、三种 API、会话重启，以及清除 `compat` 后依靠缓存 vendor 提示恢复。只验证请求与缓存契约，**不认证真实上游的全型号能力**，也不扩展 `/model-audit`、子代理 / lite 或其他功能的既有认证范围。
 
@@ -146,7 +146,7 @@ pi
 | 字段 | 说明 |
 | --- | --- |
 | scheme | 仅用于标签与 URL 占位提示，占位符**不是**默认值 |
-| 实例 ID | 用于 `/login <id>`、`/model` 与 `/llmgates remove`；1–64 字符，字母/数字开头，可含 `.` `_` `-`。`default` 类型留空则自动派生，其余须手动指定 |
+| 实例 ID | 用于 `/login <id>`、`/model` 与 `/llmgates remove`；1–64 字符，字母/数字开头，可含 `.` `_` `-`。`default` 类型留空则自动派生，其余须手动指定。不能与 pi 内置 provider 同名（例如 `openai`、`azure`、`meta`）；Pi 新版新增的内置 id 只拒绝新登录，已经用这类 id 保存的实例照常加载，并覆盖同名内置 provider |
 | Base URL | 须完整填写，通常以 `/v1` 结尾 |
 | API Key | 须显式输入；以 literal string 存入 `auth.json`，不展开 `!cmd`、`$ENV` 或 `${...}` |
 
@@ -259,7 +259,7 @@ pi
 
 所有模型 `reasoning: true`，选择器始终暴露上述档位。上游不支持某档或返回 400 时由用户自行降档或换模型；插件不代为 clamp / 映射。仍会从 pi-ai 精确 metadata 继承 **传输层 compat**（如 Anthropic `forceAdaptiveThinking`、`supportsTemperature: false`），这只影响请求形状，不改变 effort 字符串。磁盘缓存恢复时也会重写为上述 universal map（不保留旧缓存里的 remap）。
 
-经网关路由的 **Moonshot / Kimi** 模型会丢掉 pi-ai 基于 URL 的 compat 识别，因此扩展按 vendor（`moonshotai` / `moonshot` / `kimi-coding` …）或 `kimi-` / `moonshot` 开头的 id 自行补一份传输层 compat，其中起作用的关键字段是 `supportsDeveloperRole: false`——缺了它 Moonshot 会报 `tokenization failed`。这同样**只影响请求形状**：不改 endpoint 选择、不改 effort 字符串，因此与上文「不按 scheme 或模型名猜协议」并不冲突；路由到 `messages` 的 Kimi 模型不共享这些字段，刻意不打这份 metadata。
+经网关路由的 **Moonshot / Kimi** 模型会丢掉 pi-ai 基于 URL 的 compat 识别，因此扩展按 vendor（`moonshotai` / `moonshot` / `kimi-coding` …）或 `kimi-` / `moonshot` 开头的 id 自行补一份传输层 compat，其中起作用的关键字段是 `supportsDeveloperRole: false`——缺了它 Moonshot 会报 `tokenization failed`。这同样**只影响请求形状**：不改 endpoint 选择、不改 effort 字符串，因此与上文「不按 scheme 或模型名猜协议」并不冲突；路由到 `messages` 的 Kimi 模型不共享这些字段，刻意不打这份 metadata。Kimi K3 另外同时带上两套延迟工具字段：pi-ai ≤0.85 读 `deferredToolsMode: "kimi"`，≥0.86 读 `supportsMidConvoSystemMessages` 与 `supportsMidConvoToolAdditions`。中途新增的工具以 system 消息追加，不改顶层 `tools`，prompt cache 前缀因此保持稳定。K2 系列与 DeepSeek / GLM 不开中途 system 消息。
 
 经网关路由的 **DeepSeek** 模型也会丢掉 pi-ai 基于 URL 的识别，因此扩展按 vendor（`deepseek` / `deepseek-ai`）或 `deepseek-` 开头的 id 补齐 DeepSeek transport compat：系统提示使用 `system` role，推理请求使用 `thinking` 参数，并关闭 `store`。这只改变请求形状，不改变 endpoint 或 effort 字符串；已知 vendor 的别名提示会随模型缓存保存，以便离线恢复时继续使用相同 compat。
 
@@ -398,11 +398,11 @@ meta 与 tool 各自检查本入口的 revision，再按本会话接收顺序替
 
 pi-subagents 0.85 起等待工具可以用 `waitTool.name` 改名。结果只要是 `details.mode === "management"` 且带 `completions`，顶层池化 usage 就不进通用工具账；child 仍只接受本会话已经观察过的 run。已经排除的 `subagent_wait`、`subagent_supervisor`、`intercom` 即使带同样的形状也不入账。0.86 的 `subagent:foreground-complete`，以及被 workflow await 的 `subagent:async-complete`，可以不带 usage。没有数字就不记一笔，金额来自 `subagent` 工具结果或 `_meta.json`，同一 source key 只留一笔。结构化委托事件 `prompt-template:subagent:response` 只把 Coverage 标为 unavailable。
 
-`pi-subagents-lite` 1.18 的 `Agent` / `StopAgent` / `MessageAgent` / `AgentStatus` 成功结果没有顶层 `usage`。父会话 All 不含这些调用的模型花费，本插件不扫它的子会话。`@tintinweb/pi-subagents` 0.23.1 的 `subagents:completed`、`subagents:failed` 和 `subagents:usage` 只更新 Coverage；不认识的 usage 键标 unavailable，不进 All。`Agent`、`get_subagent_result`、`steer_subagent` 仍排除。
+`pi-subagents-lite` 1.18 与 1.20 的 `Agent` / `StopAgent` / `MessageAgent` / `AgentStatus` 成功结果没有顶层 `usage`。父会话 All 不含这些调用的模型花费，本插件不扫它的子会话。`@tintinweb/pi-subagents` 0.23.1 与 0.26.3 的 `subagents:completed`、`subagents:failed` 和 `subagents:usage` 只更新 Coverage；不认识的 usage 键标 unavailable，不进 All。`Agent`、`get_subagent_result`、`steer_subagent` 仍排除。pi-subagents 0.90 完成事件里的 `children` / `nestedChildren` 不单独计费，金额只来自各 child 自己的 usage。pi-lens 等工具结果里的 `usage: { tokens, elapsedMs }` 不是模型用量，不入账。
 
 Pi 1.5 在 `usage.cost` 上增加布尔字段 `totalFromProvider`。为 true 时父会话把同一个 `cost.total` 标为 reported；缺省或 false 时这个 `total` 仍是目录估价。两个状态都只显示这一个数字。子代理路径拿到的是 pi-subagents 加总后的数字 `usage.cost`，不能从这个数字恢复该标志。
 
-嵌套工具的父条目池化 usage，以及 `type: "usage"` 的独立条目，只在运行中的 SDK 版本字符串为 `1.0.4`、`1.2.0` 或 `1.5.0` 时入账。其它版本保持关闭。这三版只核对了会话条目形状，不是整包 peer 认证。
+嵌套工具的父条目池化 usage，以及 `type: "usage"` 的独立条目，只在运行中的 SDK 版本字符串为 `1.0.4`、`1.2.0`、`1.5.0`、`1.5.1`、`1.5.2`、`1.6.0` 或 `1.6.1` 时入账。其它版本保持关闭。这几版只核对了会话条目形状，不是整包 peer 认证。
 
 - indexless meta 的唯一性是本次扫描的证据，不能直接跨重启沿用。存档通过既有 `source.runner` 区分 indexed、indexless 与 completion，不修改 v1 字段集合。恢复时 indexless 及旧版无法区分来源的 child-0 snapshot 保留在存档但暂不计入，标 `indexless-origin-unproven`；只有新的受信证据才能重新计量，已撤销的推断不会因重载或来源开关切换复活。明确 indexed 与 completion 记录正常恢复。
 - 事件里的 `sessionId` 可能是裸 ID、会话文件完整路径或其 basename（pi-subagents 以 `getSessionFile() ?? getSessionId()` 标识会话），三种身份形式都匹配。
@@ -549,6 +549,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 
 | 情况 | 原因 |
 | --- | --- |
+| pi-subagents 子进程（`PI_SUBAGENT_CHILD=1`） | 模型与档位由编排器指定，不恢复，也不记录到用户级 `last-model.json`；SDK 指定模型不一定带 CLI 旗标 |
 | `/resume` / `/tree` 分叉 / `/reload` | 这些动作的 `reason` 不是 startup/new，交给 pi |
 | 会话里已经有对话内容 | 含 `pi -c` / `--session` 打开的老会话。CLI 打开会话时 reason 仍是 `startup`，所以按有没有对话内容跳过，不认 `-c` 这个旗标 |
 | 命令行带 `--model` / `--models` | `--model` 是单次运行钉死的模型，优先于「上次用的」；`--models` 是本次运行临时换了一份白名单，一并不介入（长期存在 `settings.json` 里的 `enabledModels` 则照常恢复）。这一条连档位一起跳过 |
@@ -571,7 +572,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 - **非交互运行同样生效**：`pi -p "..."` 与 RPC 模式走的是同一个 `session_start`，脚本 / CI 里也会被切到上次用的模型与档位。要钉死模型带 `--model`，要钉死档位带 `--thinking`，或用 `LLMGATES_RESTORE_LAST_MODEL=0`。
 - 若恢复出的模型**不在** `enabledModels` 里，之后第一次按 Ctrl+P 会跳到白名单第 2 条（pi 在当前模型不在列表里时从索引 0 开始往后走，第 1 条被跳过），Ctrl+N 则跳到最后一条。
 - 同机开多个 pi 时是「最后一次整份写入胜出」：每次写都是原子覆盖整份文件，但写之前会读出另一半字段（切模型要带上已记的档，换档要带上已记的模型），两个进程交错切模型和换档时，后写的那份可能带上过期的另一半。这是偏好文件的 last-writer-wins，不加锁。
-- 记录始终进行，即使恢复被关掉——否则重新打开开关时会没有可恢复的东西。文件里只有 provider id、模型 id 与思考档位。
+- 除上述 pi-subagents 子进程外，记录始终进行，即使恢复被关掉——否则重新打开开关时会没有可恢复的东西。文件里只有 provider id、模型 id 与思考档位。
 - 关闭用 `"restoreLastModel": false` 或 `LLMGATES_RESTORE_LAST_MODEL=0`；一个开关同时管模型与档位，不另加键。关掉后启动行为与 pi 原样一致。
 
 `LLMGATES_DEBUG=1` 会打印每次启动的判定结果，模型与档位各一段（`model=restored thinking=restored`、`model=already-selected thinking=restored`、`model=cli-model thinking=skipped`、`model=restored thinking=cli-thinking` …），用来确认到底走了哪条分支。

@@ -1,5 +1,5 @@
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/compat";
+import { anthropicMessagesApi, getModels } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	applyAnthropicAdaptiveCompatToModel,
@@ -96,12 +96,16 @@ describe("resolveThinkingMetadata", () => {
 		expect(
 			resolveThinkingMetadata("kiro/claude-opus-4-8", "anthropic-messages").compat,
 		).toEqual({ forceAdaptiveThinking: true, supportsTemperature: false });
-		expect(resolveThinkingMetadata("claude-sonnet-5", "anthropic-messages").compat).toEqual({
-			forceAdaptiveThinking: true,
-		});
-		expect(resolveThinkingMetadata("claude-fable-5", "anthropic-messages").compat).toEqual({
-			forceAdaptiveThinking: true,
-		});
+		// pi-ai 1.6 marks Sonnet 5 as temperature-less; follow the installed catalog.
+		for (const id of ["claude-sonnet-5", "claude-fable-5"]) {
+			const native = getModels("anthropic").find((model) => model.id === id)?.compat as
+				| { supportsTemperature?: boolean }
+				| undefined;
+			expect(resolveThinkingMetadata(id, "anthropic-messages").compat, id).toEqual({
+				forceAdaptiveThinking: true,
+				...(native?.supportsTemperature === false ? { supportsTemperature: false as const } : {}),
+			});
+		}
 	});
 
 	it("extrapolates adaptive compat for Claude releases newer than the built-in catalog", () => {

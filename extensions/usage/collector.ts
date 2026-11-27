@@ -13,6 +13,7 @@ const UNCOUNTED_SPEND_GAPS = new Set([
 	"batch-capacity",
 	"live-queue-overflow",
 	"metadata-budget-exceeded",
+	"bridge-handler-error",
 ]);
 const assignableOriginTurnId = (id: string) => id === PRE_TURN_ID ? "turn-1" : id;
 export type RecoveryState = "not-started" | "recovering" | "ready" | "partial" | "disabled";

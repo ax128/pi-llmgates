@@ -14,6 +14,9 @@ import { loadValidatedConfigFile } from "../connection.js";
  * was installed on isolated Pi 1.2.0 and 1.5.0 and checked for extension load,
  * the unsuffixed `/calls` command, one foreground charge, one background charge,
  * and one renamed-wait charge.
+ * It moves to `<1.7.0` after the unpacked package passed the same gate on an
+ * isolated Pi 1.6.1, plus the 1.6-specific checks in docs/pre-publish-gate.md
+ * (restoreLastModel against a dynamic catalog, history dedupe, picker widths).
  *
  * `certified` stays false on purpose: `/endpoint`, `/balance`, `/logout`,
  * cross-process input history and the full `restoreLastModel` matrix were NOT
@@ -23,8 +26,8 @@ import { loadValidatedConfigFile } from "../connection.js";
  * by `test/usage-policy.test.ts` against `package.json`.
  */
 export const USAGE_PEER_DECISION = {
-	range: ">=0.81.0 <1.6.0",
-	localResearchVersion: "1.5.0",
+	range: ">=0.81.0 <1.7.0",
+	localResearchVersion: "1.6.1",
 	certified: false,
 	action: "widen",
 } as const;
@@ -32,10 +35,11 @@ export const USAGE_PEER_DECISION = {
 /**
  * Nested tool pools and standalone `type: "usage"` entries stay off unless the
  * running SDK string was checked against Pi's session entry shape.
- * 1.0.4, 1.2.0 and 1.5.0 all keep UsageEntry and message.nestedCalls.
+ * 1.0.4, 1.2.0, 1.5.0, 1.5.1, 1.5.2, 1.6.0 and 1.6.1 all keep UsageEntry and
+ * message.nestedCalls (status ok/error/unfinished, `complete` flag).
  * This set is not a package peer certification.
  */
-export const MODERN_USAGE_SDK_VERSIONS = ["1.0.4", "1.2.0", "1.5.0"] as const;
+export const MODERN_USAGE_SDK_VERSIONS = ["1.0.4", "1.2.0", "1.5.0", "1.5.1", "1.5.2", "1.6.0", "1.6.1"] as const;
 
 export function isModernUsageSdk(version: string): boolean {
 	return (MODERN_USAGE_SDK_VERSIONS as readonly string[]).includes(version);

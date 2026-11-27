@@ -70,6 +70,21 @@ export const BUILTIN_PROVIDER_IDS = new Set<string>([
 	"google-gemini-cli",
 ]);
 
+/**
+ * Builtin ids Pi added after an instance could already be stored under them.
+ * Only a new login is refused one: a stored instance keeps loading, logging out
+ * and reading its credential, because a load-time rejection takes every gateway
+ * down with it. Pi lets an extension provider shadow a builtin id.
+ */
+export const LOGIN_RESERVED_PROVIDER_IDS = new Set<string>([
+	"azure",
+	"baseten",
+	"meta",
+	"qwen-token-plan-individual",
+	"qwen-token-plan-individual-cn",
+	"typesafe",
+]);
+
 // BlockList checks IPv4-mapped IPv6 (::ffff:127.0.0.1 and ::ffff:7f00:1) against the IPv4 rule.
 const LOOPBACK_RANGES = new BlockList();
 LOOPBACK_RANGES.addSubnet("127.0.0.0", 8, "ipv4");

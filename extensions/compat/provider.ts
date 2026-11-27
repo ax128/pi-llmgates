@@ -3,7 +3,6 @@ import type {
 	Api,
 	ApiStreamOptions,
 	AuthInteraction,
-	Context,
 	Credential,
 	Model,
 	OAuthCredential,
@@ -45,6 +44,7 @@ import {
 	type CatalogModelRef,
 } from "../model-pricing-cache.js";
 import { resolveModelCostRates } from "../model-pricing.js";
+import { LOGIN_RESERVED_PROVIDER_IDS } from "../connection.js";
 import type { ModelAuditStreamHook } from "../model-audit/runtime.js";
 import {
 	HttpStatusError,
@@ -92,6 +92,9 @@ import {
 	type CompatInstance,
 	type CompatScheme,
 } from "./types.js";
+
+/** pi-ai <0.86 passes `Context`; >=0.86 passes `TranscriptContext`. Follow whichever is installed. */
+type ProviderStreamContext = Parameters<ProviderStreams["stream"]>[1];
 
 /** One stream adapter per supported api. */
 const COMPAT_API_STREAMS: Record<string, ProviderStreams> = {
@@ -274,14 +277,15 @@ export async function runCompatInstanceLogin(
 			if (!rawBaseUrl.trim()) throw new Error("Base URL is required");
 			if (!apiKey.trim()) throw new Error("API key is required");
 			const baseUrl = normalizeCompatBaseUrl(rawBaseUrl);
+			const loginReservedIds = [...reservedProviderIds, ...LOGIN_RESERVED_PROVIDER_IDS];
 			const id =
 				isDefaultScheme && !rawId.trim()
 					? deriveDefaultInstanceId(
 							baseUrl,
 							existingInstanceIds,
-							reservedProviderIds,
+							loginReservedIds,
 						)
-					: normalizeInstanceId(rawId, reservedProviderIds);
+					: normalizeInstanceId(rawId, loginReservedIds);
 			instance = {
 				id,
 				name: normalizeInstanceName(rawName, id),
@@ -1284,7 +1288,7 @@ export function createCompatProvider(
 		refreshModels,
 		stream<T extends Api>(
 			model: Model<T>,
-			context: Context,
+			context: ProviderStreamContext,
 			streamOptions?: ApiStreamOptions<T>,
 		) {
 			const streams = compatStreamFor(model as Model<Api>);
@@ -1301,7 +1305,7 @@ export function createCompatProvider(
 		},
 		streamSimple(
 			model: Model<Api>,
-			context: Context,
+			context: ProviderStreamContext,
 			streamOptions?: SimpleStreamOptions,
 		) {
 			const streams = compatStreamFor(model);

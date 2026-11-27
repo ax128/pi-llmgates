@@ -1,8 +1,8 @@
-import type { Api, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import type { Api, Context, Model, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { mapCompatModelsPayload } from "../extensions/compat/catalog.js";
 import { createCompatProvider } from "../extensions/compat/provider.js";
+import { providerContext } from "./helpers/provider-context.js";
 import type { CompatInstance } from "../extensions/compat/types.js";
 import { withTempAgentDir } from "./helpers/temp-agent-dir.js";
 
@@ -19,7 +19,12 @@ const CONTEXT: Context = {
 	tools: [{
 		name: "test_tool",
 		description: "Test-only tool",
-		parameters: Type.Object({ path: Type.String() }),
+		// pi-ai 1.6 no longer re-exports TypeBox; the transport only serializes the schema.
+		parameters: {
+			type: "object",
+			properties: { path: { type: "string" } },
+			required: ["path"],
+		} as unknown as Tool["parameters"],
 	}],
 };
 
@@ -49,7 +54,7 @@ async function capturePayload(
 			initialModels: [model],
 		});
 		let payload: Record<string, unknown> | undefined;
-		const result = await provider.streamSimple(provider.getModels()[0]!, CONTEXT, {
+		const result = await provider.streamSimple(provider.getModels()[0]!, providerContext(CONTEXT), {
 			apiKey: "test-key",
 			reasoning,
 			maxTokens: 4096,
@@ -159,7 +164,12 @@ describe("gateway-routed GLM transport", () => {
 	it("does not change the default request shape for unrelated models", async () => {
 		const payload = await capturePayload(gatewayModel({ id: "gpt-4o" }), "high");
 
-		expect(payload.messages).toMatchObject([{ role: "developer" }, { role: "user" }]);
+		// The role is pi-ai's call (1.6 gives non-OpenAI hosts `system`); what this
+		// plugin must not do is stamp GLM compat, which max_completion_tokens rules out.
+		expect(payload.messages).toMatchObject([
+			{ role: expect.stringMatching(/^(developer|system)$/) },
+			{ role: "user" },
+		]);
 		expect(payload.max_completion_tokens).toBe(4096);
 		expect(payload).not.toHaveProperty("thinking");
 	});

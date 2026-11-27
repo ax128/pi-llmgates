@@ -510,9 +510,11 @@ describe("mapCompatModelsPayload", () => {
 
 		expect(gatewayCompat).toMatchObject({
 			supportsStore: nativeCompat?.supportsStore,
-			supportsDeveloperRole: nativeCompat?.supportsDeveloperRole,
 			thinkingFormat: nativeCompat?.thinkingFormat,
 		});
+		// pi-ai >=1.6 drops this from native GLM metadata, but a gateway URL never
+		// triggers its Z.ai URL detection, so the gateway keeps the system role explicit.
+		expect(gatewayCompat.supportsDeveloperRole).toBe(false);
 		expect(gatewayCompat.maxTokensField).toBe("max_tokens");
 		// Effort support stays endpoint-detected; native tool_stream is not opted in.
 		expect(gatewayCompat).not.toHaveProperty("supportsReasoningEffort");
@@ -656,6 +658,8 @@ describe("mapCompatModelsPayload", () => {
 			supportsDeveloperRole: false,
 			supportsReasoningEffort: true,
 			deferredToolsMode: "kimi",
+			supportsMidConvoSystemMessages: true,
+			supportsMidConvoToolAdditions: true,
 		});
 		expect(moonshotKimiOpenAICompat("k3")).toMatchObject({
 			supportsDeveloperRole: false,
@@ -672,6 +676,15 @@ describe("mapCompatModelsPayload", () => {
 			supportsReasoningEffort: false,
 			thinkingFormat: "deepseek",
 		});
+	});
+
+	it("mirrors every Kimi K3 compat key the installed pi-ai declares natively", () => {
+		const native = getBuiltinModel("moonshotai", "kimi-k3").compat as Record<string, unknown> | undefined;
+		expect(native).toBeDefined();
+		const gateway = moonshotKimiOpenAICompat("kimi-k3") as Record<string, unknown>;
+		for (const [key, value] of Object.entries(native!)) {
+			expect(gateway[key], key).toEqual(value);
+		}
 	});
 
 	it("patches cached gateway models that predate compat metadata", () => {

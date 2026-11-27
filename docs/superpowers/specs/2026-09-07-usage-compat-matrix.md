@@ -28,6 +28,18 @@
 | SDK `1.0.4` / `1.2.0` / `1.5.0` 的 nestedCalls 与 `type: "usage"` | `wired` | `isModernUsageSdk` | 其它版本字符串关闭；不是整包认证 |
 | 父会话 `cost.totalFromProvider === true` | `wired` | `observationFromAssistantMessage` 把 `cost.total` 标 reported | 子代理扁平 cost 不带该标志 |
 
+## 2026-11-27 Pi 1.6.1 / pi-subagents 0.90 / tintinweb 0.26.3 / lite 1.20 核对
+
+| 来源 | 等级 | 入口 | 缺口 |
+| --- | --- | --- | --- |
+| SDK `1.5.1` / `1.5.2` / `1.6.0` / `1.6.1` 的 nestedCalls 与 `type: "usage"` | `wired` | `isModernUsageSdk` | 逐版 `.d.ts` 形状核对；不是整包认证 |
+| pi-subagents 0.90 `results[].children` / `nestedChildren` | `excluded` | 提取器不读 | 孙代理费用只在 pi-subagents 折进 child 自身 usage 时可见 |
+| pi-subagents 0.90 `task:subagent:lifecycle` | `excluded` | 不订阅 | 载荷不带 usage |
+| pi-subagents 父进程内的 Watchdog / Prompt Audit 调用 | `unavailable` | 无公开出口 | 父会话 All 不含 |
+| tintinweb 0.26.3 `subagents:completed` / `failed` / `usage` | `probe-only` | 不变 | 不进 All；`ownUsage` 未接线 |
+| pi-subagents-lite 1.20 | `unavailable` | 工具结果仍无顶层 usage | 不扫子会话 |
+| pi-lens 4.5.2 `usage: { tokens, elapsedMs }` | `excluded` | 无 token 计数字段，`extractToolResultUsage` 返回空 | 不是统计插件 |
+
 ## 证据等级
 
 | 等级 | 含义 |

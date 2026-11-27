@@ -82,6 +82,23 @@ describe("terminal-width", () => {
 		expect(visibleWidth("☺️")).toBe(2);
 	});
 
+	it("gives spacing marks a cell like pi-tui 1.6, so Indic and Myanmar text is not under-counted", () => {
+		expect(visibleWidth("\u093E")).toBe(1);
+		expect(visibleWidth("कि")).toBe(2);
+		expect(visibleWidth("किताब")).toBe(5);
+		expect(visibleWidth("ক্ষি")).toBe(3);
+		expect(visibleWidth("தமிழ்")).toBe(4);
+		expect(visibleWidth("မြန်မာ")).toBe(6);
+		expect(visibleWidth("กำ")).toBe(2);
+	});
+
+	it("keeps RGI emoji sequences at two columns and widens a non-RGI cluster with a spacing mark", () => {
+		expect(visibleWidth("👨‍👩‍👧")).toBe(2);
+		expect(visibleWidth("🏳️‍🌈")).toBe(2);
+		expect(visibleWidth("❤️‍🔥")).toBe(2);
+		expect(visibleWidth("👍\u093E")).toBe(3);
+	});
+
 	it("pads to a visible-column width so CJK and ASCII share a column start", () => {
 		expect(padEndToWidth("中", 4)).toBe("中  ");
 		expect(visibleWidth(padEndToWidth("中", 4))).toBe(4);
@@ -208,5 +225,33 @@ describe("terminal-width drift against the installed pi-tui", () => {
 				Date.now() - startedAt
 			}ms)`,
 		).toEqual([]);
+	});
+
+	// Single code points miss the 1.6 rule that counts a visible code point after
+	// a mark inside one grapheme, so clusters get their own guard.
+	it("never reports a smaller width than pi-tui for marks and mark clusters", async () => {
+		const upstream = await loadPiTui();
+		const marks: string[] = [];
+		for (let cp = 0; cp <= 0x10ffff; cp++) {
+			if (cp >= 0xd800 && cp <= 0xdfff) continue;
+			const ch = String.fromCodePoint(cp);
+			if (/^\p{Mark}$/u.test(ch)) marks.push(ch);
+		}
+		const bases = ["a", "क", "ক", "த", "ಕ", "ก", "မ", "ລ", "中", "한", "ཀ", "👍"];
+		const tails = ["", "क", "\u093E", "\u103A", "\uFF71", "\u0E33"];
+		const samples = [
+			...marks,
+			...bases.flatMap((base) => marks.flatMap((mark) => tails.map((tail) => base + mark + tail))),
+		];
+		const undercounted: string[] = [];
+		for (const sample of samples) {
+			const local = visibleWidth(sample);
+			const theirs = upstream.visibleWidth(sample);
+			if (local < theirs && undercounted.length < 20) {
+				undercounted.push(`${JSON.stringify(sample)}: local ${local} < pi-tui ${theirs}`);
+			}
+		}
+		expect(samples.length).toBeGreaterThan(100_000);
+		expect(undercounted).toEqual([]);
 	});
 });

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -123,10 +123,18 @@ async function withArgv(argv: string[], run: () => Promise<void>): Promise<void>
  * exported in the developer's shell would decide what these tests believe they
  * are pinning. Cleared before every test rather than only after.
  */
-const envKeys = ["LLMGATES_RESTORE_LAST_MODEL", "LLMGATES_DEBUG"] as const;
+const envKeys = [
+	"LLMGATES_RESTORE_LAST_MODEL",
+	"LLMGATES_DEBUG",
+	"PI_SUBAGENT_CHILD",
+] as const;
 
 beforeEach(() => {
-	for (const key of envKeys) delete process.env[key];
+	for (const key of envKeys) vi.stubEnv(key, undefined);
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
 });
 
 describe("hasCliModelSelection", () => {
@@ -714,6 +722,61 @@ describe("thinking_level_select recording", () => {
 });
 
 describe("registerLastModelRestore", () => {
+	it.each([true, false])(
+		"leaves a pi-subagents child's model, level and global preference alone (saved record: %s)",
+		async (hasSavedRecord) => {
+			vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+			const { agentDir, cleanup } = withTempAgentDir();
+			try {
+				if (hasSavedRecord) writeLastModel(agentDir, SAVED_RECORD);
+				writeJson(join(agentDir, "settings.json"), {
+					defaultProvider: SAVED.provider,
+					defaultModel: SAVED.modelId,
+					defaultThinkingLevel: SAVED_LEVEL,
+				});
+				const { pi, handlers, setModel, setThinkingLevel } = fakePi();
+				registerLastModelRestore(pi, agentDir);
+				const ctx = {
+					cwd: agentDir,
+					isProjectTrusted: () => true,
+					model: model(CURRENT.provider, CURRENT.modelId),
+					modelRegistry: { find: () => model(SAVED.provider, SAVED.modelId) },
+					sessionManager: freshPiSession(agentDir),
+				};
+				// The SDK child supplies its model directly, not through --model.
+				await withArgv([], async () => {
+					await handlers.get("session_start")?.(
+						{ type: "session_start", reason: "startup" }, ctx,
+					);
+				});
+				expect(setModel).not.toHaveBeenCalled();
+				expect(setThinkingLevel).not.toHaveBeenCalled();
+				await handlers.get("model_select")?.(
+					{ type: "model_select", model: ctx.model, source: "set" }, ctx,
+				);
+				await handlers.get("thinking_level_select")?.(
+					{ type: "thinking_level_select", level: CURRENT_LEVEL }, ctx,
+				);
+				expect(readLastModel(agentDir)).toEqual(hasSavedRecord ? SAVED_RECORD : undefined);
+				expect(pi.on).not.toHaveBeenCalled();
+			} finally {
+				cleanup();
+			}
+		},
+	);
+
+	it.each(["0", "false", ""])(
+		"still registers parent restore and recording handlers with child flag %j",
+		(childFlag) => {
+			vi.stubEnv("PI_SUBAGENT_CHILD", childFlag);
+			const { pi, handlers } = fakePi();
+			registerLastModelRestore(pi, "/nonexistent-agent-dir");
+			expect([...handlers.keys()].sort()).toEqual([
+				"model_select", "session_start", "thinking_level_select",
+			]);
+		},
+	);
+
 	it("subscribes to session_start and never throws out of the handler", async () => {
 		const { pi, handlers, setModel, setThinkingLevel } = fakePi();
 		registerLastModelRestore(pi, "/nonexistent-agent-dir");

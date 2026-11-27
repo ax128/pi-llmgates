@@ -146,7 +146,7 @@ pi update npm:@llmgates_api/pi-llmgates-provider           # 升到 latest
 pi install npm:@llmgates_api/pi-llmgates-provider@0.8.2    # 装到指定版本（会把条目钉死）
 ```
 
-然后 `/reload`。peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <0.87.0`（0.7.1 起；0.86.0 的实测范围见 README「环境要求」）。
+然后 `/reload`。peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <1.7.0`（实测范围见 README「环境要求」）。
 
 **别把不带版本号的 `pi install` 当升级命令**——它只在 caret 范围内升，跨 minor 就停住，且回显看不出来。在 pi 0.84.3 上用隔离 `PI_CODING_AGENT_DIR` 逐条实测：
 

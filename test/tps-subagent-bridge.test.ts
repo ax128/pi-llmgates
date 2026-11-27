@@ -102,6 +102,67 @@ describe("tps-subagent-bridge", () => {
 		unregister();
 	});
 
+	it("turns a throwing usage callback into a bridge gap instead of an EventBus error", () => {
+		const bus = createMemoryEventBus();
+		const gaps: string[] = [];
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1",
+			onRecords: () => {
+				throw new Error("ledger bug");
+			},
+			onForegroundComplete: () => {
+				throw new Error("ownership bug");
+			},
+			onGap: (gap) => gaps.push(gap),
+		});
+		try {
+			const usage = { turns: 1, input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.001 };
+			expect(() =>
+				bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+					sessionId: "sess-1",
+					runId: UUID_RUN,
+					results: [{ agent: "reviewer", model: "m", modelAttempts: [{ model: "m", usage }] }],
+				}),
+			).not.toThrow();
+			expect(() =>
+				bus.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, { sessionId: "sess-1", runId: UUID_RUN }),
+			).not.toThrow();
+			expect(gaps).toEqual(["bridge-handler-error", "bridge-handler-error"]);
+		} finally {
+			unregister();
+		}
+	});
+
+	it("bills only top-level results when pi-subagents 0.90 attaches nested children", () => {
+		const bus = createMemoryEventBus();
+		const records: SubagentUsageRecord[] = [];
+		const unregister = registerSubagentUsageBridge(bus, {
+			sessionId: "sess-1",
+			onRecords: (batch) => records.push(...batch),
+		});
+		try {
+			const usage = { turns: 1, input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.001 };
+			const nestedUsage = { turns: 3, input: 9_000, output: 900, cacheRead: 0, cacheWrite: 0, cost: 9 };
+			bus.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+				sessionId: "sess-1",
+				runId: UUID_RUN,
+				results: [
+					{
+						agent: "reviewer",
+						model: "m",
+						modelAttempts: [{ model: "m", usage }],
+						children: [{ runId: "nested-1", agent: "helper", usage: nestedUsage, totalTokens: 9_900 }],
+					},
+				],
+				nestedChildren: [{ id: "nested-1", agent: "helper", state: "completed", usage: nestedUsage, totalTokens: 9_900 }],
+			});
+			expect(records).toHaveLength(1);
+			expect(records[0]).toMatchObject({ input: 10, output: 5 });
+		} finally {
+			unregister();
+		}
+	});
+
 	it("budgets parallel children separately without changing their indices or counting the aggregate", () => {
 		const bus = createMemoryEventBus();
 		const records: SubagentUsageRecord[] = [], gaps: string[] = [];

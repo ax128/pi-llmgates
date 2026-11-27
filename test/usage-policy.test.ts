@@ -38,13 +38,13 @@ afterEach(() => {
 });
 
 describe("usage S0 policy freeze", () => {
-	it("widens the declared Pi peer range through 1.5.x without certifying every command", () => {
-		expect(USAGE_PEER_DECISION.range).toBe(">=0.81.0 <1.6.0");
+	it("widens the declared Pi peer range through 1.6.x without certifying every command", () => {
+		expect(USAGE_PEER_DECISION.range).toBe(">=0.81.0 <1.7.0");
 		expect(USAGE_PEER_DECISION.range).toBe(packageJson.peerDependencies["@earendil-works/pi-ai"]);
 		expect(USAGE_PEER_DECISION.range).toBe(
 			packageJson.peerDependencies["@earendil-works/pi-coding-agent"],
 		);
-		expect(USAGE_PEER_DECISION.localResearchVersion).toBe("1.5.0");
+		expect(USAGE_PEER_DECISION.localResearchVersion).toBe("1.6.1");
 		// The 0.7.1 gate ran the main paths on 0.86.0, but not the full §4 matrix,
 		// so the range moves while certification deliberately does not.
 		expect(USAGE_PEER_DECISION.certified).toBe(false);
@@ -52,11 +52,10 @@ describe("usage S0 policy freeze", () => {
 	});
 
 	it("enables nested and standalone usage only on source-checked SDK versions", () => {
-		expect([...MODERN_USAGE_SDK_VERSIONS]).toEqual(["1.0.4", "1.2.0", "1.5.0"]);
-		expect(isModernUsageSdk("1.0.4")).toBe(true);
-		expect(isModernUsageSdk("1.2.0")).toBe(true);
-		expect(isModernUsageSdk("1.5.0")).toBe(true);
-		expect(isModernUsageSdk("1.5.1")).toBe(false);
+		expect([...MODERN_USAGE_SDK_VERSIONS]).toEqual(["1.0.4", "1.2.0", "1.5.0", "1.5.1", "1.5.2", "1.6.0", "1.6.1"]);
+		for (const version of MODERN_USAGE_SDK_VERSIONS) expect(isModernUsageSdk(version), version).toBe(true);
+		expect(isModernUsageSdk("1.6.2")).toBe(false);
+		expect(isModernUsageSdk("1.7.0")).toBe(false);
 		expect(isModernUsageSdk("1.4.0")).toBe(false);
 		expect(isModernUsageSdk("1.3.0")).toBe(false);
 		expect(isModernUsageSdk("1.1.0")).toBe(false);
