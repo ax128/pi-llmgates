@@ -34,7 +34,7 @@ export interface SubagentUsageBridgeOptions {
 	onRunParentObserved?: (childRunId: string, parentRunId: string) => void;
 	onForegroundComplete?: (normalizedRunId: string) => void;
 	onCoverage?: (row: CoverageRow) => void;
-	onGap?: (reason: "metadata-budget-exceeded") => void;
+	onGap?: (reason: "metadata-budget-exceeded" | "bridge-handler-error") => void;
 	enabled?: boolean;
 }
 
@@ -184,9 +184,21 @@ export function registerSubagentUsageBridge(
 		});
 	};
 
-	const offAsync = events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, onAsyncComplete);
-	const offForeground = events.on(SUBAGENT_FOREGROUND_COMPLETE_EVENT, onForegroundComplete);
-	const offDelegation = events.on(SUBAGENT_DELEGATION_RESPONSE_EVENT, onDelegationResponse);
+	/**
+	 * Pi >=1.6 reports a throwing `pi.events` handler as an extension error in the
+	 * chat. A usage bug may cost a Coverage gap, never an error on every completion.
+	 */
+	const guarded = (handler: (data: unknown) => void) => (data: unknown): void => {
+		try {
+			handler(data);
+		} catch {
+			options.onGap?.("bridge-handler-error");
+		}
+	};
+
+	const offAsync = events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, guarded(onAsyncComplete));
+	const offForeground = events.on(SUBAGENT_FOREGROUND_COMPLETE_EVENT, guarded(onForegroundComplete));
+	const offDelegation = events.on(SUBAGENT_DELEGATION_RESPONSE_EVENT, guarded(onDelegationResponse));
 
 	let active = true;
 	return () => {

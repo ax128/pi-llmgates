@@ -139,6 +139,8 @@ describe("UsageCollector origin-turn binding", () => {
 			session.noteGap("batch-rejected");
 			session.noteGap("live-queue-overflow");
 			session.noteGap("batch-capacity");
+			session.noteGap("bridge-handler-error");
+			expect(session.gapReasons()).toContain("bridge-handler-error:1");
 			expect(session.sessionTotals()).toMatchObject({ costUsd: 1.25, costQuality: "unknown" });
 			expect(session.turnTotals().costQuality).toBe("unknown");
 			expect(formatTpsScopeWithQuality("all", 0, session.sessionTotals(), { historyPartial: true })).toContain("~$1.25 + ?");
