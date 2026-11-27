@@ -32,10 +32,11 @@ export const USAGE_PEER_DECISION = {
 /**
  * Nested tool pools and standalone `type: "usage"` entries stay off unless the
  * running SDK string was checked against Pi's session entry shape.
- * 1.0.4, 1.2.0 and 1.5.0 all keep UsageEntry and message.nestedCalls.
+ * 1.0.4, 1.2.0, 1.5.0, 1.5.1, 1.5.2, 1.6.0 and 1.6.1 all keep UsageEntry and
+ * message.nestedCalls (status ok/error/unfinished, `complete` flag).
  * This set is not a package peer certification.
  */
-export const MODERN_USAGE_SDK_VERSIONS = ["1.0.4", "1.2.0", "1.5.0"] as const;
+export const MODERN_USAGE_SDK_VERSIONS = ["1.0.4", "1.2.0", "1.5.0", "1.5.1", "1.5.2", "1.6.0", "1.6.1"] as const;
 
 export function isModernUsageSdk(version: string): boolean {
 	return (MODERN_USAGE_SDK_VERSIONS as readonly string[]).includes(version);
